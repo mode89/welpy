@@ -4,10 +4,11 @@ pkgs.mkShell {
   packages =
     (import ./deps.nix pkgs) ++
     (with pkgs; [
-      xpra
+      dwl
       foot
-      gtk4
       gobject-introspection
+      gtk4
       python3Packages.pygobject3
+      xpra
     ]);
 }

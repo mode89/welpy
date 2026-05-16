@@ -44,6 +44,8 @@ struct wl_signal { struct wl_list listener_list; };
 // opaque types
 struct wl_display;
 struct wl_event_loop;
+struct wl_event_source;
+typedef int (*wl_event_loop_timer_func_t)(void *data);
 struct wlr_backend;
 struct wlr_session;
 struct wlr_renderer;
@@ -54,7 +56,13 @@ struct wlr_scene_output;
 struct wlr_scene_output_layout;
 struct wlr_xdg_shell;
 struct wlr_surface;
-struct wlr_seat;
+struct wlr_seat_pointer_state { struct wlr_surface *focused_surface; ...; };
+struct wlr_seat_keyboard_state { struct wlr_surface *focused_surface; ...; };
+struct wlr_seat {
+    struct wlr_seat_pointer_state pointer_state;
+    struct wlr_seat_keyboard_state keyboard_state;
+    ...;
+};
 struct wlr_compositor;
 struct wlr_subcompositor;
 struct wlr_data_device_manager;
@@ -65,6 +73,7 @@ struct xkb_keymap;
 // wlr_keyboard_modifiers is embedded in wlr_keyboard, so cffi needs a
 // (possibly empty) layout for it. We never read its fields from Python.
 struct wlr_keyboard_modifiers { ...; };
+
 
 // partial decls: cffi asks the C compiler for offsets at build time, so
 // these are not locked to a specific wlroots ABI — only to the existence
@@ -78,6 +87,7 @@ struct wlr_keyboard {
     struct xkb_keymap *keymap;
     uint32_t keycodes[...];
     size_t num_keycodes;
+    struct { int32_t rate; int32_t delay; } repeat_info;
     ...;
 };
 struct wlr_box {
@@ -104,10 +114,10 @@ struct wlr_xdg_surface_state {
 };
 struct wlr_xdg_surface {
     struct wlr_surface *surface;
-    bool initial_commit;
-    bool initialized;
-    struct wlr_box geometry;
     struct wlr_xdg_surface_state current;
+    bool initialized;
+    bool initial_commit;
+    struct wlr_box geometry;
     void *data;
     ...;
 };
@@ -125,10 +135,10 @@ struct wlr_xdg_toplevel_state {
 struct wlr_xdg_toplevel {
     struct wlr_xdg_surface *base;
     struct wlr_xdg_toplevel *parent;
+    struct wlr_xdg_toplevel_state current;
+    struct wlr_xdg_toplevel_requested requested;
     char *title;
     char *app_id;
-    struct wlr_xdg_toplevel_requested requested;
-    struct wlr_xdg_toplevel_state current;
     ...;
 };
 struct wlr_xdg_popup {
@@ -139,6 +149,12 @@ struct wlr_xdg_popup {
 struct wlr_data_source;
 struct wlr_seat_request_set_selection_event {
     struct wlr_data_source *source;
+    uint32_t serial;
+    ...;
+};
+struct wlr_primary_selection_source;
+struct wlr_seat_request_set_primary_selection_event {
+    struct wlr_primary_selection_source *source;
     uint32_t serial;
     ...;
 };
@@ -168,6 +184,10 @@ void wl_display_run(struct wl_display *);
 void wl_display_terminate(struct wl_display *);
 void wl_display_flush_clients(struct wl_display *);
 int wl_event_loop_dispatch(struct wl_event_loop *, int timeout);
+struct wl_event_source *wl_event_loop_add_timer(
+        struct wl_event_loop *, wl_event_loop_timer_func_t, void *data);
+int wl_event_source_timer_update(struct wl_event_source *, int ms_delay);
+int wl_event_source_remove(struct wl_event_source *);
 const char *wl_display_add_socket_auto(struct wl_display *);
 struct wl_event_loop *wl_display_get_event_loop(struct wl_display *);
 
@@ -244,6 +264,7 @@ struct wlr_scene_output_layout *wlr_scene_attach_output_layout(
         struct wlr_scene *, struct wlr_output_layout *);
 struct wlr_scene_output *wlr_scene_output_create(
         struct wlr_scene *, struct wlr_output *);
+void wlr_scene_output_destroy(struct wlr_scene_output *);
 void wlr_scene_output_layout_add_output(struct wlr_scene_output_layout *,
         struct wlr_output_layout_output *, struct wlr_scene_output *);
 struct wlr_scene_output *wlr_scene_get_scene_output(
@@ -271,8 +292,12 @@ struct wlr_xdg_toplevel *wlr_xdg_toplevel_try_from_wlr_surface(
 struct wlr_xdg_popup *wlr_xdg_popup_try_from_wlr_surface(struct wlr_surface *);
 struct wlr_surface *wlr_surface_get_root_surface(struct wlr_surface *);
 void wlr_xdg_surface_schedule_configure(struct wlr_xdg_surface *);
+void wlr_xdg_popup_unconstrain_from_box(
+        struct wlr_xdg_popup *, const struct wlr_box *);
 void wlr_seat_set_selection(struct wlr_seat *,
         struct wlr_data_source *, uint32_t serial);
+void wlr_seat_set_primary_selection(struct wlr_seat *,
+        struct wlr_primary_selection_source *, uint32_t serial);
 
 struct wlr_seat *wlr_seat_create(struct wl_display *, const char *);
 void wlr_seat_set_capabilities(struct wlr_seat *, uint32_t caps);
@@ -303,26 +328,30 @@ bool wlr_keyboard_group_add_keyboard(struct wlr_keyboard_group *,
 
 // Cursor / pointer
 struct wlr_xcursor_manager;
-struct wlr_pointer;
+struct wlr_pointer { struct wlr_input_device base; ...; };
 struct wlr_pointer_motion_event {
+    struct wlr_pointer *pointer;
     uint32_t time_msec;
     double delta_x;
     double delta_y;
     ...;
 };
 struct wlr_pointer_motion_absolute_event {
+    struct wlr_pointer *pointer;
     uint32_t time_msec;
     double x;
     double y;
     ...;
 };
 struct wlr_pointer_button_event {
+    struct wlr_pointer *pointer;
     uint32_t time_msec;
     uint32_t button;
     uint32_t state;
     ...;
 };
 struct wlr_pointer_axis_event {
+    struct wlr_pointer *pointer;
     uint32_t time_msec;
     uint32_t source;
     uint32_t orientation;
@@ -342,6 +371,11 @@ void wlr_cursor_move(struct wlr_cursor *, struct wlr_input_device *,
         double delta_x, double delta_y);
 void wlr_cursor_warp_absolute(struct wlr_cursor *, struct wlr_input_device *,
         double x, double y);
+void wlr_cursor_warp_closest(struct wlr_cursor *, struct wlr_input_device *,
+        double x, double y);
+void wlr_cursor_absolute_to_layout_coords(struct wlr_cursor *,
+        struct wlr_input_device *, double x, double y,
+        double *lx, double *ly);
 void wlr_cursor_set_xcursor(struct wlr_cursor *,
         struct wlr_xcursor_manager *, const char *);
 void wlr_cursor_set_surface(struct wlr_cursor *,
@@ -639,7 +673,6 @@ struct wl_signal *pywl_seat_request_set_selection(struct wlr_seat *);
 struct wl_signal *pywl_seat_request_set_cursor(struct wlr_seat *);
 struct wl_signal *pywl_seat_request_set_primary_selection(struct wlr_seat *);
 struct wlr_seat_client *pywl_seat_pointer_focused_client(struct wlr_seat *);
-struct wlr_surface *pywl_seat_keyboard_focused_surface(struct wlr_seat *);
 struct wl_signal *pywl_renderer_lost_signal(struct wlr_renderer *);
 struct wlr_keyboard *pywl_keyboard_group_keyboard(struct wlr_keyboard_group *);
 struct wlr_scene_node *pywl_scene_rect_node(struct wlr_scene_rect *);
@@ -684,6 +717,7 @@ struct wl_signal *pywl_surface_map(struct wlr_surface *);
 struct wl_signal *pywl_keyboard_key_signal(struct wlr_keyboard *);
 struct wl_signal *pywl_keyboard_modifiers_signal(struct wlr_keyboard *);
 extern "Python" void _pywl_dispatch(struct wl_listener *, void *);
+extern "Python" int _pywl_timer_dispatch(void *);
 """
 
 
@@ -695,6 +729,7 @@ SOURCE = r"""
 #include <time.h>
 #include <linux/input-event-codes.h>
 #include <wayland-server-core.h>
+#include <wlr/types/wlr_primary_selection.h>
 #include <wlr/backend.h>
 #include <wlr/backend/session.h>
 #include <wlr/render/allocator.h>
@@ -836,9 +871,6 @@ struct wl_signal *pywl_seat_request_set_primary_selection(struct wlr_seat *s) {
 }
 struct wlr_seat_client *pywl_seat_pointer_focused_client(struct wlr_seat *s) {
     return s->pointer_state.focused_client;
-}
-struct wlr_surface *pywl_seat_keyboard_focused_surface(struct wlr_seat *s) {
-    return s->keyboard_state.focused_surface;
 }
 struct wl_signal *pywl_renderer_lost_signal(struct wlr_renderer *r) {
     return &r->events.lost;
@@ -1024,4 +1056,40 @@ def build():
         return SimpleNamespace(remove=remove)
 
     listen.listeners = {}
-    return ffi, lib, listen
+
+    @ffi.def_extern()
+    def _pywl_timer_dispatch(data):
+        callback = add_timer.timers.get(int(ffi.cast("uintptr_t", data)))
+        if callback is not None:
+            callback()
+        return 0
+
+    def add_timer(event_loop, callback):
+        """Register a wayland event-loop timer that calls `callback()` on
+        each fire. Returns a handle with a `.remove()` method that detaches
+        the underlying wl_event_source and the trampoline entry.
+        `.remove()` is safe to call more than once.
+
+        The returned handle also exposes `.update(milliseconds)` to (re)arm
+        the timer."""
+        data = ffi.new_handle(callback)
+        key = int(ffi.cast("uintptr_t", data))
+        add_timer.timers[key] = callback
+        source = lib.wl_event_loop_add_timer(
+            event_loop, lib._pywl_timer_dispatch, data,  # pylint: disable=protected-access
+        )
+
+        def remove():
+            removed = add_timer.timers.pop(key, None)
+            if removed is None:
+                return
+            lib.wl_event_source_remove(source)
+
+        def update(milliseconds):
+            lib.wl_event_source_timer_update(source, milliseconds)
+
+        return SimpleNamespace(remove=remove, update=update, source=source)
+
+    add_timer.timers = {}
+
+    return ffi, lib, listen, add_timer
