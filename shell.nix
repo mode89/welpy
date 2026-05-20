@@ -6,5 +6,6 @@ pkgs.mkShell {
     (with pkgs; [
       dwl
       foot
+      python3Packages.ipython
     ]);
 }

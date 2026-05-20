@@ -1,0 +1,6 @@
+{
+  "rules": [
+    "allow bash nix-shell **pytest**",
+    "allow bash nix-shell **pylint**"
+  ]
+}

@@ -1,7 +1,9 @@
+# pylint: disable=too-many-lines
+
 """Inline cffi bindings to wlroots 0.19 / libwayland-server / xkbcommon.
 
 Compiled at import time via `cffi.FFI.set_source` + `compile()` into a
-tempdir and loaded as `_pywl_cffi`. Re-exports `ffi`, `lib`, and the
+tempdir and loaded as `_welpy_cffi`. Re-exports `ffi`, `lib`, and the
 `listen` helper.
 
 Only the symbols required by main.py are exposed. Struct field access is
@@ -12,6 +14,7 @@ struct layout — just on its public function ABI.
 from __future__ import annotations
 
 import importlib.util
+import logging
 import os
 import subprocess
 import sys
@@ -21,8 +24,11 @@ from types import SimpleNamespace
 import cffi
 
 
+logger = logging.getLogger(__name__)
+
+
 _PKGS = ("wlroots-0.19", "wayland-server", "xkbcommon", "pixman-1")
-_MODULE = "_pywl_cffi"
+_MODULE = "_welpy_cffi"
 
 
 CDEF = r"""
@@ -186,6 +192,10 @@ void wl_display_flush_clients(struct wl_display *);
 int wl_event_loop_dispatch(struct wl_event_loop *, int timeout);
 struct wl_event_source *wl_event_loop_add_timer(
         struct wl_event_loop *, wl_event_loop_timer_func_t, void *data);
+typedef int (*wl_event_loop_signal_func_t)(int signal_number, void *data);
+struct wl_event_source *wl_event_loop_add_signal(
+        struct wl_event_loop *, int signal_number,
+        wl_event_loop_signal_func_t, void *data);
 int wl_event_source_timer_update(struct wl_event_source *, int ms_delay);
 int wl_event_source_remove(struct wl_event_source *);
 const char *wl_display_add_socket_auto(struct wl_display *);
@@ -508,7 +518,7 @@ struct wlr_xdg_activation_v1_request_activate_event {
 };
 struct wlr_xdg_activation_v1 *wlr_xdg_activation_v1_create(
         struct wl_display *);
-struct wl_signal *pywl_xdg_activation_request_activate(
+struct wl_signal *welpy_xdg_activation_request_activate(
         struct wlr_xdg_activation_v1 *);
 
 // xdg-output: per-screen name/description for bars, screenshot tools, etc.
@@ -552,8 +562,8 @@ void wlr_output_configuration_v1_send_succeeded(
         struct wlr_output_configuration_v1 *);
 void wlr_output_configuration_v1_send_failed(
         struct wlr_output_configuration_v1 *);
-struct wl_signal *pywl_output_mgr_apply(struct wlr_output_manager_v1 *);
-struct wl_signal *pywl_output_mgr_test(struct wlr_output_manager_v1 *);
+struct wl_signal *welpy_output_mgr_apply(struct wlr_output_manager_v1 *);
+struct wl_signal *welpy_output_mgr_test(struct wlr_output_manager_v1 *);
 
 // gamma-control: wlsunset / gammastep set per-output gamma LUTs.
 struct wlr_gamma_control_manager_v1;
@@ -571,7 +581,7 @@ struct wlr_output_power_v1_set_mode_event {
 struct wlr_output_power_manager_v1;
 struct wlr_output_power_manager_v1 *wlr_output_power_manager_v1_create(
         struct wl_display *);
-struct wl_signal *pywl_output_power_mgr_set_mode(
+struct wl_signal *welpy_output_power_mgr_set_mode(
         struct wlr_output_power_manager_v1 *);
 
 // session-lock: swaylock-style screen lockers.
@@ -590,12 +600,12 @@ uint32_t wlr_session_lock_surface_v1_configure(
         struct wlr_session_lock_surface_v1 *, uint32_t w, uint32_t h);
 struct wlr_scene_tree *wlr_scene_subsurface_tree_create(
         struct wlr_scene_tree *parent, struct wlr_surface *);
-struct wl_signal *pywl_session_lock_mgr_new_lock(
+struct wl_signal *welpy_session_lock_mgr_new_lock(
         struct wlr_session_lock_manager_v1 *);
-struct wl_signal *pywl_session_lock_new_surface(struct wlr_session_lock_v1 *);
-struct wl_signal *pywl_session_lock_unlock(struct wlr_session_lock_v1 *);
-struct wl_signal *pywl_session_lock_destroy(struct wlr_session_lock_v1 *);
-struct wl_signal *pywl_session_lock_surface_destroy(
+struct wl_signal *welpy_session_lock_new_surface(struct wlr_session_lock_v1 *);
+struct wl_signal *welpy_session_lock_unlock(struct wlr_session_lock_v1 *);
+struct wl_signal *welpy_session_lock_destroy(struct wlr_session_lock_v1 *);
+struct wl_signal *welpy_session_lock_surface_destroy(
         struct wlr_session_lock_surface_v1 *);
 
 // idle-notify: ext-idle-notify-v1 (swayidle), and idle-inhibit (video
@@ -617,16 +627,16 @@ struct wlr_idle_inhibit_manager_v1 {
 };
 struct wlr_idle_inhibit_manager_v1 *wlr_idle_inhibit_v1_create(
         struct wl_display *);
-struct wl_signal *pywl_idle_inhibit_new_inhibitor(
+struct wl_signal *welpy_idle_inhibit_new_inhibitor(
         struct wlr_idle_inhibit_manager_v1 *);
-struct wl_signal *pywl_idle_inhibitor_destroy(
+struct wl_signal *welpy_idle_inhibitor_destroy(
         struct wlr_idle_inhibitor_v1 *);
-struct wlr_idle_inhibitor_v1 *pywl_idle_inhibitor_from_link(struct wl_list *);
+struct wlr_idle_inhibitor_v1 *welpy_idle_inhibitor_from_link(struct wl_list *);
 
 bool wlr_scene_node_coords(struct wlr_scene_node *, int *lx, int *ly);
 
 // wl_container_of for the head list: recovers the head from its link node.
-struct wlr_output_configuration_head_v1 *pywl_config_head_from_link(
+struct wlr_output_configuration_head_v1 *welpy_config_head_from_link(
         struct wl_list *link);
 
 // server-decoration (predecessor to xdg-decoration; obsolete but still used
@@ -638,11 +648,15 @@ struct wlr_server_decoration_manager *wlr_server_decoration_manager_create(
 void wlr_server_decoration_manager_set_default_mode(
         struct wlr_server_decoration_manager *, uint32_t default_mode);
 
-// Resolve a key name (e.g. "Return") to an xkb keysym, or 0 if unknown.
+// keymap / keysym helpers
+uint32_t xkb_keymap_min_keycode(struct xkb_keymap *);
+uint32_t xkb_keymap_max_keycode(struct xkb_keymap *);
+int xkb_keymap_key_get_syms_by_level(struct xkb_keymap *, uint32_t keycode,
+        uint32_t layout, uint32_t level, const uint32_t **syms_out);
+int xkb_keysym_get_name(uint32_t keysym, char *buffer, size_t size);
 uint32_t xkb_keysym_from_name(const char *name, int flags);
-
 // First xkb keysym for an event keycode on this keyboard, or 0.
-uint32_t pywl_keyboard_keysym(struct wlr_keyboard *kb, uint32_t keycode);
+uint32_t welpy_keyboard_keysym(struct wlr_keyboard *kb, uint32_t keycode);
 
 // linux/input-event-codes.h
 #define BTN_LEFT ...
@@ -650,43 +664,43 @@ uint32_t pywl_keyboard_keysym(struct wlr_keyboard *kb, uint32_t keycode);
 #define BTN_MIDDLE ...
 
 // our helpers
-void pywl_signal_add(struct wl_signal *, struct wl_listener *);
-struct wl_signal *pywl_backend_new_output(struct wlr_backend *);
-struct wl_signal *pywl_output_frame(struct wlr_output *);
-struct wl_signal *pywl_output_request_state(struct wlr_output *);
-struct wl_signal *pywl_output_destroy_signal(struct wlr_output *);
-struct wl_signal *pywl_input_device_destroy_signal(struct wlr_input_device *);
-struct wl_signal *pywl_xdg_shell_new_toplevel(struct wlr_xdg_shell *);
-struct wl_signal *pywl_surface_commit(struct wlr_surface *);
+void welpy_signal_add(struct wl_signal *, struct wl_listener *);
+struct wl_signal *welpy_backend_new_output(struct wlr_backend *);
+struct wl_signal *welpy_output_frame(struct wlr_output *);
+struct wl_signal *welpy_output_request_state(struct wlr_output *);
+struct wl_signal *welpy_output_destroy_signal(struct wlr_output *);
+struct wl_signal *welpy_input_device_destroy_signal(struct wlr_input_device *);
+struct wl_signal *welpy_xdg_shell_new_toplevel(struct wlr_xdg_shell *);
+struct wl_signal *welpy_surface_commit(struct wlr_surface *);
 // wlr_output_state has non-trivial init and unstable layout; expose
 // alloc/free instead of declaring it.
-struct wlr_output_state *pywl_output_state_new(void);
-void pywl_output_state_free(struct wlr_output_state *);
+struct wlr_output_state *welpy_output_state_new(void);
+void welpy_output_state_free(struct wlr_output_state *);
 
-struct wl_signal *pywl_xdg_toplevel_destroy(struct wlr_xdg_toplevel *);
-struct wl_signal *pywl_xdg_toplevel_set_title(struct wlr_xdg_toplevel *);
-struct wl_signal *pywl_xdg_toplevel_request_maximize(struct wlr_xdg_toplevel *);
-struct wl_signal *pywl_xdg_shell_new_popup(struct wlr_xdg_shell *);
-struct wl_signal *pywl_xdg_popup_destroy(struct wlr_xdg_popup *);
-struct wl_signal *pywl_surface_unmap(struct wlr_surface *);
-struct wl_signal *pywl_seat_request_set_selection(struct wlr_seat *);
-struct wl_signal *pywl_seat_request_set_cursor(struct wlr_seat *);
-struct wl_signal *pywl_seat_request_set_primary_selection(struct wlr_seat *);
-struct wlr_seat_client *pywl_seat_pointer_focused_client(struct wlr_seat *);
-struct wl_signal *pywl_renderer_lost_signal(struct wlr_renderer *);
-struct wlr_keyboard *pywl_keyboard_group_keyboard(struct wlr_keyboard_group *);
-struct wlr_scene_node *pywl_scene_rect_node(struct wlr_scene_rect *);
-struct wl_signal *pywl_xdg_toplevel_request_fullscreen(struct wlr_xdg_toplevel *);
-struct wl_signal *pywl_xdg_toplevel_set_app_id(struct wlr_xdg_toplevel *);
-struct wl_signal *pywl_output_layout_change(struct wlr_output_layout *);
-struct wl_signal *pywl_xdg_decoration_manager_new(
+struct wl_signal *welpy_xdg_toplevel_destroy(struct wlr_xdg_toplevel *);
+struct wl_signal *welpy_xdg_toplevel_set_title(struct wlr_xdg_toplevel *);
+struct wl_signal *welpy_xdg_toplevel_request_maximize(struct wlr_xdg_toplevel *);
+struct wl_signal *welpy_xdg_shell_new_popup(struct wlr_xdg_shell *);
+struct wl_signal *welpy_xdg_popup_destroy(struct wlr_xdg_popup *);
+struct wl_signal *welpy_surface_unmap(struct wlr_surface *);
+struct wl_signal *welpy_seat_request_set_selection(struct wlr_seat *);
+struct wl_signal *welpy_seat_request_set_cursor(struct wlr_seat *);
+struct wl_signal *welpy_seat_request_set_primary_selection(struct wlr_seat *);
+struct wlr_seat_client *welpy_seat_pointer_focused_client(struct wlr_seat *);
+struct wl_signal *welpy_renderer_lost_signal(struct wlr_renderer *);
+struct wlr_keyboard *welpy_keyboard_group_keyboard(struct wlr_keyboard_group *);
+struct wlr_scene_node *welpy_scene_rect_node(struct wlr_scene_rect *);
+struct wl_signal *welpy_xdg_toplevel_request_fullscreen(struct wlr_xdg_toplevel *);
+struct wl_signal *welpy_xdg_toplevel_set_app_id(struct wlr_xdg_toplevel *);
+struct wl_signal *welpy_output_layout_change(struct wlr_output_layout *);
+struct wl_signal *welpy_xdg_decoration_manager_new(
         struct wlr_xdg_decoration_manager_v1 *);
-struct wl_signal *pywl_xdg_decoration_request_mode(
+struct wl_signal *welpy_xdg_decoration_request_mode(
         struct wlr_xdg_toplevel_decoration_v1 *);
-struct wl_signal *pywl_xdg_decoration_destroy(
+struct wl_signal *welpy_xdg_decoration_destroy(
         struct wlr_xdg_toplevel_decoration_v1 *);
-struct wl_signal *pywl_layer_shell_new_surface(struct wlr_layer_shell_v1 *);
-struct wl_signal *pywl_layer_surface_destroy(struct wlr_layer_surface_v1 *);
+struct wl_signal *welpy_layer_shell_new_surface(struct wlr_layer_shell_v1 *);
+struct wl_signal *welpy_layer_surface_destroy(struct wlr_layer_surface_v1 *);
 
 struct wlr_output_event_request_state {
     const struct wlr_output_state *state;
@@ -694,11 +708,11 @@ struct wlr_output_event_request_state {
 };
 
 // cursor signals (events.* lives in an anonymous sub-struct)
-struct wl_signal *pywl_cursor_motion(struct wlr_cursor *);
-struct wl_signal *pywl_cursor_motion_absolute(struct wlr_cursor *);
-struct wl_signal *pywl_cursor_button(struct wlr_cursor *);
-struct wl_signal *pywl_cursor_axis(struct wlr_cursor *);
-struct wl_signal *pywl_cursor_frame(struct wlr_cursor *);
+struct wl_signal *welpy_cursor_motion(struct wlr_cursor *);
+struct wl_signal *welpy_cursor_motion_absolute(struct wlr_cursor *);
+struct wl_signal *welpy_cursor_button(struct wlr_cursor *);
+struct wl_signal *welpy_cursor_axis(struct wlr_cursor *);
+struct wl_signal *welpy_cursor_frame(struct wlr_cursor *);
 
 // hit-test entry point
 struct wlr_scene_buffer;
@@ -712,12 +726,13 @@ struct wlr_scene_surface *wlr_scene_surface_try_from_buffer(
 #define WLR_SCENE_NODE_BUFFER ...
 
 // keyboard input field accessors (struct layout we don't want to declare)
-struct wl_signal *pywl_backend_new_input(struct wlr_backend *);
-struct wl_signal *pywl_surface_map(struct wlr_surface *);
-struct wl_signal *pywl_keyboard_key_signal(struct wlr_keyboard *);
-struct wl_signal *pywl_keyboard_modifiers_signal(struct wlr_keyboard *);
-extern "Python" void _pywl_dispatch(struct wl_listener *, void *);
-extern "Python" int _pywl_timer_dispatch(void *);
+struct wl_signal *welpy_backend_new_input(struct wlr_backend *);
+struct wl_signal *welpy_surface_map(struct wlr_surface *);
+struct wl_signal *welpy_keyboard_key_signal(struct wlr_keyboard *);
+struct wl_signal *welpy_keyboard_modifiers_signal(struct wlr_keyboard *);
+extern "Python" void _welpy_dispatch(struct wl_listener *, void *);
+extern "Python" int _welpy_timer_dispatch(void *);
+extern "Python" int _welpy_signal_dispatch(int, void *);
 """
 
 
@@ -765,11 +780,11 @@ SOURCE = r"""
 #include <wlr/util/log.h>
 #include <xkbcommon/xkbcommon.h>
 
-void pywl_signal_add(struct wl_signal *s, struct wl_listener *l) {
+void welpy_signal_add(struct wl_signal *s, struct wl_listener *l) {
     wl_signal_add(s, l);
 }
 
-uint32_t pywl_keyboard_keysym(struct wlr_keyboard *kb, uint32_t keycode) {
+uint32_t welpy_keyboard_keysym(struct wlr_keyboard *kb, uint32_t keycode) {
     // Return the unshifted (level-0) keysym for binding lookup. This way
     // a config entry of "q" matches both `q` and `Shift+q`, and the
     // explicit Shift bit in the binding's mod mask disambiguates them.
@@ -781,179 +796,179 @@ uint32_t pywl_keyboard_keysym(struct wlr_keyboard *kb, uint32_t keycode) {
     return n > 0 ? (uint32_t)syms[0] : 0;
 }
 
-struct wl_signal *pywl_backend_new_output(struct wlr_backend *b) {
+struct wl_signal *welpy_backend_new_output(struct wlr_backend *b) {
     return &b->events.new_output;
 }
-struct wl_signal *pywl_output_frame(struct wlr_output *o) {
+struct wl_signal *welpy_output_frame(struct wlr_output *o) {
     return &o->events.frame;
 }
-struct wl_signal *pywl_output_request_state(struct wlr_output *o) {
+struct wl_signal *welpy_output_request_state(struct wlr_output *o) {
     return &o->events.request_state;
 }
-struct wl_signal *pywl_output_destroy_signal(struct wlr_output *o) {
+struct wl_signal *welpy_output_destroy_signal(struct wlr_output *o) {
     return &o->events.destroy;
 }
-struct wl_signal *pywl_input_device_destroy_signal(struct wlr_input_device *d) {
+struct wl_signal *welpy_input_device_destroy_signal(struct wlr_input_device *d) {
     return &d->events.destroy;
 }
-struct wl_signal *pywl_xdg_shell_new_toplevel(struct wlr_xdg_shell *s) {
+struct wl_signal *welpy_xdg_shell_new_toplevel(struct wlr_xdg_shell *s) {
     return &s->events.new_toplevel;
 }
-struct wl_signal *pywl_surface_commit(struct wlr_surface *s) {
+struct wl_signal *welpy_surface_commit(struct wlr_surface *s) {
     return &s->events.commit;
 }
 
-struct wlr_output_state *pywl_output_state_new(void) {
+struct wlr_output_state *welpy_output_state_new(void) {
     struct wlr_output_state *s = calloc(1, sizeof(*s));
     wlr_output_state_init(s);
     return s;
 }
-void pywl_output_state_free(struct wlr_output_state *s) {
+void welpy_output_state_free(struct wlr_output_state *s) {
     wlr_output_state_finish(s);
     free(s);
 }
 
-struct wl_signal *pywl_backend_new_input(struct wlr_backend *b) {
+struct wl_signal *welpy_backend_new_input(struct wlr_backend *b) {
     return &b->events.new_input;
 }
-struct wl_signal *pywl_surface_map(struct wlr_surface *s) {
+struct wl_signal *welpy_surface_map(struct wlr_surface *s) {
     return &s->events.map;
 }
-struct wl_signal *pywl_keyboard_key_signal(struct wlr_keyboard *k) {
+struct wl_signal *welpy_keyboard_key_signal(struct wlr_keyboard *k) {
     return &k->events.key;
 }
-struct wl_signal *pywl_keyboard_modifiers_signal(struct wlr_keyboard *k) {
+struct wl_signal *welpy_keyboard_modifiers_signal(struct wlr_keyboard *k) {
     return &k->events.modifiers;
 }
-struct wl_signal *pywl_xdg_toplevel_destroy(struct wlr_xdg_toplevel *t) {
+struct wl_signal *welpy_xdg_toplevel_destroy(struct wlr_xdg_toplevel *t) {
     return &t->events.destroy;
 }
-struct wl_signal *pywl_xdg_shell_new_popup(struct wlr_xdg_shell *s) {
+struct wl_signal *welpy_xdg_shell_new_popup(struct wlr_xdg_shell *s) {
     return &s->events.new_popup;
 }
-struct wl_signal *pywl_xdg_popup_destroy(struct wlr_xdg_popup *p) {
+struct wl_signal *welpy_xdg_popup_destroy(struct wlr_xdg_popup *p) {
     return &p->events.destroy;
 }
-struct wl_signal *pywl_surface_unmap(struct wlr_surface *s) {
+struct wl_signal *welpy_surface_unmap(struct wlr_surface *s) {
     return &s->events.unmap;
 }
-struct wl_signal *pywl_seat_request_set_selection(struct wlr_seat *s) {
+struct wl_signal *welpy_seat_request_set_selection(struct wlr_seat *s) {
     return &s->events.request_set_selection;
 }
 
-struct wl_signal *pywl_cursor_motion(struct wlr_cursor *c) {
+struct wl_signal *welpy_cursor_motion(struct wlr_cursor *c) {
     return &c->events.motion;
 }
-struct wl_signal *pywl_cursor_motion_absolute(struct wlr_cursor *c) {
+struct wl_signal *welpy_cursor_motion_absolute(struct wlr_cursor *c) {
     return &c->events.motion_absolute;
 }
-struct wl_signal *pywl_cursor_button(struct wlr_cursor *c) {
+struct wl_signal *welpy_cursor_button(struct wlr_cursor *c) {
     return &c->events.button;
 }
-struct wl_signal *pywl_cursor_axis(struct wlr_cursor *c) {
+struct wl_signal *welpy_cursor_axis(struct wlr_cursor *c) {
     return &c->events.axis;
 }
-struct wl_signal *pywl_cursor_frame(struct wlr_cursor *c) {
+struct wl_signal *welpy_cursor_frame(struct wlr_cursor *c) {
     return &c->events.frame;
 }
 
-struct wl_signal *pywl_xdg_toplevel_set_title(struct wlr_xdg_toplevel *t) {
+struct wl_signal *welpy_xdg_toplevel_set_title(struct wlr_xdg_toplevel *t) {
     return &t->events.set_title;
 }
-struct wl_signal *pywl_xdg_toplevel_request_maximize(struct wlr_xdg_toplevel *t) {
+struct wl_signal *welpy_xdg_toplevel_request_maximize(struct wlr_xdg_toplevel *t) {
     return &t->events.request_maximize;
 }
-struct wl_signal *pywl_seat_request_set_cursor(struct wlr_seat *s) {
+struct wl_signal *welpy_seat_request_set_cursor(struct wlr_seat *s) {
     return &s->events.request_set_cursor;
 }
-struct wl_signal *pywl_seat_request_set_primary_selection(struct wlr_seat *s) {
+struct wl_signal *welpy_seat_request_set_primary_selection(struct wlr_seat *s) {
     return &s->events.request_set_primary_selection;
 }
-struct wlr_seat_client *pywl_seat_pointer_focused_client(struct wlr_seat *s) {
+struct wlr_seat_client *welpy_seat_pointer_focused_client(struct wlr_seat *s) {
     return s->pointer_state.focused_client;
 }
-struct wl_signal *pywl_renderer_lost_signal(struct wlr_renderer *r) {
+struct wl_signal *welpy_renderer_lost_signal(struct wlr_renderer *r) {
     return &r->events.lost;
 }
-struct wlr_keyboard *pywl_keyboard_group_keyboard(struct wlr_keyboard_group *g) {
+struct wlr_keyboard *welpy_keyboard_group_keyboard(struct wlr_keyboard_group *g) {
     return &g->keyboard;
 }
-struct wlr_scene_node *pywl_scene_rect_node(struct wlr_scene_rect *r) {
+struct wlr_scene_node *welpy_scene_rect_node(struct wlr_scene_rect *r) {
     return &r->node;
 }
-struct wl_signal *pywl_xdg_toplevel_request_fullscreen(struct wlr_xdg_toplevel *t) {
+struct wl_signal *welpy_xdg_toplevel_request_fullscreen(struct wlr_xdg_toplevel *t) {
     return &t->events.request_fullscreen;
 }
-struct wl_signal *pywl_xdg_toplevel_set_app_id(struct wlr_xdg_toplevel *t) {
+struct wl_signal *welpy_xdg_toplevel_set_app_id(struct wlr_xdg_toplevel *t) {
     return &t->events.set_app_id;
 }
-struct wl_signal *pywl_output_layout_change(struct wlr_output_layout *l) {
+struct wl_signal *welpy_output_layout_change(struct wlr_output_layout *l) {
     return &l->events.change;
 }
-struct wl_signal *pywl_xdg_decoration_manager_new(
+struct wl_signal *welpy_xdg_decoration_manager_new(
         struct wlr_xdg_decoration_manager_v1 *m) {
     return &m->events.new_toplevel_decoration;
 }
-struct wl_signal *pywl_xdg_decoration_request_mode(
+struct wl_signal *welpy_xdg_decoration_request_mode(
         struct wlr_xdg_toplevel_decoration_v1 *d) {
     return &d->events.request_mode;
 }
-struct wl_signal *pywl_xdg_decoration_destroy(
+struct wl_signal *welpy_xdg_decoration_destroy(
         struct wlr_xdg_toplevel_decoration_v1 *d) {
     return &d->events.destroy;
 }
-struct wl_signal *pywl_layer_shell_new_surface(struct wlr_layer_shell_v1 *s) {
+struct wl_signal *welpy_layer_shell_new_surface(struct wlr_layer_shell_v1 *s) {
     return &s->events.new_surface;
 }
-struct wl_signal *pywl_layer_surface_destroy(struct wlr_layer_surface_v1 *l) {
+struct wl_signal *welpy_layer_surface_destroy(struct wlr_layer_surface_v1 *l) {
     return &l->events.destroy;
 }
-struct wl_signal *pywl_xdg_activation_request_activate(
+struct wl_signal *welpy_xdg_activation_request_activate(
         struct wlr_xdg_activation_v1 *a) {
     return &a->events.request_activate;
 }
-struct wl_signal *pywl_output_mgr_apply(struct wlr_output_manager_v1 *m) {
+struct wl_signal *welpy_output_mgr_apply(struct wlr_output_manager_v1 *m) {
     return &m->events.apply;
 }
-struct wl_signal *pywl_output_mgr_test(struct wlr_output_manager_v1 *m) {
+struct wl_signal *welpy_output_mgr_test(struct wlr_output_manager_v1 *m) {
     return &m->events.test;
 }
-struct wlr_output_configuration_head_v1 *pywl_config_head_from_link(
+struct wlr_output_configuration_head_v1 *welpy_config_head_from_link(
         struct wl_list *l) {
     struct wlr_output_configuration_head_v1 *head;
     return wl_container_of(l, head, link);
 }
-struct wl_signal *pywl_output_power_mgr_set_mode(
+struct wl_signal *welpy_output_power_mgr_set_mode(
         struct wlr_output_power_manager_v1 *m) {
     return &m->events.set_mode;
 }
-struct wl_signal *pywl_session_lock_mgr_new_lock(
+struct wl_signal *welpy_session_lock_mgr_new_lock(
         struct wlr_session_lock_manager_v1 *m) {
     return &m->events.new_lock;
 }
-struct wl_signal *pywl_session_lock_new_surface(
+struct wl_signal *welpy_session_lock_new_surface(
         struct wlr_session_lock_v1 *l) {
     return &l->events.new_surface;
 }
-struct wl_signal *pywl_session_lock_unlock(struct wlr_session_lock_v1 *l) {
+struct wl_signal *welpy_session_lock_unlock(struct wlr_session_lock_v1 *l) {
     return &l->events.unlock;
 }
-struct wl_signal *pywl_session_lock_destroy(struct wlr_session_lock_v1 *l) {
+struct wl_signal *welpy_session_lock_destroy(struct wlr_session_lock_v1 *l) {
     return &l->events.destroy;
 }
-struct wl_signal *pywl_session_lock_surface_destroy(
+struct wl_signal *welpy_session_lock_surface_destroy(
         struct wlr_session_lock_surface_v1 *s) {
     return &s->events.destroy;
 }
-struct wl_signal *pywl_idle_inhibit_new_inhibitor(
+struct wl_signal *welpy_idle_inhibit_new_inhibitor(
         struct wlr_idle_inhibit_manager_v1 *m) {
     return &m->events.new_inhibitor;
 }
-struct wl_signal *pywl_idle_inhibitor_destroy(
+struct wl_signal *welpy_idle_inhibitor_destroy(
         struct wlr_idle_inhibitor_v1 *i) {
     return &i->events.destroy;
 }
-struct wlr_idle_inhibitor_v1 *pywl_idle_inhibitor_from_link(struct wl_list *l) {
+struct wlr_idle_inhibitor_v1 *welpy_idle_inhibitor_from_link(struct wl_list *l) {
     struct wlr_idle_inhibitor_v1 *inhibitor;
     return wl_container_of(l, inhibitor, link);
 }
@@ -977,7 +992,7 @@ def _build():
     libraries = [a[2:] for a in libs if a.startswith("-l")]
     library_dirs = [a[2:] for a in libs if a.startswith("-L")]
 
-    build_dir = tempfile.mkdtemp(prefix="pywl-build-")
+    build_dir = tempfile.mkdtemp(prefix="welpy-build-")
 
     # wlroots includes <xdg-shell-protocol.h>, which must be generated
     # locally from the xdg-shell.xml protocol description shipped with
@@ -1014,7 +1029,7 @@ def _build():
         library_dirs=library_dirs,
         extra_compile_args=extra_cflags + ["-w"],
     )
-    print(f"Compiling bindings in {build_dir} ...")
+    logger.info("building in %s ...", build_dir)
     so_path = builder.compile(tmpdir=build_dir)
 
     spec = importlib.util.spec_from_file_location(_MODULE, so_path)
@@ -1030,39 +1045,52 @@ def build():
     Call once from main(); module-load itself is side-effect free."""
     ffi, lib = _build()
 
+    # All trampolines share one registry: key -> (keepalive, callback).
+    # `keepalive` is whatever cdata must outlive the C-side registration
+    # (the wl_listener struct, or the ffi.new_handle passed as `data`).
+    handles = {}
+
+    def _key(ptr):
+        return int(ffi.cast("uintptr_t", ptr))
+
     @ffi.def_extern()
-    def _pywl_dispatch(wl_listener, data):
-        entry = listen.listeners.get(int(ffi.cast("uintptr_t", wl_listener)))
+    def _welpy_dispatch(wl_listener, data):
+        entry = handles.get(_key(wl_listener))
         if entry is not None:
             entry[1](data)
+
+    @ffi.def_extern()
+    def _welpy_timer_dispatch(data):
+        entry = handles.get(_key(data))
+        if entry is not None:
+            entry[1]()
+        return 0
+
+    @ffi.def_extern()
+    def _welpy_signal_dispatch(signum, data):
+        entry = handles.get(_key(data))
+        if entry is not None:
+            entry[1](signum)
+        return 0
 
     def listen(signal, callback):
         """Register `callback(data)` on `signal`. Returns a handle with a
         `.remove()` method that detaches the underlying wl_listener.
         `.remove()` is safe to call more than once."""
         wl_listener = ffi.new("struct wl_listener *")
-        wl_listener.notify = lib._pywl_dispatch  # pylint: disable=protected-access
-        key = int(ffi.cast("uintptr_t", wl_listener))
-        listen.listeners[key] = (wl_listener, callback)
-        lib.pywl_signal_add(signal, wl_listener)
+        wl_listener.notify = lib._welpy_dispatch  # pylint: disable=protected-access
+        key = _key(wl_listener)
+        handles[key] = (wl_listener, callback)
+        lib.welpy_signal_add(signal, wl_listener)
 
         def remove():
-            entry = listen.listeners.pop(key, None)
+            entry = handles.pop(key, None)
             if entry is None:
                 return
             held, _cb = entry
             lib.wl_list_remove(ffi.addressof(held[0], "link"))
 
         return SimpleNamespace(remove=remove)
-
-    listen.listeners = {}
-
-    @ffi.def_extern()
-    def _pywl_timer_dispatch(data):
-        callback = add_timer.timers.get(int(ffi.cast("uintptr_t", data)))
-        if callback is not None:
-            callback()
-        return 0
 
     def add_timer(event_loop, callback):
         """Register a wayland event-loop timer that calls `callback()` on
@@ -1073,15 +1101,14 @@ def build():
         The returned handle also exposes `.update(milliseconds)` to (re)arm
         the timer."""
         data = ffi.new_handle(callback)
-        key = int(ffi.cast("uintptr_t", data))
-        add_timer.timers[key] = callback
+        key = _key(data)
+        handles[key] = (data, callback)
         source = lib.wl_event_loop_add_timer(
-            event_loop, lib._pywl_timer_dispatch, data,  # pylint: disable=protected-access
+            event_loop, lib._welpy_timer_dispatch, data,  # pylint: disable=protected-access
         )
 
         def remove():
-            removed = add_timer.timers.pop(key, None)
-            if removed is None:
+            if handles.pop(key, None) is None:
                 return
             lib.wl_event_source_remove(source)
 
@@ -1090,6 +1117,24 @@ def build():
 
         return SimpleNamespace(remove=remove, update=update, source=source)
 
-    add_timer.timers = {}
+    def add_signal(event_loop, signum, callback):
+        """Register `callback(signum)` for `signum` on the wayland event
+        loop (uses signalfd internally, so the signal is blocked in the
+        process and dispatched cooperatively). Returns a handle with a
+        `.remove()` method that detaches the underlying wl_event_source.
+        `.remove()` is safe to call more than once."""
+        data = ffi.new_handle(callback)
+        key = _key(data)
+        handles[key] = (data, callback)
+        source = lib.wl_event_loop_add_signal(
+            event_loop, signum, lib._welpy_signal_dispatch, data,  # pylint: disable=protected-access
+        )
 
-    return ffi, lib, listen, add_timer
+        def remove():
+            if handles.pop(key, None) is None:
+                return
+            lib.wl_event_source_remove(source)
+
+        return SimpleNamespace(remove=remove, source=source)
+
+    return ffi, lib, listen, add_timer, add_signal
