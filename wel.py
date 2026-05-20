@@ -26,10 +26,18 @@ BORDER_COLOR_INACTIVE = (0.3, 0.3, 0.3, 1.0)
 
 
 class Layer(enum.Enum):
-    """Z-ordered window layers; later members render above earlier ones."""
+    """Z-ordered scene layers; later members render above earlier ones."""
+    BACKGROUND = enum.auto()
+    BOTTOM = enum.auto()
     TILE = enum.auto()
     FLOAT = enum.auto()
+    TOP = enum.auto()
     FULLSCREEN = enum.auto()
+    OVERLAY = enum.auto()
+
+
+# Indexed by zwlr_layer_shell_v1 layer values (0..3) to map them to Layer.
+SHELL_LAYERS = (Layer.BACKGROUND, Layer.BOTTOM, Layer.TOP, Layer.OVERLAY)
 
 
 @dataclass(frozen=True)
@@ -56,6 +64,21 @@ class Monitor:
     """Physical screen."""
     output: Any              # wlr_output: the physical screen
     scene_output: Any        # per-screen render state inside the scene graph
+    layers: dict             # {Layer: list[LayerSurface]} per shell layer
+    window_area: Rect        # screen rect minus shell exclusive zones
+    listeners: list[Any]
+
+
+@dataclass
+class LayerSurface:
+    """Shell-component window (bar, wallpaper, launcher) anchored to a
+    screen edge via the layer-shell protocol."""
+    layer_surface: Any       # wlr_layer_surface_v1
+    scene_layer: Any         # wlr_scene_layer_surface_v1: anchor/zone geometry
+    scene_tree: Any          # scene_layer.tree, cached for reparenting
+    popups_tree: Any         # parent scene tree for popups from this surface
+    monitor: Monitor
+    focused: bool            # True while this surface holds the keyboard
     listeners: list[Any]
 
 
@@ -113,6 +136,7 @@ class Server: # pylint: disable=too-many-instance-attributes
     scene: Any               # root of the scene graph -- everything to draw
     scene_layout: Any        # bridges scene_outputs with output_layout
     xdg_shell: Any
+    layer_shell: Any
     seat: Any
     cursor: Cursor
     keyboard_group: KeyboardGroup
@@ -197,23 +221,21 @@ def setup() -> Server: # pylint: disable=too-many-locals
     scene = lib.wlr_scene_create()
     scene_layout = lib.wlr_scene_attach_output_layout(scene, output_layout)
 
-    # Parallel layer trees under the scene root: tiles at the bottom, floats
-    # above them, fullscreen above floats. Creation order = sibling order = z
-    # order, so a fullscreen window covers both tiles and floats.
+    # Layer's declaration order is the intended z-order under scene_root.
     scene_root = ffi.addressof(scene.tree)
-    layers = {
-        Layer.TILE: lib.wlr_scene_tree_create(scene_root),
-        Layer.FLOAT: lib.wlr_scene_tree_create(scene_root),
-        Layer.FULLSCREEN: lib.wlr_scene_tree_create(scene_root),
-    }
+    layers = {layer: lib.wlr_scene_tree_create(scene_root) for layer in Layer}
 
     xdg_shell = lib.wlr_xdg_shell_create(display, 3)
+    layer_shell = lib.wlr_layer_shell_v1_create(display, 3)
     # Negotiate server-side decorations so we own the chrome (border, sizing)
     # and apps don't draw their own title bar/shadow on top of ours.
     lib.wlr_server_decoration_manager_set_default_mode(
         lib.wlr_server_decoration_manager_create(display),
         lib.WLR_SERVER_DECORATION_MANAGER_MODE_SERVER)
     xdg_decoration_mgr = lib.wlr_xdg_decoration_manager_v1_create(display)
+
+    lib.wlr_xdg_output_manager_v1_create(display, output_layout)
+
     seat = lib.wlr_seat_create(display, b"seat0")
     lib.wlr_seat_set_capabilities(seat,
         lib.WL_SEAT_CAPABILITY_POINTER | lib.WL_SEAT_CAPABILITY_KEYBOARD)
@@ -226,7 +248,7 @@ def setup() -> Server: # pylint: disable=too-many-locals
         compositor=compositor,
         output_layout=output_layout,
         scene=scene, scene_layout=scene_layout,
-        xdg_shell=xdg_shell, seat=seat,
+        xdg_shell=xdg_shell, layer_shell=layer_shell, seat=seat,
         cursor=None, keyboard_group=None,
         monitors=[], clients=[],
         layers=layers,
@@ -251,6 +273,8 @@ def setup() -> Server: # pylint: disable=too-many-locals
             lambda _data: update_monitors(server)),
         listen(lib.welpy_xdg_decoration_manager_new(xdg_decoration_mgr),
             lambda data: decoration_new(server, data)),
+        listen(lib.welpy_layer_shell_new_surface(layer_shell),
+            lambda data: layer_surface_new(server, data)),
     ])
 
     return server
@@ -344,8 +368,13 @@ def monitor_new(server: Server, data) -> None:
     lib.wlr_scene_output_layout_add_output(
         server.scene_layout, layout_output, scene_output)
 
-    monitor = Monitor(output=output, scene_output=scene_output, listeners=[])
+    monitor = Monitor(
+        output=output, scene_output=scene_output,
+        layers={layer: [] for layer in SHELL_LAYERS},
+        window_area=Rect(0, 0, 0, 0),
+        listeners=[])
     server.monitors.append(monitor)
+    monitor.window_area = monitor_box(server, monitor)
     monitor.listeners.extend([
         listen(lib.welpy_output_frame(output),
             lambda data: monitor_render(server, monitor, data)),
@@ -387,6 +416,9 @@ def monitor_render(server: Server, monitor: Monitor, _data) -> None:
 def monitor_cleanup(server: Server, monitor: Monitor, _data) -> None:
     """Fires when a screen goes away -- unplugged, or the backend is shutting
     down. Detaches our listeners and drops the monitor."""
+    # Each destroy callback mutates the bucket, so iterate a snapshot.
+    for ls in [s for bucket in monitor.layers.values() for s in bucket]:
+        server.lib.wlr_layer_surface_v1_destroy(ls.layer_surface)
     for listener in monitor.listeners:
         listener.remove()
     monitor.listeners.clear()
@@ -405,7 +437,7 @@ def update_monitors(server: Server) -> None:
         for c in clients_on(server, None):
             c.monitor = selected
     for m in server.monitors:
-        arrange(server, m)
+        arrange_layers(server, m)
 
 
 def selected_monitor(server: Server):
@@ -543,53 +575,6 @@ def client_request_fullscreen(
         set_layer(server, client, target)
 
 
-def popup_new(server: Server, data) -> None:
-    """Fires when an app creates a transient sub-window (menu, tooltip,
-    autocomplete). The scene node is deferred to the popup's first commit
-    so the parent surface is fully set up first."""
-    ffi, lib, listen = server.ffi, server.lib, server.listen
-    popup = ffi.cast("struct wlr_xdg_popup *", data)
-
-    def on_commit(_data):
-        if not popup.base.initial_commit:
-            return
-        if popup.parent == ffi.NULL:
-            cleanup()
-            return
-        root = lib.wlr_surface_get_root_surface(popup.parent)
-        client = next(
-            (c for c in server.clients if c.toplevel.base.surface == root),
-            None
-        )
-        parent_scene = (
-            ffi.cast("struct wlr_scene_tree *", popup.parent.data)
-            if popup.parent.data != ffi.NULL
-            else client.scene_tree if client is not None else None
-        )
-        if parent_scene is None:
-            cleanup()
-            return
-        scene = lib.wlr_scene_xdg_surface_create(parent_scene, popup.base)
-        popup.base.surface.data = ffi.cast("void *", scene)
-        if client is not None and client.monitor is not None:
-            box = monitor_box(server, client.monitor)
-            node = client.scene_tree.node
-            wlr_box = ffi.new("struct wlr_box *",
-                [box.x - node.x, box.y - node.y, box.width, box.height])
-            lib.wlr_xdg_popup_unconstrain_from_box(popup, wlr_box)
-        cleanup()
-
-    def cleanup():
-        for l in listeners:
-            l.remove()
-        listeners.clear()
-
-    listeners = [
-        listen(lib.welpy_surface_commit(popup.base.surface), on_commit),
-        listen(lib.welpy_xdg_popup_destroy(popup), lambda _data: cleanup()),
-    ]
-
-
 def client_cleanup(_server: Server, client: Client, _data) -> None:
     """Fires when an app closes a window (or its connection drops). The
     visible work happened in unmap (if the window was ever mapped); this
@@ -636,8 +621,177 @@ def decoration_set(server: Server, client: Client) -> None:
         server.lib.WLR_XDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE)
 
 
+def popup_new(server: Server, data) -> None:
+    """Fires when an app creates a transient sub-window (menu, tooltip,
+    autocomplete). The scene node is deferred to the popup's first commit
+    so the parent surface is fully set up first."""
+    ffi, lib, listen = server.ffi, server.lib, server.listen
+    popup = ffi.cast("struct wlr_xdg_popup *", data)
+
+    def on_commit(_data):
+        if not popup.base.initial_commit:
+            return
+        if popup.parent == ffi.NULL:
+            cleanup()
+            return
+        parent_scene = (
+            ffi.cast("struct wlr_scene_tree *", popup.parent.data)
+            if popup.parent.data != ffi.NULL else None)
+        if parent_scene is None:
+            cleanup()
+            return
+        scene = lib.wlr_scene_xdg_surface_create(parent_scene, popup.base)
+        popup.base.surface.data = ffi.cast("void *", scene)
+        root = lib.wlr_surface_get_root_surface(popup.parent)
+        owner_node, owner_monitor = _popup_owner(server, root)
+        if owner_monitor is not None and owner_node is not None:
+            box = monitor_box(server, owner_monitor)
+            wlr_box = ffi.new("struct wlr_box *",
+                [box.x - owner_node.x, box.y - owner_node.y,
+                 box.width, box.height])
+            lib.wlr_xdg_popup_unconstrain_from_box(popup, wlr_box)
+        cleanup()
+
+    def cleanup():
+        for l in listeners:
+            l.remove()
+        listeners.clear()
+
+    listeners = [
+        listen(lib.welpy_surface_commit(popup.base.surface), on_commit),
+        listen(lib.welpy_xdg_popup_destroy(popup), lambda _data: cleanup()),
+    ]
+
+
+def _popup_owner(server: Server, root_surface):
+    """The (parent-scene-node, monitor) for the window owning this surface,
+    or (None, None) if no window claims it."""
+    for c in server.clients:
+        if (c.toplevel.base.surface == root_surface
+                and c.scene_tree is not None):
+            return c.scene_tree.node, c.monitor
+    for m in server.monitors:
+        for bucket in m.layers.values():
+            for ls in bucket:
+                if ls.layer_surface.surface == root_surface:
+                    return ls.scene_tree.node, ls.monitor
+    return None, None
+
+
+def layer_surface_new(server: Server, data) -> None:
+    """Fires when an app creates a shell-anchored window (bar, wallpaper,
+    launcher). Sets up its scene tree; real geometry lands at first commit."""
+    ffi, lib, listen = server.ffi, server.lib, server.listen
+    layer_surface = ffi.cast("struct wlr_layer_surface_v1 *", data)
+    if layer_surface.output == ffi.NULL:
+        monitor = selected_monitor(server)
+        if monitor is None:
+            lib.wlr_layer_surface_v1_destroy(layer_surface)
+            return
+        layer_surface.output = monitor.output
+    else:
+        monitor = next(
+            (m for m in server.monitors if m.output == layer_surface.output),
+            None)
+        if monitor is None:
+            lib.wlr_layer_surface_v1_destroy(layer_surface)
+            return
+    layer = SHELL_LAYERS[layer_surface.pending.layer]
+    scene_layer = lib.wlr_scene_layer_surface_v1_create(
+        server.layers[layer], layer_surface)
+    # Lift popups for BG/BOTTOM into TOP so they aren't buried by a bar.
+    popups_parent = server.layers[
+        Layer.TOP if layer in (Layer.BACKGROUND, Layer.BOTTOM) else layer]
+    popups_tree = lib.wlr_scene_tree_create(popups_parent)
+    ls = LayerSurface(
+        layer_surface=layer_surface, scene_layer=scene_layer,
+        scene_tree=scene_layer.tree, popups_tree=popups_tree,
+        monitor=monitor, focused=False, listeners=[])
+    # popup_new resolves the parent scene tree via surface.data.
+    layer_surface.surface.data = ffi.cast("void *", popups_tree)
+    monitor.layers[layer].append(ls)
+    ls.listeners.extend([
+        listen(lib.welpy_surface_commit(layer_surface.surface),
+            lambda data: layer_surface_commit(server, ls, data)),
+        listen(lib.welpy_surface_unmap(layer_surface.surface),
+            lambda data: layer_surface_unmap(server, ls, data)),
+        listen(lib.welpy_layer_surface_destroy(layer_surface),
+            lambda data: layer_surface_cleanup(server, ls, data)),
+    ])
+    lib.wlr_surface_send_enter(layer_surface.surface, monitor.output)
+
+
+def layer_surface_commit(server: Server, ls: LayerSurface, _data) -> None:
+    """Fires every time the shell surface commits new state."""
+    ffi, lib = server.ffi, server.lib
+    layer_surface = ls.layer_surface
+    monitor = ls.monitor
+    if monitor is None:
+        return
+    if layer_surface.initial_commit:
+        # Swap pending into current so the initial configure sees real size.
+        size = ffi.sizeof("struct wlr_layer_surface_v1_state")
+        saved = ffi.new("struct wlr_layer_surface_v1_state *")
+        ffi.memmove(saved, ffi.addressof(layer_surface, "current"), size)
+        ffi.memmove(ffi.addressof(layer_surface, "current"),
+                    ffi.addressof(layer_surface, "pending"), size)
+        arrange_layers(server, monitor)
+        ffi.memmove(ffi.addressof(layer_surface, "current"), saved, size)
+        return
+    new_layer = SHELL_LAYERS[layer_surface.current.layer]
+    if ls not in monitor.layers[new_layer]:
+        for bucket in monitor.layers.values():
+            if ls in bucket:
+                bucket.remove(ls)
+                break
+        monitor.layers[new_layer].append(ls)
+        lib.wlr_scene_node_reparent(
+            ffi.addressof(ls.scene_tree.node), server.layers[new_layer])
+        popups_parent = server.layers[
+            Layer.TOP if new_layer in (Layer.BACKGROUND, Layer.BOTTOM)
+            else new_layer]
+        lib.wlr_scene_node_reparent(
+            ffi.addressof(ls.popups_tree.node), popups_parent)
+    arrange_layers(server, monitor)
+
+
+def layer_surface_unmap(server: Server, ls: LayerSurface, _data) -> None:
+    """Fires when the shell surface stops showing; reclaims its space."""
+    was_focused = ls.focused
+    ls.focused = False
+    if ls.monitor is not None:
+        arrange_layers(server, ls.monitor)
+    if was_focused:
+        top = top_client(server, ls.monitor)
+        if top is not None:
+            focus_client(server, top)
+
+
+def layer_surface_cleanup(
+        server: Server, ls: LayerSurface, _data) -> None:
+    """Fires when a shell surface is destroyed (app close, output gone)."""
+    ffi, lib = server.ffi, server.lib
+    for listener in ls.listeners:
+        listener.remove()
+    ls.listeners.clear()
+    monitor = ls.monitor
+    if monitor is not None:
+        for bucket in monitor.layers.values():
+            if ls in bucket:
+                bucket.remove(ls)
+                break
+        ls.monitor = None
+    lib.wlr_scene_node_destroy(ffi.addressof(ls.scene_tree.node))
+    lib.wlr_scene_node_destroy(ffi.addressof(ls.popups_tree.node))
+    if monitor is not None and monitor in server.monitors:
+        arrange_layers(server, monitor)
+
+
 def focus_client(server: Server, client: Client, lift: bool = True) -> None:
     """Give the keyboard to this window."""
+    if any(ls.focused for m in server.monitors for b in m.layers.values()
+           for ls in b):
+        return
     ffi, lib = server.ffi, server.lib
     if lift:
         lib.wlr_scene_node_raise_to_top(
@@ -761,6 +915,89 @@ def zoom(server: Server) -> None:
         focused.focus_order += 1
 
 
+def arrange_layers(server: Server, monitor: Monitor) -> None:
+    """Configure layer-shell surfaces on `monitor`, recompute its usable
+    window area, and re-flow client windows if anchored bars changed it."""
+    ffi, lib = server.ffi, server.lib
+    full = monitor_box(server, monitor)
+    full_box = ffi.new("struct wlr_box *",
+        [full.x, full.y, full.width, full.height])
+    usable = ffi.new("struct wlr_box *",
+        [full.x, full.y, full.width, full.height])
+    # Top-down so higher layers reserve their space first.
+    for layer in reversed(SHELL_LAYERS):
+        for ls in monitor.layers[layer]:
+            if (ls.layer_surface.initialized
+                    and ls.layer_surface.current.exclusive_zone > 0):
+                lib.wlr_scene_layer_surface_v1_configure(
+                    ls.scene_layer, full_box, usable)
+    new_area = Rect(usable.x, usable.y, usable.width, usable.height)
+    if new_area != monitor.window_area:
+        monitor.window_area = new_area
+        arrange(server, monitor)
+    # Non-exclusive surfaces overlay the remaining area without shrinking it.
+    for layer in reversed(SHELL_LAYERS):
+        for ls in monitor.layers[layer]:
+            if (ls.layer_surface.initialized
+                    and ls.layer_surface.current.exclusive_zone <= 0):
+                lib.wlr_scene_layer_surface_v1_configure(
+                    ls.scene_layer, full_box, usable)
+    for bucket in monitor.layers.values():
+        for ls in bucket:
+            # Popups live in a sibling tree; mirror their owner's position.
+            lib.wlr_scene_node_set_position(
+                ffi.addressof(ls.popups_tree.node),
+                ls.scene_tree.node.x, ls.scene_tree.node.y)
+    _layer_keyboard_focus(server, monitor)
+
+
+def _layer_keyboard_focus(server: Server, monitor: Monitor) -> None:
+    """Route the keyboard to a TOP/OVERLAY shell surface that asked for it,
+    or hand focus back to a client when none does."""
+    ffi, lib = server.ffi, server.lib
+    desired = None
+    none = lib.ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_NONE
+    for layer in (Layer.OVERLAY, Layer.TOP):
+        for ls in reversed(monitor.layers[layer]):
+            current = ls.layer_surface.current
+            if (ls.layer_surface.surface.mapped
+                    and current.keyboard_interactive != none):
+                desired = ls
+                break
+        if desired is not None:
+            break
+    prev_focused = next((
+        ls for m in server.monitors
+        for bucket in m.layers.values()
+        for ls in bucket
+        if ls.focused), None)
+    if desired is not prev_focused:
+        if desired is None:
+            prev_on_monitor = next((
+                ls for bucket in monitor.layers.values()
+                for ls in bucket
+                if ls.focused), None)
+            if prev_on_monitor is not None:
+                prev_on_monitor.focused = False
+                top = top_client(server, monitor)
+                if top is not None:
+                    focus_client(server, top)
+        else:
+            if prev_focused is not None:
+                prev_focused.focused = False
+            prev_client = top_client(server, monitor)
+            if prev_client is not None and prev_client.focus_order > 0:
+                set_activated(server, prev_client, False)
+                set_border_color(server, prev_client, BORDER_COLOR_INACTIVE)
+            desired.focused = True
+            kb_group = lib.welpy_keyboard_group_keyboard(
+                server.keyboard_group.group)
+            lib.wlr_seat_keyboard_notify_enter(
+                server.seat, desired.layer_surface.surface,
+                kb_group.keycodes, kb_group.num_keycodes,
+                ffi.addressof(kb_group, "modifiers"))
+
+
 def arrange(server: Server, monitor: Monitor) -> None:
     """Lay out this monitor's windows."""
     clients = clients_on(server, monitor)
@@ -768,10 +1005,11 @@ def arrange(server: Server, monitor: Monitor) -> None:
     fullscreen = [c for c in clients if c.layer == Layer.FULLSCREEN]
     if not fullscreen and not tiled:
         return
-    box = monitor_box(server, monitor)
+    # Fullscreen covers the whole screen; tiles share the remaining area.
+    full_box = monitor_box(server, monitor)
     for c in fullscreen:
-        resize_client(server, c, box)
-    for c, rect in zip(tiled, master_stack(box, len(tiled))):
+        resize_client(server, c, full_box)
+    for c, rect in zip(tiled, master_stack(monitor.window_area, len(tiled))):
         resize_client(server, c, rect)
 
 
