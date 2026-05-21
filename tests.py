@@ -28,7 +28,9 @@ def make_server():
     server.allocator = "ALLOCATOR"
     server.output_layout = "OUTPUT_LAYOUT"
     server.scene_layout = "SCENE_LAYOUT"
-    server.seat = "SEAT"
+    server.seat = MagicMock(name="seat")
+    server.seat.keyboard_state.focused_surface = server.ffi.NULL
+    server.lib.ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_NONE = 0
     server.keyboard_group = make_keyboard_group(
         group="GROUP", keymap="KEYMAP", xkb_context="XKB")
     server.layers = {
@@ -61,8 +63,9 @@ def make_client(**kwargs):
     return wel.Client(**{
         "scene_tree": MagicMock(),
         "xdg_tree": MagicMock(),
-        "borders": (), "focus_order": 0, "grab": None,
-        "layer": wel.Layer.TILE, "prev_rect": None,
+        "borders": tuple(MagicMock() for _ in range(4)),
+        "focus_order": 0, "grab": None,
+        "layer": wel.Layer.TILE, "pending_geom": None,
         "monitor": None, "listeners": [],
         "pending_serial": None,
         "decoration": None, "handle": None,
@@ -503,7 +506,7 @@ def test_client_map_inserts_front():
     """A newly mapped window goes to the front of server.clients so it
     becomes the master tile."""
     server = make_server()
-    old = make_client(toplevel="old", scene_tree=MagicMock())
+    old = make_client(toplevel=MagicMock(name="old"), scene_tree=MagicMock())
     server.clients.append(old)
     fresh = make_client(toplevel=MagicMock(), scene_tree=None)
 
@@ -580,7 +583,7 @@ def test_client_unmap_refocuses():
         focus_order=1, monitor=m)
     server.clients.extend([a, b])
 
-    with patch("wel.arrange"), patch("wel.focus_client") as focus:
+    with patch("wel.apply_geometry"), patch("wel.focus_client") as focus:
         wel.client_unmap(server, a, "DATA")
 
     focus.assert_called_once_with(server, b)
@@ -635,19 +638,21 @@ def test_client_map_subtree():
 
 
 def test_client_map_orders():
-    """Mapping arranges before focusing so the new window, sibling reflow,
-    and focus highlight land in one frame."""
+    """Mapping mutates focus_order before apply_geometry runs so the
+    new window's order participates in the layout decision."""
     server = make_server()
     server.monitors.append(MagicMock(name="m"))
     client = make_client(toplevel=MagicMock(), scene_tree=None)
 
     calls = []
-    with patch("wel.arrange", side_effect=lambda *_: calls.append("arrange")), \
+    with patch(
+            "wel.apply_geometry",
+            side_effect=lambda *_: calls.append("geometry")), \
          patch("wel.focus_client",
                side_effect=lambda *_a: calls.append("focus")):
         wel.client_map(server, client, None)
 
-    assert calls == ["arrange", "focus"]
+    assert calls == ["focus", "geometry"]
 
 
 def test_client_map_anchors_popups():
@@ -903,6 +908,7 @@ def test_decoration_new_forces_ssd():
     server-side immediately."""
     server = make_server()
     client = make_client(toplevel=MagicMock(), scene_tree=MagicMock())
+    server.clients.append(client)
     deco = _make_deco(server, client)
 
     wel.decoration_new(server, "DECO_DATA")
@@ -945,6 +951,7 @@ def test_decoration_request_mode_reasserts():
     so apps can't flip themselves back to client-side later."""
     server = make_server()
     client = make_client(toplevel=MagicMock(), scene_tree=MagicMock())
+    server.clients.append(client)
     deco = _make_deco(server, client)
 
     wel.decoration_new(server, "DECO_DATA")
@@ -973,18 +980,80 @@ def test_decoration_destroy_clears():
         h.remove.assert_called_once()
 
 
+# --- apply_decoration ----------------------------------------------------
+
+
+def test_apply_decoration_forces():
+    """Every initialized window with a decoration is set to server-side."""
+    server = make_server()
+    a = make_client(
+        toplevel=MagicMock(),
+        scene_tree=MagicMock(),
+        decoration=MagicMock(name="deco_a"),
+    )
+    a.toplevel.base.initialized = True
+    b = make_client(
+        toplevel=MagicMock(),
+        scene_tree=MagicMock(),
+        decoration=MagicMock(name="deco_b"),
+    )
+    b.toplevel.base.initialized = True
+    server.clients.extend([a, b])
+
+    wel.apply_decoration(server)
+
+    ssd = server.lib.WLR_XDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE
+    set_mode = server.lib.wlr_xdg_toplevel_decoration_v1_set_mode
+    assert set_mode.call_count == 2
+    set_mode.assert_any_call(a.decoration, ssd)
+    set_mode.assert_any_call(b.decoration, ssd)
+
+
+def test_apply_decoration_skips_uninitialized():
+    """A decoration on a not-yet-initialized surface is skipped to avoid
+    a protocol error."""
+    server = make_server()
+    client = make_client(
+        toplevel=MagicMock(),
+        scene_tree=MagicMock(),
+        decoration=MagicMock(),
+    )
+    client.toplevel.base.initialized = False
+    server.clients.append(client)
+
+    wel.apply_decoration(server)
+
+    server.lib.wlr_xdg_toplevel_decoration_v1_set_mode.assert_not_called()
+
+
+def test_apply_decoration_skips_no_decoration():
+    """Windows without a decoration object are skipped (most apps)."""
+    server = make_server()
+    client = make_client(
+        toplevel=MagicMock(),
+        scene_tree=MagicMock(),
+        decoration=None,
+    )
+    client.toplevel.base.initialized = True
+    server.clients.append(client)
+
+    wel.apply_decoration(server)
+
+    server.lib.wlr_xdg_toplevel_decoration_v1_set_mode.assert_not_called()
+
+
 def test_client_map_reasserts_decoration():
-    """client_map re-runs decoration_set because the decoration request
-    may have arrived before the initial configure was sent."""
+    """client_map runs apply_decoration so the mode is set now that the
+    initial configure has been sent."""
     server = make_server()
     server.monitors.append(MagicMock(name="m"))
     client = make_client(toplevel=MagicMock(), scene_tree=None)
 
-    with patch("wel.arrange"), patch("wel.focus_client"), \
-         patch("wel.decoration_set") as ds:
+    with patch("wel.apply_geometry"), patch("wel.focus_client"), \
+         patch("wel.apply_decoration") as ad:
         wel.client_map(server, client, None)
 
-    ds.assert_called_once_with(server, client)
+    ad.assert_called_once_with(server)
 
 
 # --- signal handlers ------------------------------------------------------
@@ -1062,7 +1131,7 @@ def test_keyboard_create_wires_seat():
     kg = wel.create_keyboard_group(server)
 
     lib.wlr_seat_set_keyboard.assert_called_once_with(
-        "SEAT", lib.welpy_keyboard_group_keyboard.return_value)
+        server.seat, lib.welpy_keyboard_group_keyboard.return_value)
     assert kg.group is lib.wlr_keyboard_group_create.return_value
     assert kg.keymap is lib.xkb_keymap_new_from_names.return_value
     assert kg.xkb_context is lib.xkb_context_new.return_value
@@ -1161,7 +1230,7 @@ def test_keyboard_key_unbound():
     wel.keyboard_key(server, "KEY_DATA")
 
     server.lib.wlr_seat_keyboard_notify_key.assert_called_once_with(
-        "SEAT", 42, 30, 1)
+        server.seat, 42, 30, 1)
 
 
 def test_keyboard_key_binding():
@@ -1209,7 +1278,7 @@ def test_keyboard_key_mods():
 
     action.assert_not_called()
     server.lib.wlr_seat_keyboard_notify_key.assert_called_once_with(
-        "SEAT", 42, 28, 1)
+        server.seat, 42, 28, 1)
 
 
 def test_keyboard_key_release():
@@ -1228,7 +1297,7 @@ def test_keyboard_key_release():
 
     action.assert_not_called()
     server.lib.wlr_seat_keyboard_notify_key.assert_called_once_with(
-        "SEAT", 42, 28, 0)
+        server.seat, 42, 28, 0)
 
 
 def test_keycode_map_range():
@@ -1285,7 +1354,7 @@ def test_keyboard_modifiers_forwards():
     wel.keyboard_modifiers(server, None)
 
     server.lib.wlr_seat_keyboard_notify_modifiers.assert_called_once_with(
-        "SEAT", server.ffi.addressof.return_value)
+        server.seat, server.ffi.addressof.return_value)
 
 
 # --- mouse cursor --------------------------------------------------------
@@ -1799,120 +1868,334 @@ def test_focus_client_order():
     assert a.focus_order > b.focus_order > 0
 
 
-def test_focus_client_enters():
-    """Focusing a window sends keyboard enter to its surface with the
-    current key+modifier state, matching what other clients would observe
-    from a real keyboard switch."""
+# --- apply_tree ----------------------------------------------------------
+
+
+def test_apply_tree_clients():
+    """Each client's scene node is reparented to its layer's tree."""
     server = make_server()
-    toplevel = MagicMock()
-    client = make_client(toplevel=toplevel, scene_tree=MagicMock())
+    a = make_client(
+        toplevel=MagicMock(),
+        scene_tree=MagicMock(),
+        layer=wel.Layer.TILE,
+    )
+    b = make_client(
+        toplevel=MagicMock(),
+        scene_tree=MagicMock(),
+        layer=wel.Layer.FLOAT,
+    )
+    server.clients.extend([a, b])
 
-    wel.focus_client(server, client)
+    wel.apply_tree(server)
 
+    node = server.ffi.addressof.return_value
+    server.lib.wlr_scene_node_reparent.assert_any_call(
+        node, server.layers[wel.Layer.TILE])
+    server.lib.wlr_scene_node_reparent.assert_any_call(
+        node, server.layers[wel.Layer.FLOAT])
+
+
+def test_apply_tree_skips_unmapped():
+    """A client without a scene_tree is between create and map -- skipped."""
+    server = make_server()
+    client = make_client(
+        toplevel=MagicMock(),
+        scene_tree=None,
+        layer=wel.Layer.TILE,
+    )
+    server.clients.append(client)
+
+    wel.apply_tree(server)
+
+    server.lib.wlr_scene_node_reparent.assert_not_called()
+
+
+def test_apply_tree_idempotent():
+    """When every node is already under the right parent, nothing is
+    reparented."""
+    server = make_server()
+    client = make_client(
+        toplevel=MagicMock(),
+        scene_tree=MagicMock(),
+        layer=wel.Layer.TILE,
+    )
+    server.clients.append(client)
+    server.ffi.addressof.return_value.parent = server.layers[wel.Layer.TILE]
+
+    wel.apply_tree(server)
+
+    server.lib.wlr_scene_node_reparent.assert_not_called()
+
+
+def test_apply_tree_layer_surface():
+    """A layer surface in monitor.layers[TOP] is parented under the TOP
+    tree; its popups tree follows."""
+    server = make_server()
+    monitor = MagicMock(name="m")
+    monitor.layers = {layer: [] for layer in wel.Layer}
+    ls = MagicMock(name="ls")
+    monitor.layers[wel.Layer.TOP].append(ls)
+    server.monitors.append(monitor)
+
+    wel.apply_tree(server)
+
+    node = server.ffi.addressof.return_value
+    server.lib.wlr_scene_node_reparent.assert_any_call(
+        node, server.layers[wel.Layer.TOP])
+
+
+def test_apply_tree_popups_lifted():
+    """A layer surface in BACKGROUND has its popups tree lifted into TOP
+    so a bar can't bury them."""
+    server = make_server()
+    monitor = MagicMock(name="m")
+    monitor.layers = {layer: [] for layer in wel.Layer}
+    ls = MagicMock(name="ls")
+    monitor.layers[wel.Layer.BACKGROUND].append(ls)
+    server.monitors.append(monitor)
+
+    wel.apply_tree(server)
+
+    node = server.ffi.addressof.return_value
+    server.lib.wlr_scene_node_reparent.assert_any_call(
+        node, server.layers[wel.Layer.BACKGROUND])
+    server.lib.wlr_scene_node_reparent.assert_any_call(
+        node, server.layers[wel.Layer.TOP])
+
+
+# --- apply_focus ---------------------------------------------------------
+
+
+def test_apply_focus_idle():
+    """No monitors, no clients, no focused surface -> nothing to do."""
+    server = make_server()
+
+    wel.apply_focus(server)
+
+    server.lib.wlr_seat_keyboard_notify_enter.assert_not_called()
+    server.lib.wlr_seat_keyboard_clear_focus.assert_not_called()
+    server.lib.wlr_xdg_toplevel_set_activated.assert_not_called()
+
+
+def test_apply_focus_client():
+    """With one client on the selected monitor and nothing focused yet,
+    activate it, raise it, and hand it the keyboard."""
+    server = make_server()
+    monitor = make_monitor()
+    server.monitors.append(monitor)
+    client = make_client(
+        toplevel=MagicMock(), scene_tree=MagicMock(),
+        focus_order=1, monitor=monitor)
+    server.clients.append(client)
+
+    wel.apply_focus(server)
+
+    server.lib.wlr_xdg_toplevel_set_activated.assert_called_once_with(
+        client.toplevel, True)
+    server.lib.wlr_scene_node_raise_to_top.assert_called_once()
     server.lib.wlr_seat_keyboard_notify_enter.assert_called_once()
-    args = server.lib.wlr_seat_keyboard_notify_enter.call_args.args
-    assert args[0] == "SEAT"
-    assert args[1] is toplevel.base.surface
+    enter_args = server.lib.wlr_seat_keyboard_notify_enter.call_args.args
+    assert enter_args[1] is client.toplevel.base.surface
 
 
-def test_focus_client_lifts():
-    """By default, focusing a window raises it to the top of the scene so it
-    appears above other windows."""
+def test_apply_focus_shell():
+    """A mapped TOP/OVERLAY shell surface that wants the keyboard outranks
+    any client."""
     server = make_server()
-    client = make_client(toplevel=MagicMock(), scene_tree=MagicMock())
+    monitor = make_monitor()
+    server.monitors.append(monitor)
+    client = make_client(
+        toplevel=MagicMock(), scene_tree=MagicMock(),
+        focus_order=1, monitor=monitor)
+    server.clients.append(client)
+    ls = make_layer_surface(monitor=monitor)
+    ls.layer_surface.surface.mapped = True
+    ls.layer_surface.current.keyboard_interactive = 1
+    monitor.layers[wel.Layer.OVERLAY].append(ls)
 
-    wel.focus_client(server, client)
+    wel.apply_focus(server)
 
-    server.lib.wlr_scene_node_raise_to_top.assert_called_once_with(
-        server.ffi.addressof.return_value)
+    assert ls.focused
+    server.lib.wlr_seat_keyboard_notify_enter.assert_called_once()
+    enter_args = server.lib.wlr_seat_keyboard_notify_enter.call_args.args
+    assert enter_args[1] is ls.layer_surface.surface
+    server.lib.wlr_xdg_toplevel_set_activated.assert_not_called()
 
 
-def test_focus_client_no_lift():
-    """lift=False focuses without raising, for callers that want a silent
-    focus change."""
+def test_apply_focus_releases():
+    """When a shell surface takes the keyboard from a focused client,
+    deactivate the client and route notify_enter to the shell surface."""
     server = make_server()
-    client = make_client(toplevel=MagicMock(), scene_tree=MagicMock())
+    monitor = make_monitor()
+    server.monitors.append(monitor)
+    client = make_client(
+        toplevel=MagicMock(), scene_tree=MagicMock(),
+        focus_order=1, monitor=monitor)
+    server.clients.append(client)
+    server.seat.keyboard_state.focused_surface = client.toplevel.base.surface # pylint: disable=no-member
+    ls = make_layer_surface(monitor=monitor)
+    ls.layer_surface.surface.mapped = True
+    ls.layer_surface.current.keyboard_interactive = 1
+    monitor.layers[wel.Layer.OVERLAY].append(ls)
 
-    wel.focus_client(server, client, lift=False)
+    wel.apply_focus(server)
 
+    server.lib.wlr_xdg_toplevel_set_activated.assert_called_once_with(
+        client.toplevel, False)
+    assert ls.focused
+    enter_args = server.lib.wlr_seat_keyboard_notify_enter.call_args.args
+    assert enter_args[1] is ls.layer_surface.surface
+
+
+def test_apply_focus_clears():
+    """A surface was focused, all candidates went away -> clear focus."""
+    server = make_server()
+    server.seat.keyboard_state.focused_surface = MagicMock(name="stale") # pylint: disable=no-member
+
+    wel.apply_focus(server)
+
+    server.lib.wlr_seat_keyboard_clear_focus.assert_called_once_with(
+        server.seat)
+    server.lib.wlr_seat_keyboard_notify_enter.assert_not_called()
+
+
+def test_apply_focus_handoff():
+    """Focus shifting from one client to another deactivates the previous
+    one before activating the new one."""
+    server = make_server()
+    monitor = make_monitor()
+    server.monitors.append(monitor)
+    a = make_client(
+        toplevel=MagicMock(name="a"), scene_tree=MagicMock(),
+        focus_order=1, monitor=monitor)
+    b = make_client(
+        toplevel=MagicMock(name="b"), scene_tree=MagicMock(),
+        focus_order=2, monitor=monitor)
+    server.clients.extend([a, b])
+    server.seat.keyboard_state.focused_surface = a.toplevel.base.surface # pylint: disable=no-member
+
+    wel.apply_focus(server)
+
+    server.lib.wlr_xdg_toplevel_set_activated.assert_any_call(
+        a.toplevel, False)
+    server.lib.wlr_xdg_toplevel_set_activated.assert_any_call(
+        b.toplevel, True)
+    enter_args = server.lib.wlr_seat_keyboard_notify_enter.call_args.args
+    assert enter_args[1] is b.toplevel.base.surface
+
+
+def test_apply_focus_idempotent():
+    """Re-running with the same desired state as wlroots already has emits
+    no effects."""
+    server = make_server()
+    monitor = make_monitor()
+    server.monitors.append(monitor)
+    client = make_client(
+        toplevel=MagicMock(), scene_tree=MagicMock(),
+        focus_order=1, monitor=monitor)
+    server.clients.append(client)
+    server.seat.keyboard_state.focused_surface = client.toplevel.base.surface # pylint: disable=no-member
+
+    wel.apply_focus(server)
+
+    server.lib.wlr_seat_keyboard_notify_enter.assert_not_called()
+    server.lib.wlr_seat_keyboard_clear_focus.assert_not_called()
+    server.lib.wlr_xdg_toplevel_set_activated.assert_not_called()
     server.lib.wlr_scene_node_raise_to_top.assert_not_called()
 
 
-def test_focus_client_activates():
-    """Focusing a window marks it active so apps can render their focused
-    state (title-bar styling, cursor blink, etc.)."""
+def test_apply_focus_tracks():
+    """Activated-state configures emitted by apply_focus feed pending_serial
+    so the screen hold waits for the focused window to ack."""
     server = make_server()
-    client = make_client(toplevel=MagicMock(), scene_tree=MagicMock())
-
-    wel.focus_client(server, client)
-
-    server.lib.wlr_xdg_toplevel_set_activated.assert_any_call(
-        client.toplevel, True)
-
-
-def test_focus_client_deactivates_previous():
-    """Switching focus marks the previously focused window inactive so its
-    focused state clears."""
-    server = make_server()
-    m = MagicMock(name="m")
-    server.monitors.append(m)
-    old = make_client(
-        toplevel=MagicMock(name="old"), scene_tree=MagicMock(), monitor=m)
-    new = make_client(
-        toplevel=MagicMock(name="new"), scene_tree=MagicMock(), monitor=m)
-    server.clients.extend([old, new])
-    wel.focus_client(server, old)  # bumps old.focus_order so it's the previous
-
-    wel.focus_client(server, new)
-
-    server.lib.wlr_xdg_toplevel_set_activated.assert_any_call(
-        old.toplevel, False)
-
-
-
-def test_focus_client_tracks():
-    """Both previously focused and newly focused windows record the
-    activated configure, so focus completes only when both have rendered."""
-    server = make_server()
-    m = MagicMock(name="m")
-    server.monitors.append(m)
-    old = make_client(
-        toplevel=MagicMock(name="old"), scene_tree=MagicMock(), monitor=m)
-    new = make_client(
-        toplevel=MagicMock(name="new"), scene_tree=MagicMock(), monitor=m)
-    old.toplevel.base.current.configure_serial = 5
-    new.toplevel.base.current.configure_serial = 0
-    server.clients.extend([old, new])
-    wel.focus_client(server, old)  # old becomes the previous
-    # deactivate(old)=3 already acked; activate(new)=7 still pending.
+    monitor = make_monitor()
+    server.monitors.append(monitor)
+    a = make_client(
+        toplevel=MagicMock(name="a"), scene_tree=MagicMock(),
+        focus_order=1, monitor=monitor)
+    b = make_client(
+        toplevel=MagicMock(name="b"), scene_tree=MagicMock(),
+        focus_order=2, monitor=monitor)
+    a.toplevel.base.current.configure_serial = 5
+    b.toplevel.base.current.configure_serial = 0
+    server.clients.extend([a, b])
+    server.seat.keyboard_state.focused_surface = a.toplevel.base.surface # pylint: disable=no-member
+    # deactivate(a)=3 already acked; activate(b)=7 still pending.
     server.lib.wlr_xdg_toplevel_set_activated.side_effect = [3, 7]
 
-    wel.focus_client(server, new)
+    wel.apply_focus(server)
 
-    assert old.pending_serial is None
-    assert new.pending_serial == 7
+    assert a.pending_serial is None
+    assert b.pending_serial == 7
 
 
-def test_focus_client_after_destroy():
-    """If the focused window closes, the next click on another window must
-    refocus it -- the second-most-recent client's stale focus_order should
-    not be treated as 'already focused'."""
+def test_apply_focus_borders():
+    """apply_focus paints the new window's borders active and the previously
+    focused window's borders inactive."""
     server = make_server()
-    m = MagicMock(name="m")
-    server.monitors.append(m)
+    monitor = make_monitor()
+    server.monitors.append(monitor)
     a = make_client(
-        toplevel=MagicMock(name="a"), scene_tree=MagicMock(), monitor=m)
+        toplevel=MagicMock(name="a"), scene_tree=MagicMock(),
+        borders=tuple(MagicMock() for _ in range(4)),
+        focus_order=1, monitor=monitor)
     b = make_client(
-        toplevel=MagicMock(name="b"), scene_tree=MagicMock(), monitor=m)
+        toplevel=MagicMock(name="b"), scene_tree=MagicMock(),
+        borders=tuple(MagicMock() for _ in range(4)),
+        focus_order=2, monitor=monitor)
     server.clients.extend([a, b])
-    wel.focus_client(server, b)
-    wel.focus_client(server, a)  # a is now the focused window
-    server.clients.remove(a)    # ...and is then closed
-    server.lib.wlr_seat_keyboard_notify_enter.reset_mock()
+    server.seat.keyboard_state.focused_surface = a.toplevel.base.surface # pylint: disable=no-member
 
-    wel.focus_client(server, b)
+    wel.apply_focus(server)
 
-    server.lib.wlr_seat_keyboard_notify_enter.assert_called_once()
+    color_args = [c.args for c in server.ffi.new.call_args_list]
+    assert ("float[4]", wel.BORDER_COLOR_ACTIVE) in color_args
+    assert ("float[4]", wel.BORDER_COLOR_INACTIVE) in color_args
+
+
+def test_apply_focus_sticky():
+    """A currently-focused shell surface keeps the keyboard when another
+    qualifying surface appears, so arranging an unrelated screen doesn't
+    steal focus from the launcher."""
+    server = make_server()
+    m1, m2 = make_monitor(), make_monitor()
+    server.monitors.extend([m1, m2])
+    focused = make_layer_surface(monitor=m1, focused=True)
+    focused.layer_surface.surface.mapped = True
+    focused.layer_surface.current.keyboard_interactive = 1
+    m1.layers[wel.Layer.OVERLAY].append(focused)
+    contender = make_layer_surface(monitor=m2)
+    contender.layer_surface.surface.mapped = True
+    contender.layer_surface.current.keyboard_interactive = 1
+    m2.layers[wel.Layer.OVERLAY].append(contender)
+
+    wel.apply_focus(server)
+
+    assert focused.focused
+    assert not contender.focused
+
+
+def test_apply_focus_priority():
+    """With both TOP and OVERLAY surfaces wanting the keyboard, OVERLAY
+    wins."""
+    server = make_server()
+    monitor = make_monitor()
+    server.monitors.append(monitor)
+    top = make_layer_surface(monitor=monitor)
+    top.layer_surface.surface.mapped = True
+    top.layer_surface.current.keyboard_interactive = 1
+    monitor.layers[wel.Layer.TOP].append(top)
+    overlay = make_layer_surface(monitor=monitor)
+    overlay.layer_surface.surface.mapped = True
+    overlay.layer_surface.current.keyboard_interactive = 1
+    monitor.layers[wel.Layer.OVERLAY].append(overlay)
+
+    wel.apply_focus(server)
+
+    assert overlay.focused
+    assert not top.focused
+    enter_args = server.lib.wlr_seat_keyboard_notify_enter.call_args.args
+    assert enter_args[1] is overlay.layer_surface.surface
 
 
 # --- layers / tiling -----------------------------------------------------
@@ -1962,7 +2245,7 @@ def test_client_map_monitor_selected():
     server.monitors.extend([m1, m2])
     client = make_client(toplevel=MagicMock(), scene_tree=None)
 
-    with patch("wel.focus_client"), patch("wel.arrange"):
+    with patch("wel.focus_client"), patch("wel.apply_geometry"):
         wel.client_map(server, client, None)
 
     assert client.monitor is m1
@@ -2025,10 +2308,14 @@ def test_top_client_per_monitor():
     monitor, ignoring clients on other monitors."""
     server = make_server()
     m1, m2 = MagicMock(name="m1"), MagicMock(name="m2")
-    a = make_client(toplevel="a", scene_tree=None, focus_order=1, monitor=m1)
-    b = make_client(toplevel="b", scene_tree=None, focus_order=3, monitor=m1)
-    c = make_client(toplevel="c", scene_tree=None, focus_order=2, monitor=m1)
-    d = make_client(toplevel="d", scene_tree=None, focus_order=5, monitor=m2)
+    a = make_client(
+        toplevel="a", scene_tree=MagicMock(), focus_order=1, monitor=m1)
+    b = make_client(
+        toplevel="b", scene_tree=MagicMock(), focus_order=3, monitor=m1)
+    c = make_client(
+        toplevel="c", scene_tree=MagicMock(), focus_order=2, monitor=m1)
+    d = make_client(
+        toplevel="d", scene_tree=MagicMock(), focus_order=5, monitor=m2)
     server.clients.extend([a, b, c, d])
 
     assert wel.top_client(server, m1) is b
@@ -2089,45 +2376,6 @@ def test_cycle_focus_empty():
     focus.assert_not_called()
 
 
-def test_focus_client_previous_selected():
-    """focus_client deactivates the previously focused window only when it
-    sits on the selected monitor."""
-    server = make_server()
-    m1, m2 = MagicMock(name="m1"), MagicMock(name="m2")
-    server.monitors.extend([m1, m2])
-    a = make_client(toplevel=MagicMock(name="a"), scene_tree=MagicMock(),
-                  monitor=m1)
-    b = make_client(toplevel=MagicMock(name="b"), scene_tree=MagicMock(),
-                  monitor=m2)
-    server.clients.extend([a, b])
-    wel.focus_client(server, a)  # a is most-recent on m1 (the selected monitor)
-
-    wel.focus_client(server, b)
-
-    server.lib.wlr_xdg_toplevel_set_activated.assert_any_call(
-        a.toplevel, False)
-
-
-def test_focus_client_previous_unselected():
-    """When the previously focused window is on a non-selected monitor, it
-    isn't deactivated by focusing a window on the selected monitor."""
-    server = make_server()
-    m1, m2 = MagicMock(name="m1"), MagicMock(name="m2")
-    server.monitors.extend([m1, m2])
-    a = make_client(toplevel=MagicMock(name="a"), scene_tree=MagicMock(),
-                  monitor=m2)
-    b = make_client(toplevel=MagicMock(name="b"), scene_tree=MagicMock(),
-                  monitor=m1)
-    server.clients.extend([a, b])
-    wel.focus_client(server, a)  # a is on m2 (NOT selected)
-    server.lib.wlr_xdg_toplevel_set_activated.reset_mock()
-
-    wel.focus_client(server, b)
-
-    for c in server.lib.wlr_xdg_toplevel_set_activated.call_args_list:
-        assert c != call(a.toplevel, False)
-
-
 def test_client_unmap_selected():
     """Unmapping a window on the selected monitor refocuses the next
     most-recent window on the same monitor."""
@@ -2140,7 +2388,7 @@ def test_client_unmap_selected():
                   focus_order=1, monitor=m)
     server.clients.extend([a, b])
 
-    with patch("wel.arrange"), patch("wel.focus_client") as focus:
+    with patch("wel.apply_geometry"), patch("wel.focus_client") as focus:
         wel.client_unmap(server, a, "DATA")
 
     focus.assert_called_once_with(server, b)
@@ -2252,30 +2500,13 @@ def test_borders_resize():
     ]
 
 
-def test_borders_focus_color():
-    """focus_client paints the focused window's edges with the active color
-    and the previously focused window's edges with the inactive color."""
-    server = make_server()
-    m = MagicMock(name="m")
-    server.monitors.append(m)
-    a = make_client(
-        toplevel=MagicMock(name="a"), scene_tree=MagicMock(),
-        borders=tuple(MagicMock() for _ in range(4)), monitor=m)
-    b = make_client(
-        toplevel=MagicMock(name="b"), scene_tree=MagicMock(),
-        borders=tuple(MagicMock() for _ in range(4)), monitor=m)
-    server.clients.extend([a, b])
-    wel.focus_client(server, a)  # bumps a so it counts as the previous
-    server.ffi.new.reset_mock()
-
-    wel.focus_client(server, b)
-
-    color_args = [c.args for c in server.ffi.new.call_args_list]
-    assert ("float[4]", wel.BORDER_COLOR_ACTIVE) in color_args
-    assert ("float[4]", wel.BORDER_COLOR_INACTIVE) in color_args
 
 
-def test_arrange_single_full():
+
+# --- apply_geometry ------------------------------------------------------
+
+
+def test_apply_geometry_single_full():
     """One tile client fills the whole window area."""
     server = make_server()
     m = make_monitor(window_area=wel.Rect(0, 0, 800, 600))
@@ -2283,12 +2514,12 @@ def test_arrange_single_full():
     server.clients.append(a)
 
     with patch("wel.resize_client") as resize:
-        wel.arrange(server, m)
+        wel.apply_geometry(server, m)
 
     resize.assert_called_once_with(server, a, wel.Rect(0, 0, 800, 600))
 
 
-def test_arrange_master_stack():
+def test_apply_geometry_master_stack():
     """Three tile clients: master on the left half, two stacked on the right
     half with heights summing exactly to the window area's height."""
     server = make_server()
@@ -2299,7 +2530,7 @@ def test_arrange_master_stack():
     server.clients.extend([a, b, c])
 
     with patch("wel.resize_client") as resize:
-        wel.arrange(server, m)
+        wel.apply_geometry(server, m)
 
     assert resize.call_args_list == [
         call(server, a, wel.Rect(0, 0, 400, 600)),
@@ -2308,8 +2539,8 @@ def test_arrange_master_stack():
     ]
 
 
-def test_arrange_other_monitor():
-    """arrange only touches clients assigned to its monitor."""
+def test_apply_geometry_other_monitor():
+    """apply_geometry only touches clients assigned to its monitor."""
     server = make_server()
     m1 = make_monitor(window_area=wel.Rect(0, 0, 800, 600))
     m2 = make_monitor(window_area=wel.Rect(0, 0, 800, 600))
@@ -2318,13 +2549,14 @@ def test_arrange_other_monitor():
     server.clients.extend([a, b])
 
     with patch("wel.resize_client") as resize:
-        wel.arrange(server, m1)
+        wel.apply_geometry(server, m1)
 
     resize.assert_called_once_with(server, a, wel.Rect(0, 0, 800, 600))
 
 
-def test_arrange_skips_floating():
-    """Floating clients don't participate in tiling; arrange skips them."""
+def test_apply_geometry_skips_floating():
+    """Floating clients don't participate in tiling; apply_geometry
+    skips them (unless their pending_geom asks for placement)."""
     server = make_server()
     m = make_monitor(window_area=wel.Rect(0, 0, 800, 600))
     a = make_client(toplevel=MagicMock(), scene_tree=MagicMock(),
@@ -2333,14 +2565,14 @@ def test_arrange_skips_floating():
     server.clients.extend([a, b])
 
     with patch("wel.resize_client") as resize:
-        wel.arrange(server, m)
+        wel.apply_geometry(server, m)
 
     resize.assert_called_once_with(server, b, wel.Rect(0, 0, 800, 600))
 
 
-def test_arrange_sizes_fullscreen():
-    """Arrange keeps any fullscreen window matched to the monitor's current
-    box so monitor mode changes propagate. Tiles still tile alongside."""
+def test_apply_geometry_sizes_fullscreen():
+    """apply_geometry keeps any fullscreen window matched to the monitor's
+    current box so monitor mode changes propagate. Tiles tile alongside."""
     server = make_server()
     m = make_monitor(window_area=wel.Rect(0, 0, 800, 600))
     fs = make_client(toplevel=MagicMock(), scene_tree=MagicMock(),
@@ -2350,22 +2582,45 @@ def test_arrange_sizes_fullscreen():
 
     with patch("wel.monitor_box", return_value=wel.Rect(0, 0, 800, 600)), \
          patch("wel.resize_client") as resize:
-        wel.arrange(server, m)
+        wel.apply_geometry(server, m)
 
     # Fullscreen gets the full box; the sole tile takes the full box too.
     resize.assert_any_call(server, fs, wel.Rect(0, 0, 800, 600))
     resize.assert_any_call(server, tile, wel.Rect(0, 0, 800, 600))
 
 
-def test_arrange_empty():
-    """With no tile clients on the monitor, arrange does nothing."""
+def test_apply_geometry_empty():
+    """With no tile/fullscreen clients on the monitor, apply_geometry
+    does nothing."""
     server = make_server()
     m = make_monitor()
 
     with patch("wel.resize_client") as resize:
-        wel.arrange(server, m)
+        wel.apply_geometry(server, m)
 
     resize.assert_not_called()
+
+
+def test_apply_geometry_consumes_pending():
+    """A floating client with pending_geom is resized to that rect and
+    pending_geom is cleared so subsequent calls don't re-resize."""
+    server = make_server()
+    m = make_monitor()
+    saved = wel.Rect(10, 20, 300, 200)
+    c = make_client(
+        toplevel=MagicMock(),
+        scene_tree=MagicMock(),
+        monitor=m,
+        layer=wel.Layer.FLOAT,
+        pending_geom=saved,
+    )
+    server.clients.append(c)
+
+    with patch("wel.resize_client") as resize:
+        wel.apply_geometry(server, m)
+
+    resize.assert_called_once_with(server, c, saved)
+    assert c.pending_geom is None
 
 
 def test_update_monitors_arranges_all():
@@ -2374,10 +2629,10 @@ def test_update_monitors_arranges_all():
     m1, m2 = MagicMock(name="m1"), MagicMock(name="m2")
     server.monitors.extend([m1, m2])
 
-    with patch("wel.arrange") as arrange:
+    with patch("wel.apply_geometry") as apply_geom:
         wel.update_monitors(server)
 
-    assert arrange.call_args_list == [call(server, m1), call(server, m2)]
+    assert apply_geom.call_args_list == [call(server, m1), call(server, m2)]
 
 
 def test_update_monitors_adopts_orphans():
@@ -2389,7 +2644,7 @@ def test_update_monitors_adopts_orphans():
     orphan = make_client(toplevel="t", scene_tree=None, monitor=None)
     server.clients.append(orphan)
 
-    with patch("wel.arrange"):
+    with patch("wel.apply_geometry"):
         wel.update_monitors(server)
 
     assert orphan.monitor is m
@@ -2401,11 +2656,11 @@ def test_update_monitors_no_monitors():
     orphan = make_client(toplevel="t", scene_tree=None, monitor=None)
     server.clients.append(orphan)
 
-    with patch("wel.arrange") as arrange:
+    with patch("wel.apply_geometry") as apply_geom:
         wel.update_monitors(server)
 
     assert orphan.monitor is None
-    arrange.assert_not_called()
+    apply_geom.assert_not_called()
 
 
 def test_update_monitors_keeps_assigned():
@@ -2416,51 +2671,48 @@ def test_update_monitors_keeps_assigned():
     c = make_client(toplevel="t", scene_tree=None, monitor=m2)
     server.clients.append(c)
 
-    with patch("wel.arrange"):
+    with patch("wel.apply_geometry"):
         wel.update_monitors(server)
 
     assert c.monitor is m2
 
 
-def test_set_layer_reparents():
-    """set_layer moves the window's scene subtree to the correct layer."""
+def test_set_layer_assigns():
+    """set_layer updates client.layer; apply_tree later reparents."""
     server = make_server()
     client = make_client(toplevel=MagicMock(), scene_tree=MagicMock())
 
     wel.set_layer(server, client, wel.Layer.FLOAT)
-    server.lib.wlr_scene_node_reparent.assert_called_with(
-        server.ffi.addressof.return_value, server.layers[wel.Layer.FLOAT])
+    assert client.layer == wel.Layer.FLOAT
 
     wel.set_layer(server, client, wel.Layer.TILE)
-    server.lib.wlr_scene_node_reparent.assert_called_with(
-        server.ffi.addressof.return_value, server.layers[wel.Layer.TILE])
+    assert client.layer == wel.Layer.TILE
 
 
-def test_set_layer_arranges():
-    """Changing layer between TILE and FLOAT re-flows the monitor that
-    gained or lost a tile."""
+def test_set_layer_mutates():
+    """set_layer updates client.layer; appliers run in the calling
+    handler / action."""
     server = make_server()
     m = MagicMock(name="m")
     client = make_client(
         toplevel=MagicMock(), scene_tree=MagicMock(), monitor=m)
 
-    with patch("wel.arrange") as arrange:
-        wel.set_layer(server, client, wel.Layer.FLOAT)
+    wel.set_layer(server, client, wel.Layer.FLOAT)
 
-    arrange.assert_called_once_with(server, m)
+    assert client.layer == wel.Layer.FLOAT
 
 
 def test_set_layer_no_monitor():
-    """An orphaned client can still be reparented; no monitor means no
+    """An orphaned client's layer can still change; no monitor means no
     arrange call."""
     server = make_server()
     client = make_client(toplevel=MagicMock(), scene_tree=MagicMock())
 
-    with patch("wel.arrange") as arrange:
+    with patch("wel.apply_geometry") as apply_geom:
         wel.set_layer(server, client, wel.Layer.FLOAT)
 
-    server.lib.wlr_scene_node_reparent.assert_called_once()
-    arrange.assert_not_called()
+    assert client.layer == wel.Layer.FLOAT
+    apply_geom.assert_not_called()
 
 
 def test_set_layer_noop():
@@ -2470,38 +2722,33 @@ def test_set_layer_noop():
     client = make_client(toplevel=MagicMock(), scene_tree=MagicMock(),
                        layer=wel.Layer.TILE)
 
-    with patch("wel.arrange") as arrange:
+    with patch("wel.apply_geometry") as apply_geom:
         wel.set_layer(server, client, wel.Layer.TILE)
 
     server.lib.wlr_scene_node_reparent.assert_not_called()
-    arrange.assert_not_called()
+    apply_geom.assert_not_called()
 
 
 def test_set_layer_enter_fullscreen():
     """TILE -> FULLSCREEN reparents, notifies the app, and re-arranges the
-    monitor so the remaining tiles fill the gap. prev_rect stays None so
+    monitor so the remaining tiles fill the gap. pending_geom stays None so
     exit re-tiles."""
     server = make_server()
     m = MagicMock(name="m")
     client = make_client(
         toplevel=MagicMock(), scene_tree=MagicMock(), monitor=m)
 
-    with patch("wel.arrange") as arrange:
-        wel.set_layer(server, client, wel.Layer.FULLSCREEN)
+    wel.set_layer(server, client, wel.Layer.FULLSCREEN)
 
-    server.lib.wlr_scene_node_reparent.assert_called_with(
-        server.ffi.addressof.return_value,
-        server.layers[wel.Layer.FULLSCREEN])
     server.lib.wlr_xdg_toplevel_set_fullscreen.assert_called_once_with(
         client.toplevel, True)
-    arrange.assert_called_once_with(server, m)
     assert client.layer == wel.Layer.FULLSCREEN
-    assert client.prev_rect is None
+    assert client.pending_geom is None
 
 
 def test_set_layer_snapshot_float():
     """FLOAT -> FULLSCREEN snapshots the float's current outer rectangle
-    into prev_rect so exit can restore it."""
+    into pending_geom so exit can restore it."""
     server = make_server()
     m = MagicMock(name="m")
     toplevel = MagicMock()
@@ -2518,45 +2765,40 @@ def test_set_layer_snapshot_float():
         wel.set_layer(server, client, wel.Layer.FULLSCREEN)
 
     bw = wel.BORDER_WIDTH
-    assert client.prev_rect == wel.Rect(
+    assert client.pending_geom == wel.Rect(
         50, 60, 300 + 2 * bw, 200 + 2 * bw)
 
 
 def test_set_layer_exit_tile():
     """FULLSCREEN -> TILE notifies the app, re-arranges the monitor, and
-    leaves prev_rect cleared."""
+    leaves pending_geom cleared."""
     server = make_server()
     m = MagicMock(name="m")
     client = make_client(
         toplevel=MagicMock(), scene_tree=MagicMock(), monitor=m,
-        layer=wel.Layer.FULLSCREEN, prev_rect=None)
+        layer=wel.Layer.FULLSCREEN, pending_geom=None)
 
-    with patch("wel.arrange") as arrange:
-        wel.set_layer(server, client, wel.Layer.TILE)
+    wel.set_layer(server, client, wel.Layer.TILE)
 
     server.lib.wlr_xdg_toplevel_set_fullscreen.assert_called_once_with(
         client.toplevel, False)
-    arrange.assert_called_once_with(server, m)
-    assert client.prev_rect is None
+    assert client.pending_geom is None
 
 
 def test_set_layer_restore_float():
-    """FULLSCREEN -> FLOAT restores the saved float rectangle, re-arranges
-    the monitor so any tiles re-flow, and clears prev_rect."""
+    """FULLSCREEN -> FLOAT leaves the saved rectangle in pending_geom so
+    apply_geometry can consume it."""
     server = make_server()
     m = MagicMock(name="m")
     saved = wel.Rect(50, 60, 304, 204)
     client = make_client(
         toplevel=MagicMock(), scene_tree=MagicMock(), monitor=m,
-        layer=wel.Layer.FULLSCREEN, prev_rect=saved)
+        layer=wel.Layer.FULLSCREEN, pending_geom=saved)
 
-    with patch("wel.arrange") as arrange, \
-         patch("wel.resize_client") as resize:
-        wel.set_layer(server, client, wel.Layer.FLOAT)
+    wel.set_layer(server, client, wel.Layer.FLOAT)
 
-    resize.assert_called_once_with(server, client, saved)
-    arrange.assert_called_once_with(server, m)
-    assert client.prev_rect is None
+    assert client.pending_geom == saved
+    assert client.layer == wel.Layer.FLOAT
 
 
 def test_set_layer_skips_notify():
@@ -2573,7 +2815,7 @@ def test_toggle_fullscreen_enters():
     """toggle_fullscreen on a tiled focused window switches it to the
     FULLSCREEN layer."""
     server = make_server()
-    m = MagicMock(name="m")
+    m = make_monitor()
     server.monitors.append(m)
     client = make_client(toplevel=MagicMock(), scene_tree=MagicMock(),
                        monitor=m)
@@ -2590,14 +2832,14 @@ def test_toggle_fullscreen_to_tile():
     """toggle_fullscreen on a fullscreen window with no saved float
     geometry returns it to the TILE layer."""
     server = make_server()
-    m = MagicMock(name="m")
+    m = make_monitor()
     server.monitors.append(m)
     client = make_client(toplevel=MagicMock(), scene_tree=MagicMock(),
                        monitor=m, layer=wel.Layer.FULLSCREEN,
-                       prev_rect=None, focus_order=1)
+                       pending_geom=None, focus_order=1)
     server.clients.append(client)
 
-    with patch("wel.set_layer") as sl:
+    with patch("wel.set_layer") as sl, patch("wel.apply_geometry"):
         wel.toggle_fullscreen(server)
 
     sl.assert_called_once_with(server, client, wel.Layer.TILE)
@@ -2607,15 +2849,15 @@ def test_toggle_fullscreen_to_float():
     """toggle_fullscreen on a fullscreen window that was floating restores
     the float layer (so set_layer can resize to the saved rectangle)."""
     server = make_server()
-    m = MagicMock(name="m")
+    m = make_monitor()
     server.monitors.append(m)
     client = make_client(
         toplevel=MagicMock(), scene_tree=MagicMock(), monitor=m,
-        layer=wel.Layer.FULLSCREEN, prev_rect=wel.Rect(10, 20, 300, 200),
+        layer=wel.Layer.FULLSCREEN, pending_geom=wel.Rect(10, 20, 300, 200),
         focus_order=1)
     server.clients.append(client)
 
-    with patch("wel.set_layer") as sl:
+    with patch("wel.set_layer") as sl, patch("wel.apply_geometry"):
         wel.toggle_fullscreen(server)
 
     sl.assert_called_once_with(server, client, wel.Layer.FLOAT)
@@ -2635,7 +2877,7 @@ def test_toggle_fullscreen_no_focus():
 def test_toggle_floating_to_float():
     """toggle_floating on a tiled focused window moves it to FLOAT."""
     server = make_server()
-    m = MagicMock(name="m")
+    m = make_monitor()
     server.monitors.append(m)
     client = make_client(
         toplevel=MagicMock(), scene_tree=MagicMock(), monitor=m)
@@ -2706,12 +2948,12 @@ def test_zoom_promotes():
     server.clients.extend([a, b, c])
     wel.focus_client(server, b)  # b becomes most-recent on m
 
-    with patch("wel.arrange") as arrange:
+    with patch("wel.apply_geometry") as apply_geom:
         wel.zoom(server)
 
     assert server.clients == [b, a, c]
     assert wel.top_client(server, m) is b
-    arrange.assert_called_once_with(server, m)
+    apply_geom.assert_called_once_with(server, m)
 
 
 def test_zoom_toggles():
@@ -2732,12 +2974,12 @@ def test_zoom_toggles():
     wel.focus_client(server, b)
     wel.focus_client(server, a)
 
-    with patch("wel.arrange") as arrange:
+    with patch("wel.apply_geometry") as apply_geom:
         wel.zoom(server)
 
     assert server.clients == [b, a, c]
     assert wel.top_client(server, m) is b
-    arrange.assert_called_once_with(server, m)
+    apply_geom.assert_called_once_with(server, m)
 
 
 def test_zoom_single_tile():
@@ -2750,11 +2992,11 @@ def test_zoom_single_tile():
     server.clients.append(a)
     wel.focus_client(server, a)
 
-    with patch("wel.arrange") as arrange:
+    with patch("wel.apply_geometry") as apply_geom:
         wel.zoom(server)
 
     assert server.clients == [a]
-    arrange.assert_not_called()
+    apply_geom.assert_not_called()
 
 
 def test_zoom_remembers_master():
@@ -2774,11 +3016,11 @@ def test_zoom_remembers_master():
     wel.focus_client(server, c)
     wel.focus_client(server, b)
 
-    with patch("wel.arrange"):
+    with patch("wel.apply_geometry"):
         wel.zoom(server)  # promote b over a
     assert server.clients == [b, a, c]
 
-    with patch("wel.arrange"):
+    with patch("wel.apply_geometry"):
         wel.zoom(server)  # toggle back to a (not c, even though c has history)
 
     assert server.clients == [a, b, c]
@@ -2797,11 +3039,11 @@ def test_zoom_floating_focus():
     server.clients.extend([a, b])
     wel.focus_client(server, b)
 
-    with patch("wel.arrange") as arrange:
+    with patch("wel.apply_geometry") as apply_geom:
         wel.zoom(server)
 
     assert server.clients == [a, b]
-    arrange.assert_not_called()
+    apply_geom.assert_not_called()
 
 
 def test_request_fullscreen_enters():
@@ -2818,7 +3060,7 @@ def test_request_fullscreen_enters():
 
 def test_request_fullscreen_saves_float():
     """A floating client routes through set_layer, which snapshots
-    prev_rect on the FLOAT -> FULLSCREEN transition."""
+    pending_geom on the FLOAT -> FULLSCREEN transition."""
     server = make_server()
     client = make_client(
         toplevel=MagicMock(), scene_tree=MagicMock(),
@@ -2837,7 +3079,7 @@ def test_request_fullscreen_to_tile():
     server = make_server()
     client = make_client(
         toplevel=MagicMock(), scene_tree=MagicMock(),
-        layer=wel.Layer.FULLSCREEN, prev_rect=None)
+        layer=wel.Layer.FULLSCREEN, pending_geom=None)
     client.toplevel.requested.fullscreen = False
 
     with patch("wel.set_layer") as sl:
@@ -2853,7 +3095,7 @@ def test_request_fullscreen_to_float():
     client = make_client(
         toplevel=MagicMock(), scene_tree=MagicMock(),
         layer=wel.Layer.FULLSCREEN,
-        prev_rect=wel.Rect(10, 20, 300, 200))
+        pending_geom=wel.Rect(10, 20, 300, 200))
     client.toplevel.requested.fullscreen = False
 
     with patch("wel.set_layer") as sl:
@@ -2866,7 +3108,7 @@ def test_request_fullscreen_pre_map():
     """A request that fires before map (scene_tree still None) is deferred;
     client_map then promotes the window using requested.fullscreen."""
     server = make_server()
-    m = MagicMock(name="m")
+    m = make_monitor()
     server.monitors.append(m)
     client = make_client(toplevel=MagicMock(), scene_tree=None)
     client.toplevel.requested.fullscreen = True
@@ -2920,12 +3162,12 @@ def test_client_map_unfullscreens_existing():
     server.monitors.append(m)
     existing = make_client(
         toplevel=MagicMock(name="old"), scene_tree=MagicMock(),
-        monitor=m, layer=wel.Layer.FULLSCREEN, prev_rect=None)
+        monitor=m, layer=wel.Layer.FULLSCREEN, pending_geom=None)
     server.clients.append(existing)
     fresh = make_client(toplevel=MagicMock(name="new"), scene_tree=None)
 
     with patch("wel.set_layer") as sl, \
-         patch("wel.focus_client"), patch("wel.arrange"):
+         patch("wel.focus_client"), patch("wel.apply_geometry"):
         wel.client_map(server, fresh, None)
 
     sl.assert_any_call(server, existing, wel.Layer.TILE)
@@ -3098,9 +3340,9 @@ def test_layer_new_send_enter():
         layer_surface.surface, monitor.output)
 
 
-def test_layer_commit_reparents():
+def test_layer_commit_moves_bucket():
     """If the app moves the surface to a different layer on commit, the
-    scene node is reparented and the bucket reflects the new layer."""
+    bucket reflects the new layer; apply_tree reparents."""
     server = make_server()
     monitor = make_monitor()
     ls = make_layer_surface(monitor=monitor)
@@ -3113,8 +3355,6 @@ def test_layer_commit_reparents():
 
     assert ls not in monitor.layers[wel.Layer.BOTTOM]
     assert ls in monitor.layers[wel.Layer.TOP]
-    server.lib.wlr_scene_node_reparent.assert_any_call(
-        server.ffi.addressof.return_value, server.layers[wel.Layer.TOP])
 
 
 def test_layer_unmap_clears_focus():
@@ -3234,21 +3474,6 @@ def test_monitor_cleanup_destroys_layers():
         ls.layer_surface)
 
 
-def test_focus_client_exclusive():
-    """While a layer surface holds the keyboard, client focus changes are
-    suppressed -- the launcher stays focused."""
-    server = make_server()
-    monitor = make_monitor()
-    server.monitors.append(monitor)
-    monitor.layers[wel.Layer.OVERLAY].append(
-        make_layer_surface(monitor=monitor, focused=True))
-    client = make_client(toplevel=MagicMock(), scene_tree=MagicMock())
-
-    wel.focus_client(server, client)
-
-    server.lib.wlr_seat_keyboard_notify_enter.assert_not_called()
-
-
 def test_arrange_layers_shrinks_area():
     """A surface with exclusive_zone > 0 reserves space; the monitor's
     window_area shrinks accordingly and tiles re-flow."""
@@ -3270,82 +3495,10 @@ def test_arrange_layers_shrinks_area():
         usable.height = 570
     server.lib.wlr_scene_layer_surface_v1_configure.side_effect = configure
 
-    with patch("wel.monitor_box", return_value=wel.Rect(0, 0, 800, 600)), \
-         patch("wel.arrange") as arrange:
+    with patch("wel.monitor_box", return_value=wel.Rect(0, 0, 800, 600)):
         wel.arrange_layers(server, monitor)
 
     assert monitor.window_area == wel.Rect(0, 30, 800, 570)
-    arrange.assert_called_once_with(server, monitor)
-
-
-def test_arrange_layers_keyboard():
-    """A mapped TOP/OVERLAY surface that asked for keyboard input gets the
-    keyboard, deactivating the previously focused client."""
-    server = make_server()
-    monitor = make_monitor()
-    server.monitors.append(monitor)
-    server.lib.ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_NONE = 0
-    ls = make_layer_surface(monitor=monitor)
-    ls.layer_surface.surface.mapped = True
-    ls.layer_surface.current.keyboard_interactive = 1  # EXCLUSIVE
-    ls.layer_surface.initialized = True
-    ls.layer_surface.current.exclusive_zone = 0
-    monitor.layers[wel.Layer.OVERLAY].append(ls)
-
-    with patch("wel.monitor_box", return_value=wel.Rect(0, 0, 800, 600)):
-        wel.arrange_layers(server, monitor)
-
-    assert ls.focused
-    server.lib.wlr_seat_keyboard_notify_enter.assert_called_once()
-    enter_args = server.lib.wlr_seat_keyboard_notify_enter.call_args[0]
-    assert enter_args[1] is ls.layer_surface.surface
-
-
-def test_layer_focus_other_monitor():
-    """Arranging another screen does not take the keyboard away from a
-    launcher that is already focused."""
-    server = make_server()
-    focused_monitor = make_monitor()
-    arranged_monitor = make_monitor()
-    server.monitors.extend([focused_monitor, arranged_monitor])
-    ls = make_layer_surface(monitor=focused_monitor, focused=True)
-    focused_monitor.layers[wel.Layer.OVERLAY].append(ls)
-
-    with patch("wel.monitor_box", return_value=wel.Rect(0, 0, 800, 600)):
-        wel.arrange_layers(server, arranged_monitor)
-
-    assert ls.focused
-
-
-def test_arrange_layers_deactivates_monitor():
-    """A keyboard-grabbing shell surface deactivates the focused client on
-    its own screen, not the globally selected screen."""
-    server = make_server()
-    selected = make_monitor()
-    monitor = make_monitor()
-    server.monitors.extend([selected, monitor])
-    server.lib.ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_NONE = 0
-    selected_client = make_client(
-        toplevel=MagicMock(), scene_tree=MagicMock(),
-        monitor=selected, focus_order=10)
-    monitor_client = make_client(
-        toplevel=MagicMock(), scene_tree=MagicMock(),
-        monitor=monitor, focus_order=1)
-    server.clients.extend([selected_client, monitor_client])
-    ls = make_layer_surface(monitor=monitor)
-    ls.layer_surface.surface.mapped = True
-    ls.layer_surface.current.keyboard_interactive = 1
-    ls.layer_surface.initialized = True
-    ls.layer_surface.current.exclusive_zone = 0
-    monitor.layers[wel.Layer.OVERLAY].append(ls)
-
-    with patch("wel.monitor_box", return_value=wel.Rect(0, 0, 800, 600)), \
-         patch("wel.arrange"), \
-         patch("wel.set_activated") as set_activated, \
-         patch("wel.set_border_color"):
-        wel.arrange_layers(server, monitor)
-
-    set_activated.assert_called_once_with(server, monitor_client, False)
 
 
 def test_popup_new_layer_owner():
@@ -3471,10 +3624,10 @@ def test_client_commit_initial_tiled():
     toplevel.base.initial_commit = True
     client = make_client(toplevel=toplevel, scene_tree=MagicMock(), monitor=m)
 
-    with patch("wel.arrange") as arrange:
+    with patch("wel.apply_geometry") as apply_geom:
         wel.client_commit(server, client, None)
 
-    arrange.assert_not_called()
+    apply_geom.assert_not_called()
     server.lib.wlr_xdg_toplevel_set_size.assert_called_once_with(
         toplevel, 0, 0)
 
@@ -3488,10 +3641,10 @@ def test_client_commit_initial_floating():
     client = make_client(toplevel=toplevel, scene_tree=MagicMock(),
                        layer=wel.Layer.FLOAT, monitor=m)
 
-    with patch("wel.arrange") as arrange:
+    with patch("wel.apply_geometry") as apply_geom:
         wel.client_commit(server, client, None)
 
-    arrange.assert_not_called()
+    apply_geom.assert_not_called()
     server.lib.wlr_xdg_toplevel_set_size.assert_called_once_with(
         toplevel, 0, 0)
 
@@ -3505,10 +3658,10 @@ def test_client_commit_initial_unassigned():
     client = make_client(
         toplevel=toplevel, scene_tree=MagicMock(), monitor=None)
 
-    with patch("wel.arrange") as arrange:
+    with patch("wel.apply_geometry") as apply_geom:
         wel.client_commit(server, client, None)
 
-    arrange.assert_not_called()
+    apply_geom.assert_not_called()
     server.lib.wlr_xdg_toplevel_set_size.assert_called_once_with(
         toplevel, 0, 0)
 
@@ -3524,10 +3677,10 @@ def test_client_unmap_arranges():
         toplevel=MagicMock(name="tl"), scene_tree=MagicMock(), monitor=m)
     server.clients.append(client)
 
-    with patch("wel.arrange") as arrange:
+    with patch("wel.apply_geometry") as apply_geom:
         wel.client_unmap(server, client, None)
 
-    arrange.assert_called_once_with(server, m)
+    apply_geom.assert_called_once_with(server, m)
 
 
 def test_client_unmap_destroys_tree():
@@ -3553,10 +3706,10 @@ def test_client_unmap_orphan():
         toplevel=MagicMock(name="tl"), scene_tree=MagicMock(), monitor=None)
     server.clients.append(client)
 
-    with patch("wel.arrange") as arrange:
+    with patch("wel.apply_geometry") as apply_geom:
         wel.client_unmap(server, client, None)
 
-    arrange.assert_not_called()
+    apply_geom.assert_not_called()
 
 
 def test_client_unmap_stale():
@@ -3568,10 +3721,10 @@ def test_client_unmap_stale():
         toplevel=MagicMock(name="tl"), scene_tree=MagicMock(), monitor=m)
     server.clients.append(client)
 
-    with patch("wel.arrange") as arrange:
+    with patch("wel.apply_geometry") as apply_geom:
         wel.client_unmap(server, client, None)
 
-    arrange.assert_not_called()
+    apply_geom.assert_not_called()
 
 
 def test_monitor_new_updates():

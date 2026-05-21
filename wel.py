@@ -92,7 +92,7 @@ class Client: # pylint: disable=too-many-instance-attributes
     focus_order: int         # bumped on each focus; higher = more recent
     grab: Grab | None        # active mouse drag (move/resize), or None
     layer: Layer             # which Layer this window currently lives on
-    prev_rect: Rect | None   # geometry to restore when leaving FULLSCREEN
+    pending_geom: Rect | None   # apply_geometry renders the float here
     monitor: Any
     listeners: list[Any]
     pending_serial: int | None   # configure serial; None when client caught up
@@ -438,6 +438,8 @@ def update_monitors(server: Server) -> None:
             c.monitor = selected
     for m in server.monitors:
         arrange_layers(server, m)
+        apply_geometry(server, m)
+    apply_focus(server)
 
 
 def selected_monitor(server: Server):
@@ -462,7 +464,7 @@ def client_new(server: Server, data) -> None:
     toplevel = ffi.cast("struct wlr_xdg_toplevel *", data)
     client = Client(
         toplevel=toplevel, scene_tree=None, xdg_tree=None, borders=(),
-        focus_order=0, grab=None, layer=Layer.TILE, prev_rect=None,
+        focus_order=0, grab=None, layer=Layer.TILE, pending_geom=None,
         monitor=None, listeners=[], pending_serial=None,
         decoration=None, handle=None)
     # Back-pointer toplevel -> Client, so per-surface protocols (xdg-decoration
@@ -522,7 +524,7 @@ def client_map(server: Server, client: Client, _data) -> None:
             if c.layer == Layer.FULLSCREEN:
                 set_layer(
                     server, c,
-                    Layer.FLOAT if c.prev_rect is not None else Layer.TILE)
+                    Layer.FLOAT if c.pending_geom is not None else Layer.TILE)
     # Insert at the front so the newest window becomes the master tile.
     server.clients.insert(0, client)
     set_tiled(
@@ -532,12 +534,14 @@ def client_map(server: Server, client: Client, _data) -> None:
     if client.toplevel.requested.fullscreen and client.monitor is not None:
         # Honor a pre-map or initial-commit fullscreen request.
         set_layer(server, client, Layer.FULLSCREEN)
-    elif client.layer == Layer.TILE and client.monitor is not None:
-        arrange(server, client.monitor)
-    # Re-assert decoration mode now that the surface is initialized; the
-    # request may have arrived before the initial configure was sent.
-    decoration_set(server, client)
     focus_client(server, client)
+    apply_tree(server)
+    if client.monitor is not None:
+        apply_geometry(server, client.monitor)
+    apply_focus(server)
+    # The decoration request may have arrived before the initial configure;
+    # now that the surface is initialized, set_mode is safe.
+    apply_decoration(server)
 
 
 def client_unmap(server: Server, client: Client, _data) -> None:
@@ -554,11 +558,12 @@ def client_unmap(server: Server, client: Client, _data) -> None:
     client.scene_tree = None
     client.borders = ()
     client.monitor = None
-    if monitor is not None and monitor in server.monitors:
-        arrange(server, monitor)
     candidates = clients_on(server, monitor) if monitor else []
     if candidates:
         focus_client(server, max(candidates, key=lambda c: c.focus_order))
+    if monitor is not None and monitor in server.monitors:
+        apply_geometry(server, monitor)
+    apply_focus(server)
 
 
 def client_request_fullscreen(
@@ -571,8 +576,12 @@ def client_request_fullscreen(
     if wants and client.layer != Layer.FULLSCREEN:
         set_layer(server, client, Layer.FULLSCREEN)
     elif not wants and client.layer == Layer.FULLSCREEN:
-        target = Layer.FLOAT if client.prev_rect is not None else Layer.TILE
+        target = Layer.FLOAT if client.pending_geom is not None else Layer.TILE
         set_layer(server, client, target)
+    apply_tree(server)
+    if client.monitor is not None:
+        apply_geometry(server, client.monitor)
+    apply_focus(server)
 
 
 def client_cleanup(_server: Server, client: Client, _data) -> None:
@@ -602,23 +611,52 @@ def decoration_new(server: Server, data) -> None:
 
     listeners = [
         listen(lib.welpy_xdg_decoration_request_mode(deco),
-            lambda _data: decoration_set(server, client)),
+            lambda _data: apply_decoration(server)),
         listen(lib.welpy_xdg_decoration_destroy(deco), on_destroy),
     ]
 
-    decoration_set(server, client)
+    apply_decoration(server)
 
 
-def decoration_set(server: Server, client: Client) -> None:
-    """Force server-side decoration on this window's decoration object,
-    if it has one and its surface is past the initial configure."""
-    if client.decoration is None or not client.toplevel.base.initialized:
-        # Setting the mode schedules a configure; doing it before the
-        # surface is initialized is a protocol error.
-        return
-    server.lib.wlr_xdg_toplevel_decoration_v1_set_mode(
-        client.decoration,
-        server.lib.WLR_XDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE)
+def apply_decoration(server: Server) -> None:
+    """Force server-side decoration on every window that announced an
+    xdg-toplevel decoration and is past the initial configure."""
+    lib = server.lib
+    for client in server.clients:
+        # Setting the mode schedules a configure; before the surface is
+        # initialized that would be a protocol error.
+        if (client.decoration is not None
+                and client.toplevel.base.initialized):
+            lib.wlr_xdg_toplevel_decoration_v1_set_mode(
+                client.decoration,
+                lib.WLR_XDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE)
+
+
+def apply_tree(server: Server) -> None:
+    """Parent each window's scene node under the layer it belongs to."""
+    ffi, lib = server.ffi, server.lib
+
+    for client in server.clients:
+        if client.scene_tree is not None:
+            node = ffi.addressof(client.scene_tree.node)
+            target = server.layers[client.layer]
+            if node.parent != target:
+                lib.wlr_scene_node_reparent(node, target)
+
+    for monitor in server.monitors:
+        for layer, bucket in monitor.layers.items():
+            target = server.layers[layer]
+            # BG/BOTTOM popups lift into TOP so a bar can't bury them.
+            popups_target = server.layers[
+                Layer.TOP if layer in (Layer.BACKGROUND, Layer.BOTTOM)
+                else layer]
+            for ls in bucket:
+                node = ffi.addressof(ls.scene_tree.node)
+                if node.parent != target:
+                    lib.wlr_scene_node_reparent(node, target)
+                popups_node = ffi.addressof(ls.popups_tree.node)
+                if popups_node.parent != popups_target:
+                    lib.wlr_scene_node_reparent(popups_node, popups_target)
 
 
 def popup_new(server: Server, data) -> None:
@@ -723,7 +761,7 @@ def layer_surface_new(server: Server, data) -> None:
 
 def layer_surface_commit(server: Server, ls: LayerSurface, _data) -> None:
     """Fires every time the shell surface commits new state."""
-    ffi, lib = server.ffi, server.lib
+    ffi = server.ffi
     layer_surface = ls.layer_surface
     monitor = ls.monitor
     if monitor is None:
@@ -745,14 +783,10 @@ def layer_surface_commit(server: Server, ls: LayerSurface, _data) -> None:
                 bucket.remove(ls)
                 break
         monitor.layers[new_layer].append(ls)
-        lib.wlr_scene_node_reparent(
-            ffi.addressof(ls.scene_tree.node), server.layers[new_layer])
-        popups_parent = server.layers[
-            Layer.TOP if new_layer in (Layer.BACKGROUND, Layer.BOTTOM)
-            else new_layer]
-        lib.wlr_scene_node_reparent(
-            ffi.addressof(ls.popups_tree.node), popups_parent)
     arrange_layers(server, monitor)
+    apply_tree(server)
+    apply_geometry(server, monitor)
+    apply_focus(server)
 
 
 def layer_surface_unmap(server: Server, ls: LayerSurface, _data) -> None:
@@ -765,6 +799,9 @@ def layer_surface_unmap(server: Server, ls: LayerSurface, _data) -> None:
         top = top_client(server, ls.monitor)
         if top is not None:
             focus_client(server, top)
+    if ls.monitor is not None:
+        apply_geometry(server, ls.monitor)
+    apply_focus(server)
 
 
 def layer_surface_cleanup(
@@ -785,36 +822,90 @@ def layer_surface_cleanup(
     lib.wlr_scene_node_destroy(ffi.addressof(ls.popups_tree.node))
     if monitor is not None and monitor in server.monitors:
         arrange_layers(server, monitor)
+        apply_geometry(server, monitor)
+    apply_focus(server)
 
 
-def focus_client(server: Server, client: Client, lift: bool = True) -> None:
-    """Give the keyboard to this window."""
-    if any(ls.focused for m in server.monitors for b in m.layers.values()
-           for ls in b):
-        return
-    ffi, lib = server.ffi, server.lib
-    if lift:
-        lib.wlr_scene_node_raise_to_top(
-            ffi.addressof(client.scene_tree.node))
-    # Highest focus_order is the most-recently-focused window; deactivate it
-    # before activating the new one so apps see a clean focus handoff.
+def focus_client(server: Server, client: Client) -> None:
+    """Mark `client` as most-recently-focused. The actual focus effects
+    are emitted by apply_focus at the handler boundary."""
     previous = top_client(server, selected_monitor(server))
-    deactivate_previous = (
-        previous is not None
-        and previous is not client
-        and previous.focus_order > 0
-    )
-    if deactivate_previous:
-        set_activated(server, previous, False)
-        set_border_color(server, previous, BORDER_COLOR_INACTIVE)
-    set_activated(server, client, True)
-    set_border_color(server, client, BORDER_COLOR_ACTIVE)
     client.focus_order = (previous.focus_order if previous else 0) + 1
-    kb_group = lib.welpy_keyboard_group_keyboard(server.keyboard_group.group)
-    lib.wlr_seat_keyboard_notify_enter(
-        server.seat, client.toplevel.base.surface,
-        kb_group.keycodes, kb_group.num_keycodes,
-        ffi.addressof(kb_group, "modifiers"))
+
+
+def apply_focus(server: Server) -> None: # pylint: disable=too-many-branches
+    """Reconcile keyboard focus and focus indicators to match current state.
+    Picks the highest-priority TOP/OVERLAY shell surface that asks for the
+    keyboard, else the most-recently-focused window on the selected screen,
+    and emits only the effects needed to converge wlroots onto that target."""
+    ffi, lib = server.ffi, server.lib
+    none = lib.ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_NONE
+
+    def qualifies(ls):
+        return (ls.layer_surface.surface.mapped
+                and ls.layer_surface.current.keyboard_interactive != none)
+
+    # Prefer the currently-focused layer surface if it still qualifies, so
+    # arranging an unrelated screen doesn't steal the keyboard from it.
+    target_ls = next((
+        ls for m in server.monitors
+        for bucket in m.layers.values()
+        for ls in bucket
+        if ls.focused and qualifies(ls)), None)
+    if target_ls is None:
+        for m in server.monitors:
+            for layer in (Layer.OVERLAY, Layer.TOP):
+                for ls in reversed(m.layers[layer]):
+                    if qualifies(ls):
+                        target_ls = ls
+                        break
+                if target_ls is not None:
+                    break
+            if target_ls is not None:
+                break
+
+    target_client = (top_client(server, selected_monitor(server))
+                     if target_ls is None else None)
+    target_surface = (
+        target_ls.layer_surface.surface if target_ls is not None
+        else target_client.toplevel.base.surface if target_client is not None
+        else None)
+
+    # ls.focused is a cache of what apply_focus last picked.
+    for m in server.monitors:
+        for bucket in m.layers.values():
+            for ls in bucket:
+                ls.focused = ls is target_ls
+
+    current_surface = server.seat.keyboard_state.focused_surface
+    if current_surface == ffi.NULL:
+        current_surface = None
+    current_client = next((
+        c for c in server.clients
+        if c.scene_tree is not None
+        and c.toplevel.base.surface == current_surface), None)
+
+    if (current_client is not None
+            and current_client is not target_client):
+        set_activated(server, current_client, False)
+        set_border_color(server, current_client, BORDER_COLOR_INACTIVE)
+
+    if target_client is not None and target_client is not current_client:
+        lib.wlr_scene_node_raise_to_top(
+            ffi.addressof(target_client.scene_tree.node))
+        set_activated(server, target_client, True)
+        set_border_color(server, target_client, BORDER_COLOR_ACTIVE)
+
+    if target_surface is not current_surface:
+        if target_surface is None:
+            lib.wlr_seat_keyboard_clear_focus(server.seat)
+        else:
+            kb_group = lib.welpy_keyboard_group_keyboard(
+                server.keyboard_group.group)
+            lib.wlr_seat_keyboard_notify_enter(
+                server.seat, target_surface,
+                kb_group.keycodes, kb_group.num_keycodes,
+                ffi.addressof(kb_group, "modifiers"))
 
 
 def grabbed_client(server: Server):
@@ -832,10 +923,10 @@ def clients_on(server: Server, monitor):
 
 
 def top_client(server: Server, monitor):
-    """The most-recently-focused window on `monitor`, or None if none."""
+    """The most-recently-focused mapped window on `monitor`, or None."""
     return max(
-        clients_on(server, monitor), key=lambda c: c.focus_order,
-        default=None)
+        (c for c in clients_on(server, monitor) if c.scene_tree is not None),
+        key=lambda c: c.focus_order, default=None)
 
 
 def cycle_focus(server: Server, direction: int) -> None:
@@ -850,6 +941,7 @@ def cycle_focus(server: Server, direction: int) -> None:
         return
     index = candidates.index(top_client(server, selected_monitor(server)))
     focus_client(server, candidates[(index + direction) % len(candidates)])
+    apply_focus(server)
 
 
 def toggle_fullscreen(server: Server) -> None:
@@ -863,10 +955,13 @@ def toggle_fullscreen(server: Server) -> None:
     if client is None:
         return
     if client.layer == Layer.FULLSCREEN:
-        target = Layer.FLOAT if client.prev_rect is not None else Layer.TILE
+        target = Layer.FLOAT if client.pending_geom is not None else Layer.TILE
         set_layer(server, client, target)
     else:
         set_layer(server, client, Layer.FULLSCREEN)
+    apply_tree(server)
+    apply_geometry(server, monitor)
+    apply_focus(server)
 
 
 def toggle_floating(server: Server) -> None:
@@ -880,6 +975,9 @@ def toggle_floating(server: Server) -> None:
         return
     target = Layer.TILE if client.layer == Layer.FLOAT else Layer.FLOAT
     set_layer(server, client, target)
+    apply_tree(server)
+    apply_geometry(server, monitor)
+    apply_focus(server)
 
 
 def zoom(server: Server) -> None:
@@ -906,13 +1004,14 @@ def zoom(server: Server) -> None:
     j = server.clients.index(partner)
     server.clients[i], server.clients[j] = (
         server.clients[j], server.clients[i])
-    arrange(server, monitor)
     if focused is master:
         focus_client(server, partner)
     else:
         # Tag the displaced master so the next zoom toggles back to it.
         partner.focus_order = focused.focus_order
         focused.focus_order += 1
+    apply_geometry(server, monitor)
+    apply_focus(server)
 
 
 def arrange_layers(server: Server, monitor: Monitor) -> None:
@@ -934,7 +1033,6 @@ def arrange_layers(server: Server, monitor: Monitor) -> None:
     new_area = Rect(usable.x, usable.y, usable.width, usable.height)
     if new_area != monitor.window_area:
         monitor.window_area = new_area
-        arrange(server, monitor)
     # Non-exclusive surfaces overlay the remaining area without shrinking it.
     for layer in reversed(SHELL_LAYERS):
         for ls in monitor.layers[layer]:
@@ -948,69 +1046,27 @@ def arrange_layers(server: Server, monitor: Monitor) -> None:
             lib.wlr_scene_node_set_position(
                 ffi.addressof(ls.popups_tree.node),
                 ls.scene_tree.node.x, ls.scene_tree.node.y)
-    _layer_keyboard_focus(server, monitor)
 
 
-def _layer_keyboard_focus(server: Server, monitor: Monitor) -> None:
-    """Route the keyboard to a TOP/OVERLAY shell surface that asked for it,
-    or hand focus back to a client when none does."""
-    ffi, lib = server.ffi, server.lib
-    desired = None
-    none = lib.ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_NONE
-    for layer in (Layer.OVERLAY, Layer.TOP):
-        for ls in reversed(monitor.layers[layer]):
-            current = ls.layer_surface.current
-            if (ls.layer_surface.surface.mapped
-                    and current.keyboard_interactive != none):
-                desired = ls
-                break
-        if desired is not None:
-            break
-    prev_focused = next((
-        ls for m in server.monitors
-        for bucket in m.layers.values()
-        for ls in bucket
-        if ls.focused), None)
-    if desired is not prev_focused:
-        if desired is None:
-            prev_on_monitor = next((
-                ls for bucket in monitor.layers.values()
-                for ls in bucket
-                if ls.focused), None)
-            if prev_on_monitor is not None:
-                prev_on_monitor.focused = False
-                top = top_client(server, monitor)
-                if top is not None:
-                    focus_client(server, top)
-        else:
-            if prev_focused is not None:
-                prev_focused.focused = False
-            prev_client = top_client(server, monitor)
-            if prev_client is not None and prev_client.focus_order > 0:
-                set_activated(server, prev_client, False)
-                set_border_color(server, prev_client, BORDER_COLOR_INACTIVE)
-            desired.focused = True
-            kb_group = lib.welpy_keyboard_group_keyboard(
-                server.keyboard_group.group)
-            lib.wlr_seat_keyboard_notify_enter(
-                server.seat, desired.layer_surface.surface,
-                kb_group.keycodes, kb_group.num_keycodes,
-                ffi.addressof(kb_group, "modifiers"))
-
-
-def arrange(server: Server, monitor: Monitor) -> None:
-    """Lay out this monitor's windows."""
+def apply_geometry(server: Server, monitor: Monitor) -> None:
+    """Lay out this monitor's tiled, fullscreen, and restore-pending
+    floating windows."""
     clients = clients_on(server, monitor)
     tiled = [c for c in clients if c.layer == Layer.TILE]
     fullscreen = [c for c in clients if c.layer == Layer.FULLSCREEN]
-    if not fullscreen and not tiled:
-        return
-    # Fullscreen covers the whole screen; tiles share the remaining area.
     full_box = monitor_box(server, monitor)
     for c in fullscreen:
-        resize_client(server, c, full_box)
-    for c, rect in zip(tiled, master_stack(monitor.window_area, len(tiled))):
-        resize_client(server, c, rect)
+        if c.scene_tree is not None:
+            resize_client(server, c, full_box)
+    for c, rect in zip(
+            tiled, master_stack(monitor.window_area, len(tiled))):
+        if c.scene_tree is not None:
+            resize_client(server, c, rect)
+    for c in clients:
+        if (c.layer == Layer.FLOAT and c.pending_geom is not None
+                and c.scene_tree is not None):
+            resize_client(server, c, c.pending_geom)
+            c.pending_geom = None
 
 
 def master_stack(box: Rect, n: int) -> list[Rect]:
@@ -1114,32 +1170,27 @@ def set_layer(server: Server, client: Client, layer: Layer) -> None:
     if client.layer == layer:
         return
 
-    ffi, lib = server.ffi, server.lib
     prev = client.layer
     client.layer = layer
-    lib.wlr_scene_node_reparent(
-        ffi.addressof(client.scene_tree.node), server.layers[layer])
 
     if layer == Layer.FULLSCREEN:
         # Save where to come back to; a tile re-arranges, so nothing to save.
-        client.prev_rect = (
+        client.pending_geom = (
             client_outer_rect(client) if prev == Layer.FLOAT else None)
         set_fullscreen(server, client, True)
     elif layer == Layer.FLOAT:
         if prev == Layer.FULLSCREEN:
             set_fullscreen(server, client, False)
-            if client.monitor is not None:
-                # arrange() ignores floats, so restore geometry here.
-                resize_client(server, client, client.prev_rect
-                    or monitor_box(server, client.monitor))
-        client.prev_rect = None
+            # pending_geom is the restore intent for apply_geometry to consume.
+            if client.pending_geom is None and client.monitor is not None:
+                client.pending_geom = monitor_box(server, client.monitor)
+        else:
+            client.pending_geom = None
     elif layer == Layer.TILE:
         if prev == Layer.FULLSCREEN:
             set_fullscreen(server, client, False)
-        client.prev_rect = None
+        client.pending_geom = None
 
-    if client.monitor is not None:
-        arrange(server, client.monitor)
 
 
 def client_outer_rect(client: Client) -> Rect:
@@ -1279,12 +1330,13 @@ def cursor_button(server: Server, data) -> None:
         action = server.bindings.get((mods, event.button))
         if action is not None:
             action(server)
-            return
+            return  # action self-reconciles
     elif grabbed is not None:
         grabbed.grab = None
         return  # release ended the drag, not the app's click
     lib.wlr_seat_pointer_notify_button(
         server.seat, event.time_msec, event.button, event.state)
+    apply_focus(server)
 
 
 def cursor_axis(server: Server, data) -> None:
@@ -1314,6 +1366,10 @@ def begin_dragging_client(server: Server) -> None:
     set_layer(server, client, Layer.FLOAT)
     node = client.scene_tree.node
     client.grab = Grab("move", int(cur.x - node.x), int(cur.y - node.y))
+    apply_tree(server)
+    if client.monitor is not None:
+        apply_geometry(server, client.monitor)
+    apply_focus(server)
 
 
 def begin_resizing_client(server: Server) -> None:
@@ -1327,6 +1383,10 @@ def begin_resizing_client(server: Server) -> None:
     rect = client_outer_rect(client)
     client.grab = Grab(
         "resize", int(cur.x) - rect.width, int(cur.y) - rect.height)
+    apply_tree(server)
+    if client.monitor is not None:
+        apply_geometry(server, client.monitor)
+    apply_focus(server)
 
 
 def cursor_drag(server: Server) -> None:
@@ -1450,7 +1510,7 @@ def keyboard_key(server: Server, data) -> None:
         action = server.bindings.get((mods, event.keycode))
         if action is not None:
             action(server)
-            return
+            return  # action self-reconciles
     lib.wlr_seat_keyboard_notify_key(
         server.seat, event.time_msec, event.keycode, event.state)
 
