@@ -525,6 +525,8 @@ def client_map(server: Server, client: Client, _data) -> None:
         set_fullscreen(server, client.monitor, None)
     # Insert at the front so the newest window becomes the master tile.
     server.clients.insert(0, client)
+    if client.toplevel.parent and client.monitor is not None:
+        client.floating_geom = init_floating_geom(client)
     set_tiled(
         server, client,
         lib.WLR_EDGE_TOP | lib.WLR_EDGE_BOTTOM
@@ -1172,6 +1174,21 @@ def client_outer_rect(client: Client) -> Rect:
     return Rect(
         client.scene_tree.node.x, client.scene_tree.node.y,
         geom.width + 2 * BORDER_WIDTH, geom.height + 2 * BORDER_WIDTH)
+
+
+def init_floating_geom(client: Client) -> Rect:
+    """Center a freshly-floated window in its screen's usable area at the
+    size the app asked for (or a default if it didn't)."""
+    area = client.monitor.window_area
+    geom = client.toplevel.base.geometry
+    inner_w = geom.width or 250
+    inner_h = geom.height or 200
+    outer_w = inner_w + 2 * BORDER_WIDTH
+    outer_h = inner_h + 2 * BORDER_WIDTH
+    return Rect(
+        area.x + (area.width - outer_w) // 2,
+        area.y + (area.height - outer_h) // 2,
+        outer_w, outer_h)
 
 
 def surface_at(server: Server, lx: float, ly: float):

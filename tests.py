@@ -59,6 +59,7 @@ def make_client(**kwargs):
     if isinstance(toplevel, MagicMock):
         toplevel.base.current.configure_serial = 0
         toplevel.requested.fullscreen = False
+        toplevel.parent = None
     kwargs["toplevel"] = toplevel
     return wel.Client(**{
         "scene_tree": MagicMock(),
@@ -2279,6 +2280,39 @@ def test_client_map_monitor_none():
     assert client.monitor is None
 
 
+def test_client_map_floats_dialog():
+    """A window opened as a child of another window (a dialog) lands in the
+    FLOAT layer instead of joining the tiling layout."""
+    server = make_server()
+    m = MagicMock(name="m", fullscreen=None,
+                  window_area=wel.Rect(0, 0, 800, 600))
+    server.monitors.append(m)
+    toplevel = MagicMock()
+    toplevel.base.geometry.width = 400
+    toplevel.base.geometry.height = 300
+    client = make_client(toplevel=toplevel, scene_tree=None)
+    toplevel.parent = MagicMock(name="parent_toplevel")
+
+    with patch("wel.focus_client"), patch("wel.apply_geometry"):
+        wel.client_map(server, client, None)
+
+    assert wel.client_layer(client) == wel.Layer.FLOAT
+
+
+def test_client_map_no_parent():
+    """A regular (unparented) window still joins the tiling layout."""
+    server = make_server()
+    m = MagicMock(name="m", fullscreen=None,
+                  window_area=wel.Rect(0, 0, 800, 600))
+    server.monitors.append(m)
+    client = make_client(toplevel=MagicMock(), scene_tree=None)
+
+    with patch("wel.focus_client"), patch("wel.apply_geometry"):
+        wel.client_map(server, client, None)
+
+    assert wel.client_layer(client) == wel.Layer.TILE
+
+
 def test_selected_monitor_first():
     """selected_monitor returns the first entry of server.monitors."""
     server = make_server()
@@ -2738,6 +2772,38 @@ def test_client_layer_fullscreen():
     )
     m.fullscreen = client
     assert wel.client_layer(client) == wel.Layer.FULLSCREEN
+
+
+def test_init_floating_geom_centers():
+    """init_floating_geom centers the window in its screen's usable area at
+    the size the app asked for plus border."""
+    m = make_monitor(window_area=wel.Rect(100, 50, 800, 600))
+    toplevel = MagicMock()
+    toplevel.base.geometry.width = 400
+    toplevel.base.geometry.height = 300
+    client = make_client(toplevel=toplevel, monitor=m)
+
+    outer_w = 400 + 2 * wel.BORDER_WIDTH
+    outer_h = 300 + 2 * wel.BORDER_WIDTH
+    assert wel.init_floating_geom(client) == wel.Rect(
+        100 + (800 - outer_w) // 2,
+        50 + (600 - outer_h) // 2,
+        outer_w, outer_h)
+
+
+def test_init_floating_geom_fallback():
+    """When the app commits with empty geometry, init_floating_geom picks
+    a default size so the window isn't invisibly small."""
+    m = make_monitor(window_area=wel.Rect(0, 0, 800, 600))
+    toplevel = MagicMock()
+    toplevel.base.geometry.width = 0
+    toplevel.base.geometry.height = 0
+    client = make_client(toplevel=toplevel, monitor=m)
+
+    rect = wel.init_floating_geom(client)
+
+    assert rect.width == 250 + 2 * wel.BORDER_WIDTH
+    assert rect.height == 200 + 2 * wel.BORDER_WIDTH
 
 
 def test_fullscreen_slot_enters():
