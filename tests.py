@@ -81,6 +81,7 @@ def make_monitor(**kwargs):
         "layers": {layer: [] for layer in wel.SHELL_LAYERS},
         "window_area": wel.Rect(0, 0, 800, 600),
         "fullscreen": None,
+        "frame_timer": MagicMock(name="frame_timer"),
         "listeners": [],
         **kwargs,
     })
@@ -325,6 +326,35 @@ def test_monitor_cleanup_drops():
     assert not server.monitors
 
 
+def test_monitor_new_timer():
+    """A new screen gets a safety-valve timer wired to monitor_force_paint
+    so its refresh loop can be unstuck if an app is slow to catch up."""
+    server = make_server()
+
+    with patch("wel.monitor_force_paint") as forced:
+        wel.monitor_new(server, "OUTPUT_DATA")
+        monitor = server.monitors[0]
+        server.add_timer.assert_called_once()
+        callback = server.add_timer.call_args.args[0]
+        callback()
+
+    forced.assert_called_once_with(server, monitor)
+    assert monitor.frame_timer is server.add_timer.return_value
+
+
+def test_monitor_cleanup_removes_timer():
+    """Cleanup detaches the safety-valve timer alongside other listeners."""
+    server = make_server()
+    timer = MagicMock(name="frame_timer")
+    monitor = make_monitor(
+        output="OUT", scene_output="SO", frame_timer=timer)
+    server.monitors.append(monitor)
+
+    wel.monitor_cleanup(server, monitor, None)
+
+    timer.remove.assert_called_once()
+
+
 def test_monitor_render_order():
     """Each frame paints first, then notifies visible apps -- both calls
     targeting this monitor's own scene_output."""
@@ -421,6 +451,42 @@ def test_monitor_render_clear():
 
     server.lib.wlr_scene_output_commit.assert_called_once()
     server.lib.wlr_scene_output_send_frame_done.assert_called_once()
+
+
+def test_monitor_render_arms_timer():
+    """While holding a paint, monitor_render arms the safety-valve timer
+    so the screen doesn't stay frozen if the app never catches up."""
+    server = make_server()
+    monitor = make_monitor(output="OUT", scene_output="SO_X")
+    client = make_client(
+        scene_tree=MagicMock(), monitor=monitor, pending_serial=5)
+    server.clients.append(client)
+
+    wel.monitor_render(server, monitor, None)
+
+    monitor.frame_timer.update.assert_called_once_with(100)
+
+
+def test_monitor_render_disarms_timer():
+    """A clean paint disarms the safety-valve timer."""
+    server = make_server()
+    monitor = make_monitor(output="OUT", scene_output="SO_X")
+
+    wel.monitor_render(server, monitor, None)
+
+    monitor.frame_timer.update.assert_called_once_with(0)
+
+
+def test_monitor_force_paint_commits():
+    """The timer callback repaints the screen so its refresh loop resumes
+    and monitor_render gets another shot at clearing the hold."""
+    server = make_server()
+    monitor = make_monitor(output="OUT", scene_output="SO_X")
+
+    wel.monitor_force_paint(server, monitor)
+
+    server.lib.wlr_scene_output_commit.assert_called_once_with(
+        "SO_X", server.ffi.NULL)
 
 
 # --- client lifecycle ------------------------------------------------------

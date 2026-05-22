@@ -67,6 +67,7 @@ class Monitor:
     layers: dict             # {Layer: list[LayerSurface]} per shell layer
     window_area: Rect        # screen rect minus shell exclusive zones
     fullscreen: Any          # the Client occupying this screen, or None
+    frame_timer: Any         # safety valve: forces a paint if hold lingers
     listeners: list[Any]
 
 
@@ -126,6 +127,7 @@ class Server: # pylint: disable=too-many-instance-attributes
     lib: Any
     listen: Any
     add_signal: Any
+    add_timer: Any
     display: Any
     event_loop: Any
     backend: Any
@@ -203,7 +205,7 @@ def setup() -> Server: # pylint: disable=too-many-locals
     """Build everything wlroots needs to render and expose Wayland: backend +
     renderer, the scene graph, the protocol globals apps look for (compositor,
     xdg-shell, data device, ...), and the input seat."""
-    ffi, lib, listen, _add_timer, add_signal = bindings.build()
+    ffi, lib, listen, add_timer, add_signal = bindings.build()
 
     display = lib.wl_display_create()
     event_loop = lib.wl_display_get_event_loop(display)
@@ -245,6 +247,7 @@ def setup() -> Server: # pylint: disable=too-many-locals
     server = Server(
         ffi=ffi, lib=lib, listen=listen,
         add_signal=lambda signum, cb: add_signal(event_loop, signum, cb),
+        add_timer=lambda cb: add_timer(event_loop, cb),
         display=display, event_loop=event_loop, backend=backend,
         renderer=renderer, allocator=allocator,
         compositor=compositor,
@@ -374,7 +377,10 @@ def monitor_new(server: Server, data) -> None:
         layers={layer: [] for layer in SHELL_LAYERS},
         window_area=Rect(0, 0, 0, 0),
         fullscreen=None,
+        frame_timer=None,
         listeners=[])
+    monitor.frame_timer = server.add_timer(
+        lambda: monitor_force_paint(server, monitor))
     server.monitors.append(monitor)
     monitor.window_area = monitor_box(server, monitor)
     monitor.listeners.extend([
@@ -413,6 +419,14 @@ def monitor_render(server: Server, monitor: Monitor, _data) -> None:
         lib.wlr_scene_output_commit(monitor.scene_output, ffi.NULL)
     ts = ffi.new("struct timespec *")
     lib.wlr_scene_output_send_frame_done(monitor.scene_output, ts)
+    # No commit = no future refresh events; the timer caps the freeze.
+    monitor.frame_timer.update(100 if held else 0)
+
+
+def monitor_force_paint(server: Server, monitor: Monitor) -> None:
+    """Timer callback: repaint this screen so its refresh loop resumes when
+    an app is too slow to catch up."""
+    server.lib.wlr_scene_output_commit(monitor.scene_output, server.ffi.NULL)
 
 
 def monitor_cleanup(server: Server, monitor: Monitor, _data) -> None:
@@ -421,6 +435,7 @@ def monitor_cleanup(server: Server, monitor: Monitor, _data) -> None:
     # Each destroy callback mutates the bucket, so iterate a snapshot.
     for ls in [s for bucket in monitor.layers.values() for s in bucket]:
         server.lib.wlr_layer_surface_v1_destroy(ls.layer_surface)
+    monitor.frame_timer.remove()
     for listener in monitor.listeners:
         listener.remove()
     monitor.listeners.clear()
