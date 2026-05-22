@@ -66,6 +66,7 @@ class Monitor:
     scene_output: Any        # per-screen render state inside the scene graph
     layers: dict             # {Layer: list[LayerSurface]} per shell layer
     window_area: Rect        # screen rect minus shell exclusive zones
+    fullscreen: Any          # the Client occupying this screen, or None
     listeners: list[Any]
 
 
@@ -91,8 +92,7 @@ class Client: # pylint: disable=too-many-instance-attributes
     borders: tuple           # (top, bottom, left, right) wlr_scene_rect handles
     focus_order: int         # bumped on each focus; higher = more recent
     grab: Grab | None        # active mouse drag (move/resize), or None
-    layer: Layer             # which Layer this window currently lives on
-    pending_geom: Rect | None   # apply_geometry renders the float here
+    floating_geom: Rect | None  # the float's rect; None means tiled
     monitor: Any
     listeners: list[Any]
     pending_serial: int | None   # configure serial; None when client caught up
@@ -372,6 +372,7 @@ def monitor_new(server: Server, data) -> None:
         output=output, scene_output=scene_output,
         layers={layer: [] for layer in SHELL_LAYERS},
         window_area=Rect(0, 0, 0, 0),
+        fullscreen=None,
         listeners=[])
     server.monitors.append(monitor)
     monitor.window_area = monitor_box(server, monitor)
@@ -404,7 +405,7 @@ def monitor_render(server: Server, monitor: Monitor, _data) -> None:
     held = any(
         c.pending_serial is not None
         for c in clients_on(server, monitor)
-        if c.layer != Layer.FLOAT
+        if client_layer(c) != Layer.FLOAT
         or (c.grab is not None and c.grab.kind == "resize")
     )
     if not held:
@@ -423,6 +424,7 @@ def monitor_cleanup(server: Server, monitor: Monitor, _data) -> None:
         listener.remove()
     monitor.listeners.clear()
     server.monitors.remove(monitor)
+    set_fullscreen(server, monitor, None)
     for c in clients_on(server, monitor):
         c.monitor = None
     update_monitors(server)
@@ -464,7 +466,7 @@ def client_new(server: Server, data) -> None:
     toplevel = ffi.cast("struct wlr_xdg_toplevel *", data)
     client = Client(
         toplevel=toplevel, scene_tree=None, xdg_tree=None, borders=(),
-        focus_order=0, grab=None, layer=Layer.TILE, pending_geom=None,
+        focus_order=0, grab=None, floating_geom=None,
         monitor=None, listeners=[], pending_serial=None,
         decoration=None, handle=None)
     # Back-pointer toplevel -> Client, so per-surface protocols (xdg-decoration
@@ -519,12 +521,8 @@ def client_map(server: Server, client: Client, _data) -> None:
     client.monitor = selected_monitor(server)
     # Un-fullscreen any window already fullscreen on this monitor so the new
     # window isn't buried under it.
-    if client.monitor is not None:
-        for c in list(clients_on(server, client.monitor)):
-            if c.layer == Layer.FULLSCREEN:
-                set_layer(
-                    server, c,
-                    Layer.FLOAT if c.pending_geom is not None else Layer.TILE)
+    if client.monitor is not None and client.monitor.fullscreen is not None:
+        set_fullscreen(server, client.monitor, None)
     # Insert at the front so the newest window becomes the master tile.
     server.clients.insert(0, client)
     set_tiled(
@@ -533,7 +531,7 @@ def client_map(server: Server, client: Client, _data) -> None:
         | lib.WLR_EDGE_LEFT | lib.WLR_EDGE_RIGHT)
     if client.toplevel.requested.fullscreen and client.monitor is not None:
         # Honor a pre-map or initial-commit fullscreen request.
-        set_layer(server, client, Layer.FULLSCREEN)
+        set_fullscreen(server, client.monitor, client)
     focus_client(server, client)
     apply_tree(server)
     if client.monitor is not None:
@@ -551,6 +549,8 @@ def client_unmap(server: Server, client: Client, _data) -> None:
     ffi, lib = server.ffi, server.lib
     client.grab = None
     monitor = client.monitor
+    if monitor is not None and monitor.fullscreen is client:
+        monitor.fullscreen = None
     server.clients.remove(client)
     # Wrapper isn't tied to the xdg role's lifetime
     lib.wlr_scene_node_destroy(ffi.addressof(client.scene_tree.node))
@@ -572,15 +572,16 @@ def client_request_fullscreen(
     if client.scene_tree is None:
         # Pre-map: client_map reads the same flag once the tree exists.
         return
+    monitor = client.monitor
+    if monitor is None:
+        return
     wants = bool(client.toplevel.requested.fullscreen)
-    if wants and client.layer != Layer.FULLSCREEN:
-        set_layer(server, client, Layer.FULLSCREEN)
-    elif not wants and client.layer == Layer.FULLSCREEN:
-        target = Layer.FLOAT if client.pending_geom is not None else Layer.TILE
-        set_layer(server, client, target)
+    if wants and monitor.fullscreen is not client:
+        set_fullscreen(server, monitor, client)
+    elif not wants and monitor.fullscreen is client:
+        set_fullscreen(server, monitor, None)
     apply_tree(server)
-    if client.monitor is not None:
-        apply_geometry(server, client.monitor)
+    apply_geometry(server, monitor)
     apply_focus(server)
 
 
@@ -639,7 +640,7 @@ def apply_tree(server: Server) -> None:
     for client in server.clients:
         if client.scene_tree is not None:
             node = ffi.addressof(client.scene_tree.node)
-            target = server.layers[client.layer]
+            target = server.layers[client_layer(client)]
             if node.parent != target:
                 lib.wlr_scene_node_reparent(node, target)
 
@@ -934,12 +935,13 @@ def cycle_focus(server: Server, direction: int) -> None:
     so repeated presses visit every window instead of toggling two.
     No-op while a fullscreen window owns the monitor -- focus is pinned to
     it until the user toggles fullscreen off."""
-    candidates = clients_on(server, selected_monitor(server))
+    monitor = selected_monitor(server)
+    candidates = clients_on(server, monitor)
     if not candidates:
         return
-    if any(c.layer == Layer.FULLSCREEN for c in candidates):
+    if monitor.fullscreen is not None:
         return
-    index = candidates.index(top_client(server, selected_monitor(server)))
+    index = candidates.index(top_client(server, monitor))
     focus_client(server, candidates[(index + direction) % len(candidates)])
     apply_focus(server)
 
@@ -954,11 +956,10 @@ def toggle_fullscreen(server: Server) -> None:
     client = top_client(server, monitor)
     if client is None:
         return
-    if client.layer == Layer.FULLSCREEN:
-        target = Layer.FLOAT if client.pending_geom is not None else Layer.TILE
-        set_layer(server, client, target)
+    if monitor.fullscreen is client:
+        set_fullscreen(server, monitor, None)
     else:
-        set_layer(server, client, Layer.FULLSCREEN)
+        set_fullscreen(server, monitor, client)
     apply_tree(server)
     apply_geometry(server, monitor)
     apply_focus(server)
@@ -971,10 +972,13 @@ def toggle_floating(server: Server) -> None:
     if monitor is None:
         return
     client = top_client(server, monitor)
-    if client is None or client.layer == Layer.FULLSCREEN:
+    if client is None or monitor.fullscreen is client:
         return
-    target = Layer.TILE if client.layer == Layer.FLOAT else Layer.FLOAT
-    set_layer(server, client, target)
+    if client.floating_geom is None:
+        # Seed the float at the current outer rect so it starts where it tiled.
+        client.floating_geom = client_outer_rect(client)
+    else:
+        client.floating_geom = None
     apply_tree(server)
     apply_geometry(server, monitor)
     apply_focus(server)
@@ -987,11 +991,11 @@ def zoom(server: Server) -> None:
     if monitor is None:
         return
     tiled = [c for c in clients_on(server, monitor)
-             if c.layer == Layer.TILE]
+             if client_layer(c) == Layer.TILE]
     if len(tiled) < 2:
         return
     focused = top_client(server, monitor)
-    if focused is None or focused.layer != Layer.TILE:
+    if focused is None or client_layer(focused) != Layer.TILE:
         return
     master = tiled[0]
     if focused is master:
@@ -1049,24 +1053,21 @@ def arrange_layers(server: Server, monitor: Monitor) -> None:
 
 
 def apply_geometry(server: Server, monitor: Monitor) -> None:
-    """Lay out this monitor's tiled, fullscreen, and restore-pending
-    floating windows."""
+    """Lay out this monitor's tiled, fullscreen, and floating windows so
+    each matches its dataclass-described rect."""
     clients = clients_on(server, monitor)
-    tiled = [c for c in clients if c.layer == Layer.TILE]
-    fullscreen = [c for c in clients if c.layer == Layer.FULLSCREEN]
+    tiled = [c for c in clients if client_layer(c) == Layer.TILE]
     full_box = monitor_box(server, monitor)
-    for c in fullscreen:
-        if c.scene_tree is not None:
-            resize_client(server, c, full_box)
+    if monitor.fullscreen is not None and monitor.fullscreen.scene_tree:
+        resize_client(server, monitor.fullscreen, full_box)
     for c, rect in zip(
             tiled, master_stack(monitor.window_area, len(tiled))):
         if c.scene_tree is not None:
             resize_client(server, c, rect)
     for c in clients:
-        if (c.layer == Layer.FLOAT and c.pending_geom is not None
+        if (client_layer(c) == Layer.FLOAT
                 and c.scene_tree is not None):
-            resize_client(server, c, c.pending_geom)
-            c.pending_geom = None
+            resize_client(server, c, c.floating_geom)
 
 
 def master_stack(box: Rect, n: int) -> list[Rect]:
@@ -1091,7 +1092,7 @@ def resize_client(server: Server, client: Client, rect: Rect) -> None:
     inner surface is configured smaller to leave room for the border;
     fullscreen windows skip the border so the surface fills the rect."""
     ffi, lib = server.ffi, server.lib
-    bw = 0 if client.layer == Layer.FULLSCREEN else BORDER_WIDTH
+    bw = 0 if client_layer(client) == Layer.FULLSCREEN else BORDER_WIDTH
     inner_w = max(rect.width - 2 * bw, 0)
     inner_h = max(rect.height - 2 * bw, 0)
     lib.wlr_scene_node_set_position(
@@ -1144,11 +1145,22 @@ def set_tiled(server: Server, client: Client, edges: int) -> None:
     _track_configure(client, serial)
 
 
-def set_fullscreen(server: Server, client: Client, on: bool) -> None:
-    """Tell this window's app that it is (or is no longer) fullscreen so it
-    can adjust rendering (hide chrome, change DPR, etc.)."""
-    serial = server.lib.wlr_xdg_toplevel_set_fullscreen(client.toplevel, on)
-    _track_configure(client, serial)
+def set_fullscreen(
+        server: Server, monitor: Monitor, client: Client | None) -> None:
+    """Set this screen's fullscreen window (None to clear), notifying the
+    affected apps so their xdg-toplevel state matches."""
+    prev = monitor.fullscreen
+    if prev is client:
+        return
+    monitor.fullscreen = client
+    if prev is not None:
+        serial = server.lib.wlr_xdg_toplevel_set_fullscreen(
+            prev.toplevel, False)
+        _track_configure(prev, serial)
+    if client is not None:
+        serial = server.lib.wlr_xdg_toplevel_set_fullscreen(
+            client.toplevel, True)
+        _track_configure(client, serial)
 
 
 def _track_configure(client: Client, serial: int) -> None:
@@ -1165,31 +1177,14 @@ def _track_configure(client: Client, serial: int) -> None:
     client.pending_serial = serial
 
 
-def set_layer(server: Server, client: Client, layer: Layer) -> None:
-    """Move a window to a different layer and reapply geometry."""
-    if client.layer == layer:
-        return
-
-    prev = client.layer
-    client.layer = layer
-
-    if layer == Layer.FULLSCREEN:
-        # Save where to come back to; a tile re-arranges, so nothing to save.
-        client.pending_geom = (
-            client_outer_rect(client) if prev == Layer.FLOAT else None)
-        set_fullscreen(server, client, True)
-    elif layer == Layer.FLOAT:
-        if prev == Layer.FULLSCREEN:
-            set_fullscreen(server, client, False)
-            # pending_geom is the restore intent for apply_geometry to consume.
-            if client.pending_geom is None and client.monitor is not None:
-                client.pending_geom = monitor_box(server, client.monitor)
-        else:
-            client.pending_geom = None
-    elif layer == Layer.TILE:
-        if prev == Layer.FULLSCREEN:
-            set_fullscreen(server, client, False)
-        client.pending_geom = None
+def client_layer(client: Client) -> Layer:
+    """The z-bucket this window lives in, derived from its monitor's
+    fullscreen pointer and its own floating rect."""
+    if client.monitor is not None and client.monitor.fullscreen is client:
+        return Layer.FULLSCREEN
+    if client.floating_geom is not None:
+        return Layer.FLOAT
+    return Layer.TILE
 
 
 
@@ -1363,12 +1358,16 @@ def begin_dragging_client(server: Server) -> None:
     client = client_at(server, cur.x, cur.y)
     if client is None:
         return
-    set_layer(server, client, Layer.FLOAT)
+    monitor = client.monitor
+    if monitor is not None and monitor.fullscreen is client:
+        set_fullscreen(server, monitor, None)
+    if client.floating_geom is None:
+        client.floating_geom = client_outer_rect(client)
     node = client.scene_tree.node
     client.grab = Grab("move", int(cur.x - node.x), int(cur.y - node.y))
     apply_tree(server)
-    if client.monitor is not None:
-        apply_geometry(server, client.monitor)
+    if monitor is not None:
+        apply_geometry(server, monitor)
     apply_focus(server)
 
 
@@ -1379,19 +1378,24 @@ def begin_resizing_client(server: Server) -> None:
     client = client_at(server, cur.x, cur.y)
     if client is None:
         return
-    set_layer(server, client, Layer.FLOAT)
-    rect = client_outer_rect(client)
+    monitor = client.monitor
+    if monitor is not None and monitor.fullscreen is client:
+        set_fullscreen(server, monitor, None)
+    if client.floating_geom is None:
+        client.floating_geom = client_outer_rect(client)
+    rect = client.floating_geom
     client.grab = Grab(
         "resize", int(cur.x) - rect.width, int(cur.y) - rect.height)
     apply_tree(server)
-    if client.monitor is not None:
-        apply_geometry(server, client.monitor)
+    if monitor is not None:
+        apply_geometry(server, monitor)
     apply_focus(server)
 
 
 def cursor_drag(server: Server) -> None:
     """While dragging, keep the grabbed window tracking the cursor: move
-    pins the captured offset; resize adds the cursor delta to the size."""
+    pins the captured offset; resize adds the cursor delta to the size.
+    Updates floating_geom in step so apply_geometry stays a no-op mid-drag."""
     grabbed = grabbed_client(server)
     if grabbed is None:
         return
@@ -1399,14 +1403,19 @@ def cursor_drag(server: Server) -> None:
     cur = server.cursor.cursor
     grab = grabbed.grab
     if grab.kind == "move":
+        nx = int(cur.x) - grab.x
+        ny = int(cur.y) - grab.y
         lib.wlr_scene_node_set_position(
-            ffi.addressof(grabbed.scene_tree.node),
-            int(cur.x) - grab.x, int(cur.y) - grab.y)
+            ffi.addressof(grabbed.scene_tree.node), nx, ny)
+        fg = grabbed.floating_geom
+        grabbed.floating_geom = Rect(nx, ny, fg.width, fg.height)
     elif grab.kind == "resize":
         node = grabbed.scene_tree.node
         w = max(1, int(cur.x) - grab.x)
         h = max(1, int(cur.y) - grab.y)
-        resize_client(server, grabbed, Rect(node.x, node.y, w, h))
+        rect = Rect(node.x, node.y, w, h)
+        resize_client(server, grabbed, rect)
+        grabbed.floating_geom = rect
     else:
         logger.warning("unknown grab kind: %r", grab.kind)
 

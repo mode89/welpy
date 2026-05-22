@@ -65,7 +65,7 @@ def make_client(**kwargs):
         "xdg_tree": MagicMock(),
         "borders": tuple(MagicMock() for _ in range(4)),
         "focus_order": 0, "grab": None,
-        "layer": wel.Layer.TILE, "pending_geom": None,
+        "floating_geom": None,
         "monitor": None, "listeners": [],
         "pending_serial": None,
         "decoration": None, "handle": None,
@@ -79,6 +79,7 @@ def make_monitor(**kwargs):
         "output": MagicMock(), "scene_output": MagicMock(),
         "layers": {layer: [] for layer in wel.SHELL_LAYERS},
         "window_area": wel.Rect(0, 0, 800, 600),
+        "fullscreen": None,
         "listeners": [],
         **kwargs,
     })
@@ -362,7 +363,7 @@ def test_monitor_render_floating():
     monitor = make_monitor(output="OUT", scene_output="SO_X")
     a = make_client(
         scene_tree=MagicMock(), monitor=monitor,
-        layer=wel.Layer.FLOAT, pending_serial=5)
+        floating_geom=wel.Rect(0, 0, 100, 100), pending_serial=5)
     b = make_client(
         scene_tree=MagicMock(), monitor=monitor, pending_serial=None)
     server.clients.extend([a, b])
@@ -379,7 +380,7 @@ def test_monitor_render_resizing():
     monitor = make_monitor(output="OUT", scene_output="SO_X")
     client = make_client(
         scene_tree=MagicMock(), monitor=monitor,
-        layer=wel.Layer.FLOAT, pending_serial=5,
+        floating_geom=wel.Rect(0, 0, 100, 100), pending_serial=5,
         grab=wel.Grab("resize", 0, 0))
     server.clients.append(client)
 
@@ -395,7 +396,7 @@ def test_monitor_render_moving():
     monitor = make_monitor(output="OUT", scene_output="SO_X")
     client = make_client(
         scene_tree=MagicMock(), monitor=monitor,
-        layer=wel.Layer.FLOAT, pending_serial=5,
+        floating_geom=wel.Rect(0, 0, 100, 100), pending_serial=5,
         grab=wel.Grab("move", 0, 0))
     server.clients.append(client)
 
@@ -573,7 +574,7 @@ def test_client_unmap_refocuses():
     """Unmapping a window hands focus to the next-most-recently-focused
     window so closing a terminal leaves the user typing into another one."""
     server = make_server()
-    m = MagicMock(name="m")
+    m = MagicMock(name="m", fullscreen=None)
     server.monitors.append(m)
     a = make_client(
         toplevel=MagicMock(name="a"), scene_tree=MagicMock(),
@@ -606,7 +607,7 @@ def test_client_unmap_ends_grab():
 def test_client_unmap_alone():
     """Unmapping the only window leaves focus alone -- nothing to focus."""
     server = make_server()
-    m = MagicMock(name="m")
+    m = MagicMock(name="m", fullscreen=None)
     server.monitors.append(m)
     only = make_client(
         toplevel=MagicMock(), scene_tree=MagicMock(),
@@ -641,7 +642,7 @@ def test_client_map_orders():
     """Mapping mutates focus_order before apply_geometry runs so the
     new window's order participates in the layout decision."""
     server = make_server()
-    server.monitors.append(MagicMock(name="m"))
+    server.monitors.append(MagicMock(name="m", fullscreen=None))
     client = make_client(toplevel=MagicMock(), scene_tree=None)
 
     calls = []
@@ -1046,7 +1047,7 @@ def test_client_map_reasserts_decoration():
     """client_map runs apply_decoration so the mode is set now that the
     initial configure has been sent."""
     server = make_server()
-    server.monitors.append(MagicMock(name="m"))
+    server.monitors.append(MagicMock(name="m", fullscreen=None))
     client = make_client(toplevel=MagicMock(), scene_tree=None)
 
     with patch("wel.apply_geometry"), patch("wel.focus_client"), \
@@ -1502,8 +1503,11 @@ def test_cursor_motion_grab_skips():
     server = make_server()
     server.cursor = make_cursor(cursor=MagicMock(), xcursor_manager="X")
     client = make_client(
-        toplevel=MagicMock(), scene_tree=MagicMock(),
-        grab=wel.Grab("move", 0, 0))
+        toplevel=MagicMock(),
+        scene_tree=MagicMock(),
+        grab=wel.Grab("move", 0, 0),
+        floating_geom=wel.Rect(0, 0, 100, 100),
+    )
     server.clients.append(client)
 
     wel.cursor_motion(server, "MOTION_DATA")
@@ -1625,7 +1629,9 @@ def test_begin_dragging_offset():
     node.parent = client.scene_tree
     server.lib.wlr_scene_node_at.return_value = node
 
-    with patch("wel.set_layer"):
+    with patch("wel.client_outer_rect",
+               return_value=wel.Rect(100, 150, 200, 200)), \
+         patch("wel.apply_geometry"):
         wel.begin_dragging_client(server)
 
     assert client.grab == wel.Grab("move", 20, 50)
@@ -1638,10 +1644,10 @@ def test_begin_dragging_empty():
         cursor=MagicMock(name="cur"), xcursor_manager="X")
     server.lib.wlr_scene_node_at.return_value = server.ffi.NULL
 
-    with patch("wel.set_layer") as sl:
+    with patch("wel.apply_geometry") as apply_geom:
         wel.begin_dragging_client(server)
 
-    sl.assert_not_called()
+    apply_geom.assert_not_called()
 
 
 def test_cursor_motion_drags():
@@ -1653,14 +1659,18 @@ def test_cursor_motion_drags():
     server.cursor.cursor.x = 200.0
     server.cursor.cursor.y = 300.0
     grabbed = make_client(
-        toplevel=MagicMock(), scene_tree=MagicMock(),
-        grab=wel.Grab("move", 10, 20))
+        toplevel=MagicMock(),
+        scene_tree=MagicMock(),
+        grab=wel.Grab("move", 10, 20),
+        floating_geom=wel.Rect(0, 0, 100, 100),
+    )
     server.clients.append(grabbed)
 
     wel.cursor_motion(server, "MOTION_DATA")
 
     server.lib.wlr_scene_node_set_position.assert_called_once_with(
         server.ffi.addressof.return_value, 190, 280)
+    assert grabbed.floating_geom == wel.Rect(190, 280, 100, 100)
 
 
 def test_begin_resizing_anchor():
@@ -1677,9 +1687,9 @@ def test_begin_resizing_anchor():
     node.parent = client.scene_tree
     server.lib.wlr_scene_node_at.return_value = node
 
-    with patch("wel.set_layer"), \
-         patch("wel.client_outer_rect",
-               return_value=wel.Rect(100, 150, 300, 200)):
+    with patch("wel.client_outer_rect",
+               return_value=wel.Rect(100, 150, 300, 200)), \
+         patch("wel.apply_geometry"):
         wel.begin_resizing_client(server)
 
     assert client.grab == wel.Grab("resize", 200, 200)
@@ -1692,10 +1702,10 @@ def test_begin_resizing_empty():
         cursor=MagicMock(name="cur"), xcursor_manager="X")
     server.lib.wlr_scene_node_at.return_value = server.ffi.NULL
 
-    with patch("wel.set_layer") as sl:
+    with patch("wel.apply_geometry") as apply_geom:
         wel.begin_resizing_client(server)
 
-    sl.assert_not_called()
+    apply_geom.assert_not_called()
 
 
 def test_cursor_motion_resizes():
@@ -1706,8 +1716,12 @@ def test_cursor_motion_resizes():
         cursor=MagicMock(name="cur"), xcursor_manager="X")
     server.cursor.cursor.x = 500.0
     server.cursor.cursor.y = 400.0
-    grabbed = make_client(toplevel=MagicMock(), scene_tree=MagicMock(),
-        grab=wel.Grab("resize", 200, 200))
+    grabbed = make_client(
+        toplevel=MagicMock(),
+        scene_tree=MagicMock(),
+        grab=wel.Grab("resize", 200, 200),
+        floating_geom=wel.Rect(100, 150, 100, 100),
+    )
     grabbed.scene_tree.node.x = 100
     grabbed.scene_tree.node.y = 150
     server.clients.append(grabbed)
@@ -1716,6 +1730,7 @@ def test_cursor_motion_resizes():
         wel.cursor_motion(server, "MOTION_DATA")
 
     rc.assert_called_once_with(server, grabbed, wel.Rect(100, 150, 300, 200))
+    assert grabbed.floating_geom == wel.Rect(100, 150, 300, 200)
 
 
 def test_cursor_motion_resize_min():
@@ -1726,8 +1741,12 @@ def test_cursor_motion_resize_min():
         cursor=MagicMock(name="cur"), xcursor_manager="X")
     server.cursor.cursor.x = 50.0
     server.cursor.cursor.y = 50.0
-    grabbed = make_client(toplevel=MagicMock(), scene_tree=MagicMock(),
-        grab=wel.Grab("resize", 200, 200))
+    grabbed = make_client(
+        toplevel=MagicMock(),
+        scene_tree=MagicMock(),
+        grab=wel.Grab("resize", 200, 200),
+        floating_geom=wel.Rect(100, 150, 100, 100),
+    )
     grabbed.scene_tree.node.x = 100
     grabbed.scene_tree.node.y = 150
     server.clients.append(grabbed)
@@ -1877,12 +1896,11 @@ def test_apply_tree_clients():
     a = make_client(
         toplevel=MagicMock(),
         scene_tree=MagicMock(),
-        layer=wel.Layer.TILE,
     )
     b = make_client(
         toplevel=MagicMock(),
         scene_tree=MagicMock(),
-        layer=wel.Layer.FLOAT,
+        floating_geom=wel.Rect(0, 0, 100, 100),
     )
     server.clients.extend([a, b])
 
@@ -1901,7 +1919,6 @@ def test_apply_tree_skips_unmapped():
     client = make_client(
         toplevel=MagicMock(),
         scene_tree=None,
-        layer=wel.Layer.TILE,
     )
     server.clients.append(client)
 
@@ -1917,7 +1934,6 @@ def test_apply_tree_idempotent():
     client = make_client(
         toplevel=MagicMock(),
         scene_tree=MagicMock(),
-        layer=wel.Layer.TILE,
     )
     server.clients.append(client)
     server.ffi.addressof.return_value.parent = server.layers[wel.Layer.TILE]
@@ -1931,7 +1947,7 @@ def test_apply_tree_layer_surface():
     """A layer surface in monitor.layers[TOP] is parented under the TOP
     tree; its popups tree follows."""
     server = make_server()
-    monitor = MagicMock(name="m")
+    monitor = MagicMock(name="m", fullscreen=None)
     monitor.layers = {layer: [] for layer in wel.Layer}
     ls = MagicMock(name="ls")
     monitor.layers[wel.Layer.TOP].append(ls)
@@ -1948,7 +1964,7 @@ def test_apply_tree_popups_lifted():
     """A layer surface in BACKGROUND has its popups tree lifted into TOP
     so a bar can't bury them."""
     server = make_server()
-    monitor = MagicMock(name="m")
+    monitor = MagicMock(name="m", fullscreen=None)
     monitor.layers = {layer: [] for layer in wel.Layer}
     ls = MagicMock(name="ls")
     monitor.layers[wel.Layer.BACKGROUND].append(ls)
@@ -2241,7 +2257,8 @@ def test_client_map_monitor_selected():
     """A newly mapped window is assigned to the selected monitor
     (monitors[0])."""
     server = make_server()
-    m1, m2 = MagicMock(name="m1"), MagicMock(name="m2")
+    m1 = MagicMock(name="m1", fullscreen=None)
+    m2 = MagicMock(name="m2", fullscreen=None)
     server.monitors.extend([m1, m2])
     client = make_client(toplevel=MagicMock(), scene_tree=None)
 
@@ -2265,7 +2282,8 @@ def test_client_map_monitor_none():
 def test_selected_monitor_first():
     """selected_monitor returns the first entry of server.monitors."""
     server = make_server()
-    m1, m2 = MagicMock(name="m1"), MagicMock(name="m2")
+    m1 = MagicMock(name="m1", fullscreen=None)
+    m2 = MagicMock(name="m2", fullscreen=None)
     server.monitors.extend([m1, m2])
 
     assert wel.selected_monitor(server) is m1
@@ -2282,7 +2300,8 @@ def test_clients_on_filters():
     """clients_on returns only clients assigned to the given monitor,
     preserving server.clients order."""
     server = make_server()
-    m1, m2 = MagicMock(name="m1"), MagicMock(name="m2")
+    m1 = MagicMock(name="m1", fullscreen=None)
+    m2 = MagicMock(name="m2", fullscreen=None)
     a = make_client(toplevel="a", scene_tree=None, monitor=m1)
     b = make_client(toplevel="b", scene_tree=None, monitor=m2)
     c = make_client(toplevel="c", scene_tree=None, monitor=m1)
@@ -2295,7 +2314,7 @@ def test_clients_on_filters():
 def test_clients_on_orphans():
     """Passing monitor=None returns clients not yet assigned to any monitor."""
     server = make_server()
-    m = MagicMock(name="m")
+    m = MagicMock(name="m", fullscreen=None)
     a = make_client(toplevel="a", scene_tree=None, monitor=m)
     b = make_client(toplevel="b", scene_tree=None, monitor=None)
     server.clients.extend([a, b])
@@ -2307,7 +2326,8 @@ def test_top_client_per_monitor():
     """top_client picks the highest focus_order among clients on the given
     monitor, ignoring clients on other monitors."""
     server = make_server()
-    m1, m2 = MagicMock(name="m1"), MagicMock(name="m2")
+    m1 = MagicMock(name="m1", fullscreen=None)
+    m2 = MagicMock(name="m2", fullscreen=None)
     a = make_client(
         toplevel="a", scene_tree=MagicMock(), focus_order=1, monitor=m1)
     b = make_client(
@@ -2325,7 +2345,7 @@ def test_top_client_per_monitor():
 def test_top_client_empty():
     """top_client returns None when no clients are on the monitor."""
     server = make_server()
-    m = MagicMock(name="m")
+    m = MagicMock(name="m", fullscreen=None)
 
     assert wel.top_client(server, m) is None
 
@@ -2334,7 +2354,7 @@ def test_cycle_focus_next():
     """cycle_focus(+1) moves focus to the next window on the selected
     monitor in layout order."""
     server = make_server()
-    m = MagicMock(name="m")
+    m = MagicMock(name="m", fullscreen=None)
     server.monitors.append(m)
     a = make_client(toplevel=MagicMock(name="a"), monitor=m)
     b = make_client(toplevel=MagicMock(name="b"), monitor=m)
@@ -2351,7 +2371,7 @@ def test_cycle_focus_next():
 def test_cycle_focus_prev_wraps():
     """cycle_focus(-1) wraps around past the first window."""
     server = make_server()
-    m = MagicMock(name="m")
+    m = MagicMock(name="m", fullscreen=None)
     server.monitors.append(m)
     a = make_client(toplevel=MagicMock(name="a"), monitor=m)
     b = make_client(toplevel=MagicMock(name="b"), monitor=m)
@@ -2368,7 +2388,7 @@ def test_cycle_focus_prev_wraps():
 def test_cycle_focus_empty():
     """cycle_focus is a no-op when no windows are on the selected monitor."""
     server = make_server()
-    server.monitors.append(MagicMock(name="m"))
+    server.monitors.append(MagicMock(name="m", fullscreen=None))
 
     with patch("wel.focus_client") as focus:
         wel.cycle_focus(server, +1)
@@ -2380,7 +2400,7 @@ def test_client_unmap_selected():
     """Unmapping a window on the selected monitor refocuses the next
     most-recent window on the same monitor."""
     server = make_server()
-    m = MagicMock(name="m")
+    m = MagicMock(name="m", fullscreen=None)
     server.monitors.append(m)
     a = make_client(toplevel=MagicMock(name="a"), scene_tree=MagicMock(),
                   focus_order=2, monitor=m)
@@ -2398,7 +2418,8 @@ def test_client_unmap_unselected():
     """Unmapping a window not on the selected monitor leaves focus alone
     when there's nothing to refocus on the selected monitor."""
     server = make_server()
-    m1, m2 = MagicMock(name="m1"), MagicMock(name="m2")
+    m1 = MagicMock(name="m1", fullscreen=None)
+    m2 = MagicMock(name="m2", fullscreen=None)
     server.monitors.append(m1)
     a = make_client(toplevel=MagicMock(), scene_tree=MagicMock(),
                   focus_order=1, monitor=m2)
@@ -2556,18 +2577,26 @@ def test_apply_geometry_other_monitor():
 
 def test_apply_geometry_skips_floating():
     """Floating clients don't participate in tiling; apply_geometry
-    skips them (unless their pending_geom asks for placement)."""
+    leaves the tile path to tiles only."""
     server = make_server()
     m = make_monitor(window_area=wel.Rect(0, 0, 800, 600))
-    a = make_client(toplevel=MagicMock(), scene_tree=MagicMock(),
-                  monitor=m, layer=wel.Layer.FLOAT)
+    a = make_client(
+        toplevel=MagicMock(),
+        scene_tree=MagicMock(),
+        monitor=m,
+        floating_geom=wel.Rect(50, 60, 100, 80),
+    )
     b = make_client(toplevel=MagicMock(), scene_tree=MagicMock(), monitor=m)
     server.clients.extend([a, b])
 
     with patch("wel.resize_client") as resize:
         wel.apply_geometry(server, m)
 
-    resize.assert_called_once_with(server, b, wel.Rect(0, 0, 800, 600))
+    # The tile gets the full window area; the float gets its own rect.
+    assert resize.call_args_list == [
+        call(server, b, wel.Rect(0, 0, 800, 600)),
+        call(server, a, wel.Rect(50, 60, 100, 80)),
+    ]
 
 
 def test_apply_geometry_sizes_fullscreen():
@@ -2576,7 +2605,8 @@ def test_apply_geometry_sizes_fullscreen():
     server = make_server()
     m = make_monitor(window_area=wel.Rect(0, 0, 800, 600))
     fs = make_client(toplevel=MagicMock(), scene_tree=MagicMock(),
-                  monitor=m, layer=wel.Layer.FULLSCREEN)
+                  monitor=m)
+    m.fullscreen = fs
     tile = make_client(toplevel=MagicMock(), scene_tree=MagicMock(), monitor=m)
     server.clients.extend([fs, tile])
 
@@ -2601,9 +2631,10 @@ def test_apply_geometry_empty():
     resize.assert_not_called()
 
 
-def test_apply_geometry_consumes_pending():
-    """A floating client with pending_geom is resized to that rect and
-    pending_geom is cleared so subsequent calls don't re-resize."""
+def test_apply_geometry_reconciles_float():
+    """A floating client is resized to its floating_geom on every
+    apply_geometry, so any drift between wlroots state and dataclass
+    state converges."""
     server = make_server()
     m = make_monitor()
     saved = wel.Rect(10, 20, 300, 200)
@@ -2611,8 +2642,7 @@ def test_apply_geometry_consumes_pending():
         toplevel=MagicMock(),
         scene_tree=MagicMock(),
         monitor=m,
-        layer=wel.Layer.FLOAT,
-        pending_geom=saved,
+        floating_geom=saved,
     )
     server.clients.append(c)
 
@@ -2620,13 +2650,14 @@ def test_apply_geometry_consumes_pending():
         wel.apply_geometry(server, m)
 
     resize.assert_called_once_with(server, c, saved)
-    assert c.pending_geom is None
+    assert c.floating_geom == saved
 
 
 def test_update_monitors_arranges_all():
     """update_monitors arranges every connected monitor."""
     server = make_server()
-    m1, m2 = MagicMock(name="m1"), MagicMock(name="m2")
+    m1 = MagicMock(name="m1", fullscreen=None)
+    m2 = MagicMock(name="m2", fullscreen=None)
     server.monitors.extend([m1, m2])
 
     with patch("wel.apply_geometry") as apply_geom:
@@ -2639,7 +2670,7 @@ def test_update_monitors_adopts_orphans():
     """Orphaned clients are adopted by the selected monitor before
     arranging."""
     server = make_server()
-    m = MagicMock(name="m")
+    m = MagicMock(name="m", fullscreen=None)
     server.monitors.append(m)
     orphan = make_client(toplevel="t", scene_tree=None, monitor=None)
     server.clients.append(orphan)
@@ -2666,7 +2697,8 @@ def test_update_monitors_no_monitors():
 def test_update_monitors_keeps_assigned():
     """Clients already on a non-None monitor are not reassigned."""
     server = make_server()
-    m1, m2 = MagicMock(name="m1"), MagicMock(name="m2")
+    m1 = MagicMock(name="m1", fullscreen=None)
+    m2 = MagicMock(name="m2", fullscreen=None)
     server.monitors.extend([m1, m2])
     c = make_client(toplevel="t", scene_tree=None, monitor=m2)
     server.clients.append(c)
@@ -2677,267 +2709,290 @@ def test_update_monitors_keeps_assigned():
     assert c.monitor is m2
 
 
-def test_set_layer_assigns():
-    """set_layer updates client.layer; apply_tree later reparents."""
-    server = make_server()
+def test_client_layer_tile():
+    """A client with no floating_geom and not pinned to any monitor's
+    fullscreen slot is tiled."""
     client = make_client(toplevel=MagicMock(), scene_tree=MagicMock())
-
-    wel.set_layer(server, client, wel.Layer.FLOAT)
-    assert client.layer == wel.Layer.FLOAT
-
-    wel.set_layer(server, client, wel.Layer.TILE)
-    assert client.layer == wel.Layer.TILE
+    assert wel.client_layer(client) == wel.Layer.TILE
 
 
-def test_set_layer_mutates():
-    """set_layer updates client.layer; appliers run in the calling
-    handler / action."""
-    server = make_server()
-    m = MagicMock(name="m")
+def test_client_layer_float():
+    """A client with a floating_geom is floating."""
     client = make_client(
-        toplevel=MagicMock(), scene_tree=MagicMock(), monitor=m)
-
-    wel.set_layer(server, client, wel.Layer.FLOAT)
-
-    assert client.layer == wel.Layer.FLOAT
-
-
-def test_set_layer_no_monitor():
-    """An orphaned client's layer can still change; no monitor means no
-    arrange call."""
-    server = make_server()
-    client = make_client(toplevel=MagicMock(), scene_tree=MagicMock())
-
-    with patch("wel.apply_geometry") as apply_geom:
-        wel.set_layer(server, client, wel.Layer.FLOAT)
-
-    assert client.layer == wel.Layer.FLOAT
-    apply_geom.assert_not_called()
+        toplevel=MagicMock(),
+        scene_tree=MagicMock(),
+        floating_geom=wel.Rect(0, 0, 100, 100),
+    )
+    assert wel.client_layer(client) == wel.Layer.FLOAT
 
 
-def test_set_layer_noop():
-    """Setting the layer the client already has does nothing -- no
-    reparent, no arrange."""
-    server = make_server()
-    client = make_client(toplevel=MagicMock(), scene_tree=MagicMock(),
-                       layer=wel.Layer.TILE)
-
-    with patch("wel.apply_geometry") as apply_geom:
-        wel.set_layer(server, client, wel.Layer.TILE)
-
-    server.lib.wlr_scene_node_reparent.assert_not_called()
-    apply_geom.assert_not_called()
-
-
-def test_set_layer_enter_fullscreen():
-    """TILE -> FULLSCREEN reparents, notifies the app, and re-arranges the
-    monitor so the remaining tiles fill the gap. pending_geom stays None so
-    exit re-tiles."""
-    server = make_server()
-    m = MagicMock(name="m")
+def test_client_layer_fullscreen():
+    """A client occupying its monitor's fullscreen slot is fullscreen,
+    even if it also has a floating_geom stashed for restore."""
+    m = make_monitor()
     client = make_client(
-        toplevel=MagicMock(), scene_tree=MagicMock(), monitor=m)
+        toplevel=MagicMock(),
+        scene_tree=MagicMock(),
+        monitor=m,
+        floating_geom=wel.Rect(0, 0, 100, 100),
+    )
+    m.fullscreen = client
+    assert wel.client_layer(client) == wel.Layer.FULLSCREEN
 
-    wel.set_layer(server, client, wel.Layer.FULLSCREEN)
 
+def test_fullscreen_slot_enters():
+    """Assigning a client to the monitor's fullscreen slot notifies the
+    app so its xdg state matches."""
+    server = make_server()
+    m = make_monitor()
+    client = make_client(
+        toplevel=MagicMock(),
+        scene_tree=MagicMock(),
+        monitor=m,
+    )
+
+    wel.set_fullscreen(server, m, client)
+
+    assert m.fullscreen is client
     server.lib.wlr_xdg_toplevel_set_fullscreen.assert_called_once_with(
         client.toplevel, True)
-    assert client.layer == wel.Layer.FULLSCREEN
-    assert client.pending_geom is None
 
 
-def test_set_layer_snapshot_float():
-    """FLOAT -> FULLSCREEN snapshots the float's current outer rectangle
-    into pending_geom so exit can restore it."""
-    server = make_server()
-    m = MagicMock(name="m")
-    toplevel = MagicMock()
-    toplevel.base.geometry.width = 300
-    toplevel.base.geometry.height = 200
-    client = make_client(
-        toplevel=toplevel, scene_tree=MagicMock(), monitor=m,
-        layer=wel.Layer.FLOAT)
-    client.scene_tree.node.x = 50
-    client.scene_tree.node.y = 60
-
-    with patch("wel.monitor_box", return_value=wel.Rect(0, 0, 800, 600)), \
-         patch("wel.resize_client"):
-        wel.set_layer(server, client, wel.Layer.FULLSCREEN)
-
-    bw = wel.BORDER_WIDTH
-    assert client.pending_geom == wel.Rect(
-        50, 60, 300 + 2 * bw, 200 + 2 * bw)
-
-
-def test_set_layer_exit_tile():
-    """FULLSCREEN -> TILE notifies the app, re-arranges the monitor, and
-    leaves pending_geom cleared."""
-    server = make_server()
-    m = MagicMock(name="m")
-    client = make_client(
-        toplevel=MagicMock(), scene_tree=MagicMock(), monitor=m,
-        layer=wel.Layer.FULLSCREEN, pending_geom=None)
-
-    wel.set_layer(server, client, wel.Layer.TILE)
-
-    server.lib.wlr_xdg_toplevel_set_fullscreen.assert_called_once_with(
-        client.toplevel, False)
-    assert client.pending_geom is None
-
-
-def test_set_layer_restore_float():
-    """FULLSCREEN -> FLOAT leaves the saved rectangle in pending_geom so
-    apply_geometry can consume it."""
-    server = make_server()
-    m = MagicMock(name="m")
-    saved = wel.Rect(50, 60, 304, 204)
-    client = make_client(
-        toplevel=MagicMock(), scene_tree=MagicMock(), monitor=m,
-        layer=wel.Layer.FULLSCREEN, pending_geom=saved)
-
-    wel.set_layer(server, client, wel.Layer.FLOAT)
-
-    assert client.pending_geom == saved
-    assert client.layer == wel.Layer.FLOAT
-
-
-def test_set_layer_skips_notify():
-    """TILE <-> FLOAT does not touch the fullscreen state of the app."""
+def test_fullscreen_slot_exits():
+    """Clearing the slot notifies the previously-fullscreen app."""
     server = make_server()
     client = make_client(toplevel=MagicMock(), scene_tree=MagicMock())
+    m = make_monitor(fullscreen=client)
+    client.monitor = m
 
-    wel.set_layer(server, client, wel.Layer.FLOAT)
+    wel.set_fullscreen(server, m, None)
+
+    assert m.fullscreen is None
+    server.lib.wlr_xdg_toplevel_set_fullscreen.assert_called_once_with(
+        client.toplevel, False)
+
+
+def test_fullscreen_slot_noop():
+    """Setting the slot to its current value is a no-op so no spurious
+    configure goes out."""
+    server = make_server()
+    client = make_client(toplevel=MagicMock(), scene_tree=MagicMock())
+    m = make_monitor(fullscreen=client)
+    client.monitor = m
+
+    wel.set_fullscreen(server, m, client)
 
     server.lib.wlr_xdg_toplevel_set_fullscreen.assert_not_called()
 
 
+def test_fullscreen_slot_replaces():
+    """Replacing one fullscreen client with another notifies both: the
+    outgoing one exits, the incoming one enters."""
+    server = make_server()
+    outgoing = make_client(
+        toplevel=MagicMock(name="out"),
+        scene_tree=MagicMock(),
+    )
+    incoming = make_client(
+        toplevel=MagicMock(name="in"),
+        scene_tree=MagicMock(),
+    )
+    m = make_monitor(fullscreen=outgoing)
+    outgoing.monitor = m
+    incoming.monitor = m
+
+    wel.set_fullscreen(server, m, incoming)
+
+    assert m.fullscreen is incoming
+    assert server.lib.wlr_xdg_toplevel_set_fullscreen.call_args_list == [
+        call(outgoing.toplevel, False),
+        call(incoming.toplevel, True),
+    ]
+
+
+def test_fullscreen_slot_keeps_float():
+    """Entering and exiting fullscreen leaves floating_geom untouched, so a
+    window that was floating before going fullscreen returns to floating
+    at the same rect; a window that was tiled stays tiled."""
+    server = make_server()
+    m = make_monitor()
+    saved = wel.Rect(50, 60, 304, 204)
+    floater = make_client(
+        toplevel=MagicMock(),
+        scene_tree=MagicMock(),
+        monitor=m,
+        floating_geom=saved,
+    )
+    tiler = make_client(
+        toplevel=MagicMock(),
+        scene_tree=MagicMock(),
+        monitor=m,
+    )
+
+    wel.set_fullscreen(server, m, floater)
+    wel.set_fullscreen(server, m, None)
+    assert floater.floating_geom == saved
+
+    wel.set_fullscreen(server, m, tiler)
+    wel.set_fullscreen(server, m, None)
+    assert tiler.floating_geom is None
+
+
 def test_toggle_fullscreen_enters():
-    """toggle_fullscreen on a tiled focused window switches it to the
-    FULLSCREEN layer."""
-    server = make_server()
-    m = make_monitor()
-    server.monitors.append(m)
-    client = make_client(toplevel=MagicMock(), scene_tree=MagicMock(),
-                       monitor=m)
-    server.clients.append(client)
-    wel.focus_client(server, client)
-
-    with patch("wel.set_layer") as sl:
-        wel.toggle_fullscreen(server)
-
-    sl.assert_called_once_with(server, client, wel.Layer.FULLSCREEN)
-
-
-def test_toggle_fullscreen_to_tile():
-    """toggle_fullscreen on a fullscreen window with no saved float
-    geometry returns it to the TILE layer."""
-    server = make_server()
-    m = make_monitor()
-    server.monitors.append(m)
-    client = make_client(toplevel=MagicMock(), scene_tree=MagicMock(),
-                       monitor=m, layer=wel.Layer.FULLSCREEN,
-                       pending_geom=None, focus_order=1)
-    server.clients.append(client)
-
-    with patch("wel.set_layer") as sl, patch("wel.apply_geometry"):
-        wel.toggle_fullscreen(server)
-
-    sl.assert_called_once_with(server, client, wel.Layer.TILE)
-
-
-def test_toggle_fullscreen_to_float():
-    """toggle_fullscreen on a fullscreen window that was floating restores
-    the float layer (so set_layer can resize to the saved rectangle)."""
+    """toggle_fullscreen on a tiled focused window pins it to the
+    monitor's fullscreen slot."""
     server = make_server()
     m = make_monitor()
     server.monitors.append(m)
     client = make_client(
-        toplevel=MagicMock(), scene_tree=MagicMock(), monitor=m,
-        layer=wel.Layer.FULLSCREEN, pending_geom=wel.Rect(10, 20, 300, 200),
-        focus_order=1)
+        toplevel=MagicMock(),
+        scene_tree=MagicMock(),
+        monitor=m,
+    )
     server.clients.append(client)
+    wel.focus_client(server, client)
 
-    with patch("wel.set_layer") as sl, patch("wel.apply_geometry"):
+    with patch("wel.apply_geometry"):
         wel.toggle_fullscreen(server)
 
-    sl.assert_called_once_with(server, client, wel.Layer.FLOAT)
+    assert m.fullscreen is client
+
+
+def test_toggle_fullscreen_to_tile():
+    """toggle_fullscreen on a fullscreen window with no saved float
+    geometry clears the slot; client becomes tiled again."""
+    server = make_server()
+    m = make_monitor()
+    server.monitors.append(m)
+    client = make_client(toplevel=MagicMock(), scene_tree=MagicMock(),
+                       monitor=m, focus_order=1)
+    m.fullscreen = client
+    server.clients.append(client)
+
+    with patch("wel.apply_geometry"):
+        wel.toggle_fullscreen(server)
+
+    assert m.fullscreen is None
+    assert wel.client_layer(client) == wel.Layer.TILE
+
+
+def test_toggle_fullscreen_to_float():
+    """toggle_fullscreen on a fullscreen window that was floating restores
+    the float; floating_geom is preserved through fullscreen."""
+    server = make_server()
+    m = make_monitor()
+    server.monitors.append(m)
+    saved = wel.Rect(10, 20, 300, 200)
+    client = make_client(
+        toplevel=MagicMock(),
+        scene_tree=MagicMock(),
+        monitor=m,
+        floating_geom=saved,
+        focus_order=1,
+    )
+    m.fullscreen = client
+    server.clients.append(client)
+
+    with patch("wel.apply_geometry"):
+        wel.toggle_fullscreen(server)
+
+    assert m.fullscreen is None
+    assert client.floating_geom == saved
+    assert wel.client_layer(client) == wel.Layer.FLOAT
 
 
 def test_toggle_fullscreen_no_focus():
     """toggle_fullscreen with nothing focused is a no-op."""
     server = make_server()
-    server.monitors.append(MagicMock(name="m"))
+    server.monitors.append(MagicMock(name="m", fullscreen=None))
 
-    with patch("wel.set_layer") as sl:
+    with patch("wel.set_fullscreen") as sf:
         wel.toggle_fullscreen(server)
 
-    sl.assert_not_called()
+    sf.assert_not_called()
 
 
 def test_toggle_floating_to_float():
-    """toggle_floating on a tiled focused window moves it to FLOAT."""
+    """toggle_floating on a tiled focused window seeds floating_geom from
+    the current outer rect so the float starts where it tiled."""
     server = make_server()
     m = make_monitor()
     server.monitors.append(m)
     client = make_client(
-        toplevel=MagicMock(), scene_tree=MagicMock(), monitor=m)
+        toplevel=MagicMock(),
+        scene_tree=MagicMock(),
+        monitor=m,
+    )
     server.clients.append(client)
     wel.focus_client(server, client)
 
-    with patch("wel.set_layer") as sl:
+    seed = wel.Rect(50, 60, 304, 204)
+    with patch("wel.client_outer_rect", return_value=seed), \
+         patch("wel.apply_geometry"):
         wel.toggle_floating(server)
 
-    sl.assert_called_once_with(server, client, wel.Layer.FLOAT)
+    assert client.floating_geom == seed
 
 
 def test_toggle_floating_to_tile():
-    """toggle_floating on a floating focused window moves it back to TILE."""
+    """toggle_floating on a floating focused window clears floating_geom so
+    it re-tiles."""
     server = make_server()
-    m = MagicMock(name="m")
+    m = MagicMock(name="m", fullscreen=None)
     server.monitors.append(m)
     client = make_client(
-        toplevel=MagicMock(), scene_tree=MagicMock(), monitor=m,
-        layer=wel.Layer.FLOAT, focus_order=1)
+        toplevel=MagicMock(),
+        scene_tree=MagicMock(),
+        monitor=m,
+        floating_geom=wel.Rect(10, 20, 300, 200),
+        focus_order=1,
+    )
     server.clients.append(client)
 
-    with patch("wel.set_layer") as sl:
+    with patch("wel.apply_geometry"):
         wel.toggle_floating(server)
 
-    sl.assert_called_once_with(server, client, wel.Layer.TILE)
+    assert client.floating_geom is None
 
 
 def test_toggle_floating_fullscreen_noop():
     """toggle_floating is a no-op while the focused window is fullscreen."""
     server = make_server()
-    m = MagicMock(name="m")
+    m = make_monitor()
     server.monitors.append(m)
     client = make_client(
-        toplevel=MagicMock(), scene_tree=MagicMock(), monitor=m,
-        layer=wel.Layer.FULLSCREEN, focus_order=1)
+        toplevel=MagicMock(),
+        scene_tree=MagicMock(),
+        monitor=m,
+        focus_order=1,
+    )
+    m.fullscreen = client
     server.clients.append(client)
+    before = client.floating_geom
 
-    with patch("wel.set_layer") as sl:
+    with patch("wel.apply_geometry") as apply_geom:
         wel.toggle_floating(server)
 
-    sl.assert_not_called()
+    assert client.floating_geom is before
+    apply_geom.assert_not_called()
 
 
 def test_toggle_floating_no_focus():
     """toggle_floating with nothing focused is a no-op."""
     server = make_server()
-    server.monitors.append(MagicMock(name="m"))
+    server.monitors.append(MagicMock(name="m", fullscreen=None))
 
-    with patch("wel.set_layer") as sl:
+    with patch("wel.apply_geometry") as apply_geom:
         wel.toggle_floating(server)
 
-    sl.assert_not_called()
+    apply_geom.assert_not_called()
 
 
 def test_zoom_promotes():
     """zoom on a non-master tile swaps it with the master and re-arranges.
     The focused window naturally lands as the new master."""
     server = make_server()
-    m = MagicMock(name="m")
+    m = MagicMock(name="m", fullscreen=None)
     server.monitors.append(m)
     a = make_client(toplevel=MagicMock(name="a"), scene_tree=MagicMock(),
                   monitor=m)
@@ -2960,7 +3015,7 @@ def test_zoom_toggles():
     """zoom on the master swaps it with the most-recently-focused other
     tile and follows focus to the new master."""
     server = make_server()
-    m = MagicMock(name="m")
+    m = MagicMock(name="m", fullscreen=None)
     server.monitors.append(m)
     a = make_client(toplevel=MagicMock(name="a"), scene_tree=MagicMock(),
                   monitor=m)
@@ -2985,7 +3040,7 @@ def test_zoom_toggles():
 def test_zoom_single_tile():
     """zoom is a no-op when fewer than two tiled windows are on the monitor."""
     server = make_server()
-    m = MagicMock(name="m")
+    m = MagicMock(name="m", fullscreen=None)
     server.monitors.append(m)
     a = make_client(toplevel=MagicMock(name="a"), scene_tree=MagicMock(),
                   monitor=m)
@@ -3003,7 +3058,7 @@ def test_zoom_remembers_master():
     """After promoting a non-master, the next zoom toggles back to the
     displaced master, not to whatever else has the next-highest focus order."""
     server = make_server()
-    m = MagicMock(name="m")
+    m = MagicMock(name="m", fullscreen=None)
     server.monitors.append(m)
     a = make_client(toplevel=MagicMock(name="a"), scene_tree=MagicMock(),
                   monitor=m)
@@ -3030,12 +3085,16 @@ def test_zoom_remembers_master():
 def test_zoom_floating_focus():
     """zoom is a no-op when the focused window isn't on the tile layer."""
     server = make_server()
-    m = MagicMock(name="m")
+    m = MagicMock(name="m", fullscreen=None)
     server.monitors.append(m)
     a = make_client(toplevel=MagicMock(name="a"), scene_tree=MagicMock(),
                   monitor=m)
-    b = make_client(toplevel=MagicMock(name="b"), scene_tree=MagicMock(),
-                  monitor=m, layer=wel.Layer.FLOAT)
+    b = make_client(
+        toplevel=MagicMock(name="b"),
+        scene_tree=MagicMock(),
+        monitor=m,
+        floating_geom=wel.Rect(0, 0, 100, 100),
+    )
     server.clients.extend([a, b])
     wel.focus_client(server, b)
 
@@ -3047,61 +3106,91 @@ def test_zoom_floating_focus():
 
 
 def test_request_fullscreen_enters():
-    """A tiled client whose app requests fullscreen moves to FULLSCREEN."""
+    """A tiled client whose app requests fullscreen lands in its monitor's
+    fullscreen slot."""
     server = make_server()
-    client = make_client(toplevel=MagicMock(), scene_tree=MagicMock())
-    client.toplevel.requested.fullscreen = True
-
-    with patch("wel.set_layer") as sl:
-        wel.client_request_fullscreen(server, client, None)
-
-    sl.assert_called_once_with(server, client, wel.Layer.FULLSCREEN)
-
-
-def test_request_fullscreen_saves_float():
-    """A floating client routes through set_layer, which snapshots
-    pending_geom on the FLOAT -> FULLSCREEN transition."""
-    server = make_server()
+    m = make_monitor()
     client = make_client(
-        toplevel=MagicMock(), scene_tree=MagicMock(),
-        layer=wel.Layer.FLOAT)
+        toplevel=MagicMock(),
+        scene_tree=MagicMock(),
+        monitor=m,
+    )
     client.toplevel.requested.fullscreen = True
 
-    with patch("wel.set_layer") as sl:
+    with patch("wel.apply_tree"), patch("wel.apply_geometry"), \
+         patch("wel.apply_focus"):
         wel.client_request_fullscreen(server, client, None)
 
-    sl.assert_called_once_with(server, client, wel.Layer.FULLSCREEN)
+    assert m.fullscreen is client
+    server.lib.wlr_xdg_toplevel_set_fullscreen.assert_called_once_with(
+        client.toplevel, True)
+
+
+def test_request_fullscreen_keeps_float():
+    """A floating client that goes fullscreen keeps its floating_geom
+    intact, so exit later returns to the same rect."""
+    server = make_server()
+    m = make_monitor()
+    saved = wel.Rect(10, 20, 300, 200)
+    client = make_client(
+        toplevel=MagicMock(),
+        scene_tree=MagicMock(),
+        monitor=m,
+        floating_geom=saved,
+    )
+    client.toplevel.requested.fullscreen = True
+
+    with patch("wel.apply_tree"), patch("wel.apply_geometry"), \
+         patch("wel.apply_focus"):
+        wel.client_request_fullscreen(server, client, None)
+
+    assert m.fullscreen is client
+    assert client.floating_geom == saved
 
 
 def test_request_fullscreen_to_tile():
     """A fullscreen client with no saved float geometry returns to TILE
     when its app requests un-fullscreen."""
     server = make_server()
+    m = make_monitor()
     client = make_client(
-        toplevel=MagicMock(), scene_tree=MagicMock(),
-        layer=wel.Layer.FULLSCREEN, pending_geom=None)
+        toplevel=MagicMock(),
+        scene_tree=MagicMock(),
+        monitor=m,
+    )
+    m.fullscreen = client
     client.toplevel.requested.fullscreen = False
 
-    with patch("wel.set_layer") as sl:
+    with patch("wel.apply_tree"), patch("wel.apply_geometry"), \
+         patch("wel.apply_focus"):
         wel.client_request_fullscreen(server, client, None)
 
-    sl.assert_called_once_with(server, client, wel.Layer.TILE)
+    assert m.fullscreen is None
+    assert wel.client_layer(client) == wel.Layer.TILE
 
 
 def test_request_fullscreen_to_float():
     """A fullscreen client that was floating returns to FLOAT when its app
-    requests un-fullscreen, so set_layer restores the saved rectangle."""
+    requests un-fullscreen."""
     server = make_server()
+    m = make_monitor()
+    saved = wel.Rect(10, 20, 300, 200)
     client = make_client(
-        toplevel=MagicMock(), scene_tree=MagicMock(),
-        layer=wel.Layer.FULLSCREEN,
-        pending_geom=wel.Rect(10, 20, 300, 200))
+        toplevel=MagicMock(),
+        scene_tree=MagicMock(),
+        monitor=m,
+        floating_geom=saved,
+    )
+    m.fullscreen = client
     client.toplevel.requested.fullscreen = False
 
-    with patch("wel.set_layer") as sl:
+    with patch("wel.apply_tree"), patch("wel.apply_geometry"), \
+         patch("wel.apply_focus"):
         wel.client_request_fullscreen(server, client, None)
 
-    sl.assert_called_once_with(server, client, wel.Layer.FLOAT)
+    assert m.fullscreen is None
+    assert client.floating_geom == saved
+    assert wel.client_layer(client) == wel.Layer.FLOAT
 
 
 def test_request_fullscreen_pre_map():
@@ -3113,39 +3202,44 @@ def test_request_fullscreen_pre_map():
     client = make_client(toplevel=MagicMock(), scene_tree=None)
     client.toplevel.requested.fullscreen = True
 
-    with patch("wel.set_layer") as sl:
+    with patch("wel.set_fullscreen") as sf:
         wel.client_request_fullscreen(server, client, None)
-    sl.assert_not_called()
+    sf.assert_not_called()
 
-    with patch("wel.set_layer") as sl, patch("wel.focus_client"):
+    with patch("wel.set_fullscreen") as sf, patch("wel.focus_client"):
         wel.client_map(server, client, None)
-    sl.assert_any_call(server, client, wel.Layer.FULLSCREEN)
+    sf.assert_called_with(server, m, client)
 
 
 def test_request_fullscreen_noop():
     """An already-fullscreen client whose app re-requests fullscreen is a
     no-op so no spurious configure goes out."""
     server = make_server()
+    m = make_monitor()
     client = make_client(
-        toplevel=MagicMock(), scene_tree=MagicMock(),
-        layer=wel.Layer.FULLSCREEN)
+        toplevel=MagicMock(),
+        scene_tree=MagicMock(),
+        monitor=m,
+    )
+    m.fullscreen = client
     client.toplevel.requested.fullscreen = True
 
-    with patch("wel.set_layer") as sl:
+    with patch("wel.apply_tree"), patch("wel.apply_geometry"), \
+         patch("wel.apply_focus"):
         wel.client_request_fullscreen(server, client, None)
 
-    sl.assert_not_called()
+    server.lib.wlr_xdg_toplevel_set_fullscreen.assert_not_called()
 
 
 def test_cycle_focus_fullscreen():
     """cycle_focus is inert while a fullscreen window owns the monitor so
     focus stays pinned to it."""
     server = make_server()
-    m = MagicMock(name="m")
+    m = make_monitor()
     server.monitors.append(m)
-    a = make_client(toplevel=MagicMock(name="a"), monitor=m,
-                  layer=wel.Layer.FULLSCREEN)
+    a = make_client(toplevel=MagicMock(name="a"), monitor=m)
     b = make_client(toplevel=MagicMock(name="b"), monitor=m)
+    m.fullscreen = a
     server.clients.extend([a, b])
 
     with patch("wel.focus_client") as focus:
@@ -3158,19 +3252,23 @@ def test_client_map_unfullscreens_existing():
     """A new window on a monitor that already hosts a fullscreen window
     un-fullscreens that window first so the new one isn't buried."""
     server = make_server()
-    m = MagicMock(name="m")
+    m = make_monitor()
     server.monitors.append(m)
     existing = make_client(
-        toplevel=MagicMock(name="old"), scene_tree=MagicMock(),
-        monitor=m, layer=wel.Layer.FULLSCREEN, pending_geom=None)
+        toplevel=MagicMock(name="old"),
+        scene_tree=MagicMock(),
+        monitor=m,
+    )
+    m.fullscreen = existing
     server.clients.append(existing)
     fresh = make_client(toplevel=MagicMock(name="new"), scene_tree=None)
 
-    with patch("wel.set_layer") as sl, \
-         patch("wel.focus_client"), patch("wel.apply_geometry"):
+    with patch("wel.focus_client"), patch("wel.apply_geometry"):
         wel.client_map(server, fresh, None)
 
-    sl.assert_any_call(server, existing, wel.Layer.TILE)
+    assert m.fullscreen is None
+    server.lib.wlr_xdg_toplevel_set_fullscreen.assert_called_once_with(
+        existing.toplevel, False)
 
 
 def test_resize_client_fullscreen():
@@ -3178,10 +3276,14 @@ def test_resize_client_fullscreen():
     surface fills the rect, the xdg subtree sits flush at (0, 0), and the
     border rects collapse to zero size."""
     server = make_server()
+    m = make_monitor()
     client = make_client(
-        toplevel=MagicMock(), scene_tree=MagicMock(),
+        toplevel=MagicMock(),
+        scene_tree=MagicMock(),
+        monitor=m,
         borders=tuple(MagicMock(name=f"b{i}") for i in range(4)),
-        layer=wel.Layer.FULLSCREEN)
+    )
+    m.fullscreen = client
 
     wel.resize_client(server, client, wel.Rect(0, 0, 800, 600))
 
@@ -3594,8 +3696,8 @@ def test_set_tiled_tracks():
 
 
 def test_begin_dragging_floats():
-    """begin_dragging_client promotes the dragged window to the float layer
-    before snapping the drag offset."""
+    """begin_dragging_client makes the dragged window floating by seeding
+    floating_geom from its current outer rect."""
     server = make_server()
     server.cursor = make_cursor(
         cursor=MagicMock(name="cur"), xcursor_manager="X")
@@ -3609,17 +3711,19 @@ def test_begin_dragging_floats():
     node.parent = client.scene_tree
     server.lib.wlr_scene_node_at.return_value = node
 
-    with patch("wel.set_layer") as sl:
+    seed = wel.Rect(0, 0, 100, 80)
+    with patch("wel.client_outer_rect", return_value=seed), \
+         patch("wel.apply_geometry"):
         wel.begin_dragging_client(server)
 
-    sl.assert_called_once_with(server, client, wel.Layer.FLOAT)
+    assert client.floating_geom == seed
 
 
 def test_client_commit_initial_tiled():
     """A tiled client's initial commit defers tiling to map so siblings
     don't reflow before the new window can appear."""
     server = make_server()
-    m = MagicMock(name="m")
+    m = MagicMock(name="m", fullscreen=None)
     toplevel = MagicMock()
     toplevel.base.initial_commit = True
     client = make_client(toplevel=toplevel, scene_tree=MagicMock(), monitor=m)
@@ -3635,11 +3739,15 @@ def test_client_commit_initial_tiled():
 def test_client_commit_initial_floating():
     """A floating client falls back to the (0, 0) initial configure."""
     server = make_server()
-    m = MagicMock(name="m")
+    m = MagicMock(name="m", fullscreen=None)
     toplevel = MagicMock()
     toplevel.base.initial_commit = True
-    client = make_client(toplevel=toplevel, scene_tree=MagicMock(),
-                       layer=wel.Layer.FLOAT, monitor=m)
+    client = make_client(
+        toplevel=toplevel,
+        scene_tree=MagicMock(),
+        floating_geom=wel.Rect(0, 0, 100, 100),
+        monitor=m,
+    )
 
     with patch("wel.apply_geometry") as apply_geom:
         wel.client_commit(server, client, None)
@@ -3671,7 +3779,7 @@ def test_client_unmap_arranges():
     tiles expand -- in the same event as the window's removal so it lands
     in a single frame."""
     server = make_server()
-    m = MagicMock(name="m")
+    m = MagicMock(name="m", fullscreen=None)
     server.monitors.append(m)
     client = make_client(
         toplevel=MagicMock(name="tl"), scene_tree=MagicMock(), monitor=m)
@@ -3716,7 +3824,7 @@ def test_client_unmap_stale():
     """Unmapping a client whose monitor has already been removed is a
     no-op for arrange."""
     server = make_server()
-    m = MagicMock(name="m")  # not in server.monitors
+    m = MagicMock(name="m", fullscreen=None)  # not in server.monitors
     client = make_client(
         toplevel=MagicMock(name="tl"), scene_tree=MagicMock(), monitor=m)
     server.clients.append(client)
