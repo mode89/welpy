@@ -1614,7 +1614,7 @@ def test_cursor_button_release_ends():
 
 def test_begin_dragging_offset():
     """begin_dragging_client captures the cursor->window-origin offset as
-    ints, which cursor_drag then subtracts from cursor position to
+    ints, which drag_client then subtracts from cursor position to
     reposition the window."""
     server = make_server()
     server.cursor = make_cursor(

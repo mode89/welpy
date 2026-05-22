@@ -52,7 +52,7 @@ class Rect:
 @dataclass(frozen=True)
 class Grab:
     """Active mouse-driven interaction on a window. In both kinds,
-    `cursor - (x, y)` is the value cursor_drag preserves under motion --
+    `cursor - (x, y)` is the value drag_client preserves under motion --
     the window origin for "move", the window size for "resize"."""
     kind: str
     x: int
@@ -1277,8 +1277,10 @@ def cursor_motion(server: Server, data) -> None:
     lib.wlr_cursor_move(
         server.cursor.cursor, ffi.addressof(event.pointer.base),
         event.delta_x, event.delta_y)
-    cursor_drag(server)
-    pointer_motion(server, event.time_msec)
+    if grabbed := grabbed_client(server):
+        drag_client(server, grabbed)
+    else:
+        forward_pointer_motion(server, event.time_msec)
 
 
 def cursor_motion_absolute(server: Server, data) -> None:
@@ -1289,16 +1291,16 @@ def cursor_motion_absolute(server: Server, data) -> None:
     lib.wlr_cursor_warp_absolute(
         server.cursor.cursor, ffi.addressof(event.pointer.base),
         event.x, event.y)
-    cursor_drag(server)
-    pointer_motion(server, event.time_msec)
+    if grabbed := grabbed_client(server):
+        drag_client(server, grabbed)
+    else:
+        forward_pointer_motion(server, event.time_msec)
 
 
-def pointer_motion(server: Server, time_msec: int) -> None:
+def forward_pointer_motion(server: Server, time_msec: int) -> None:
     """Forward a pointer move to whatever surface sits under the cursor so
     apps see hovers and tooltips."""
     lib = server.lib
-    if grabbed_client(server) is not None:
-        return
     cur = server.cursor.cursor
     surface, sx, sy = surface_at(server, cur.x, cur.y)
     if surface is None:
@@ -1392,13 +1394,10 @@ def begin_resizing_client(server: Server) -> None:
     apply_focus(server)
 
 
-def cursor_drag(server: Server) -> None:
+def drag_client(server: Server, grabbed: Client) -> None:
     """While dragging, keep the grabbed window tracking the cursor: move
     pins the captured offset; resize adds the cursor delta to the size.
     Updates floating_geom in step so apply_geometry stays a no-op mid-drag."""
-    grabbed = grabbed_client(server)
-    if grabbed is None:
-        return
     ffi, lib = server.ffi, server.lib
     cur = server.cursor.cursor
     grab = grabbed.grab
