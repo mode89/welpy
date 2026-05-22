@@ -1085,10 +1085,9 @@ def build():
 
         def remove():
             entry = handles.pop(key, None)
-            if entry is None:
-                return
-            held, _cb = entry
-            lib.wl_list_remove(ffi.addressof(held[0], "link"))
+            if entry is not None:
+                held, _cb = entry
+                lib.wl_list_remove(ffi.addressof(held[0], "link"))
 
         return SimpleNamespace(remove=remove)
 
@@ -1108,9 +1107,8 @@ def build():
         )
 
         def remove():
-            if handles.pop(key, None) is None:
-                return
-            lib.wl_event_source_remove(source)
+            if handles.pop(key, None) is not None:
+                lib.wl_event_source_remove(source)
 
         def update(milliseconds):
             lib.wl_event_source_timer_update(source, milliseconds)
@@ -1131,9 +1129,8 @@ def build():
         )
 
         def remove():
-            if handles.pop(key, None) is None:
-                return
-            lib.wl_event_source_remove(source)
+            if handles.pop(key, None) is not None:
+                lib.wl_event_source_remove(source)
 
         return SimpleNamespace(remove=remove, source=source)
 

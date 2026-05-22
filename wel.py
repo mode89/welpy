@@ -341,9 +341,8 @@ def terminate(server):
 def close_window(server: Server) -> None:
     """Ask the focused app to close its window."""
     client = top_client(server, selected_monitor(server))
-    if client is None:
-        return
-    server.lib.wlr_xdg_toplevel_send_close(client.toplevel)
+    if client is not None:
+        server.lib.wlr_xdg_toplevel_send_close(client.toplevel)
 
 
 def monitor_new(server: Server, data) -> None:
@@ -494,9 +493,8 @@ def client_commit(server: Server, client: Client, _data) -> None:
     if client.toplevel.base.initial_commit:
         # Empty configure; real tile size is sent from client_map.
         set_size(server, client, 0, 0)
-        return
-    # Release the screen hold once the client has caught up.
-    if client.pending_serial is not None:
+    elif client.pending_serial is not None:
+        # Release the screen hold once the client has caught up.
         acked = client.toplevel.base.current.configure_serial
         if acked >= client.pending_serial:
             client.pending_serial = None
@@ -571,20 +569,17 @@ def client_unmap(server: Server, client: Client, _data) -> None:
 def client_request_fullscreen(
         server: Server, client: Client, _data) -> None:
     """An app asked to enter or leave fullscreen."""
-    if client.scene_tree is None:
-        # Pre-map: client_map reads the same flag once the tree exists.
-        return
-    monitor = client.monitor
-    if monitor is None:
-        return
-    wants = bool(client.toplevel.requested.fullscreen)
-    if wants and monitor.fullscreen is not client:
-        set_fullscreen(server, monitor, client)
-    elif not wants and monitor.fullscreen is client:
-        set_fullscreen(server, monitor, None)
-    apply_tree(server)
-    apply_geometry(server, monitor)
-    apply_focus(server)
+    # Pre-map: client_map reads the same flag once the tree exists.
+    monitor = client.monitor if client.scene_tree is not None else None
+    if monitor is not None:
+        wants = bool(client.toplevel.requested.fullscreen)
+        if wants and monitor.fullscreen is not client:
+            set_fullscreen(server, monitor, client)
+        elif not wants and monitor.fullscreen is client:
+            set_fullscreen(server, monitor, None)
+        apply_tree(server)
+        apply_geometry(server, monitor)
+        apply_focus(server)
 
 
 def client_cleanup(_server: Server, client: Client, _data) -> None:
@@ -602,23 +597,22 @@ def decoration_new(server: Server, data) -> None:
     window onto server-side decorations."""
     ffi, lib, listen = server.ffi, server.lib, server.listen
     deco = ffi.cast("struct wlr_xdg_toplevel_decoration_v1 *", data)
-    if deco.toplevel.base.data == ffi.NULL:
-        return
-    client = ffi.from_handle(deco.toplevel.base.data)
-    client.decoration = deco
+    if deco.toplevel.base.data != ffi.NULL:
+        client = ffi.from_handle(deco.toplevel.base.data)
+        client.decoration = deco
 
-    def on_destroy(_data):
-        client.decoration = None
-        for l in listeners:
-            l.remove()
+        def on_destroy(_data):
+            client.decoration = None
+            for l in listeners:
+                l.remove()
 
-    listeners = [
-        listen(lib.welpy_xdg_decoration_request_mode(deco),
-            lambda _data: apply_decoration(server)),
-        listen(lib.welpy_xdg_decoration_destroy(deco), on_destroy),
-    ]
+        listeners = [
+            listen(lib.welpy_xdg_decoration_request_mode(deco),
+                lambda _data: apply_decoration(server)),
+            listen(lib.welpy_xdg_decoration_destroy(deco), on_destroy),
+        ]
 
-    apply_decoration(server)
+        apply_decoration(server)
 
 
 def apply_decoration(server: Server) -> None:
@@ -670,28 +664,27 @@ def popup_new(server: Server, data) -> None:
     popup = ffi.cast("struct wlr_xdg_popup *", data)
 
     def on_commit(_data):
-        if not popup.base.initial_commit:
-            return
-        if popup.parent == ffi.NULL:
+        if popup.base.initial_commit:
+            # Short-circuit guards popup.parent.data when popup.parent is NULL.
+            parent_scene = (
+                ffi.cast("struct wlr_scene_tree *", popup.parent.data)
+                if popup.parent != ffi.NULL  # pylint: disable=consider-using-in
+                    and popup.parent.data != ffi.NULL
+                else None
+            )
+            if parent_scene is not None:
+                scene = lib.wlr_scene_xdg_surface_create(
+                    parent_scene, popup.base)
+                popup.base.surface.data = ffi.cast("void *", scene)
+                root = lib.wlr_surface_get_root_surface(popup.parent)
+                owner_node, owner_monitor = _popup_owner(server, root)
+                if owner_monitor is not None and owner_node is not None:
+                    box = monitor_box(server, owner_monitor)
+                    wlr_box = ffi.new("struct wlr_box *",
+                        [box.x - owner_node.x, box.y - owner_node.y,
+                         box.width, box.height])
+                    lib.wlr_xdg_popup_unconstrain_from_box(popup, wlr_box)
             cleanup()
-            return
-        parent_scene = (
-            ffi.cast("struct wlr_scene_tree *", popup.parent.data)
-            if popup.parent.data != ffi.NULL else None)
-        if parent_scene is None:
-            cleanup()
-            return
-        scene = lib.wlr_scene_xdg_surface_create(parent_scene, popup.base)
-        popup.base.surface.data = ffi.cast("void *", scene)
-        root = lib.wlr_surface_get_root_surface(popup.parent)
-        owner_node, owner_monitor = _popup_owner(server, root)
-        if owner_monitor is not None and owner_node is not None:
-            box = monitor_box(server, owner_monitor)
-            wlr_box = ffi.new("struct wlr_box *",
-                [box.x - owner_node.x, box.y - owner_node.y,
-                 box.width, box.height])
-            lib.wlr_xdg_popup_unconstrain_from_box(popup, wlr_box)
-        cleanup()
 
     def cleanup():
         for l in listeners:
@@ -726,40 +719,39 @@ def layer_surface_new(server: Server, data) -> None:
     layer_surface = ffi.cast("struct wlr_layer_surface_v1 *", data)
     if layer_surface.output == ffi.NULL:
         monitor = selected_monitor(server)
-        if monitor is None:
-            lib.wlr_layer_surface_v1_destroy(layer_surface)
-            return
-        layer_surface.output = monitor.output
+        if monitor is not None:
+            layer_surface.output = monitor.output
     else:
         monitor = next(
             (m for m in server.monitors if m.output == layer_surface.output),
             None)
-        if monitor is None:
-            lib.wlr_layer_surface_v1_destroy(layer_surface)
-            return
-    layer = SHELL_LAYERS[layer_surface.pending.layer]
-    scene_layer = lib.wlr_scene_layer_surface_v1_create(
-        server.layers[layer], layer_surface)
-    # Lift popups for BG/BOTTOM into TOP so they aren't buried by a bar.
-    popups_parent = server.layers[
-        Layer.TOP if layer in (Layer.BACKGROUND, Layer.BOTTOM) else layer]
-    popups_tree = lib.wlr_scene_tree_create(popups_parent)
-    ls = LayerSurface(
-        layer_surface=layer_surface, scene_layer=scene_layer,
-        scene_tree=scene_layer.tree, popups_tree=popups_tree,
-        monitor=monitor, focused=False, listeners=[])
-    # popup_new resolves the parent scene tree via surface.data.
-    layer_surface.surface.data = ffi.cast("void *", popups_tree)
-    monitor.layers[layer].append(ls)
-    ls.listeners.extend([
-        listen(lib.welpy_surface_commit(layer_surface.surface),
-            lambda data: layer_surface_commit(server, ls, data)),
-        listen(lib.welpy_surface_unmap(layer_surface.surface),
-            lambda data: layer_surface_unmap(server, ls, data)),
-        listen(lib.welpy_layer_surface_destroy(layer_surface),
-            lambda data: layer_surface_cleanup(server, ls, data)),
-    ])
-    lib.wlr_surface_send_enter(layer_surface.surface, monitor.output)
+
+    if monitor is None:
+        lib.wlr_layer_surface_v1_destroy(layer_surface)
+    else:
+        layer = SHELL_LAYERS[layer_surface.pending.layer]
+        scene_layer = lib.wlr_scene_layer_surface_v1_create(
+            server.layers[layer], layer_surface)
+        # Lift popups for BG/BOTTOM into TOP so they aren't buried by a bar.
+        popups_parent = server.layers[
+            Layer.TOP if layer in (Layer.BACKGROUND, Layer.BOTTOM) else layer]
+        popups_tree = lib.wlr_scene_tree_create(popups_parent)
+        ls = LayerSurface(
+            layer_surface=layer_surface, scene_layer=scene_layer,
+            scene_tree=scene_layer.tree, popups_tree=popups_tree,
+            monitor=monitor, focused=False, listeners=[])
+        # popup_new resolves the parent scene tree via surface.data.
+        layer_surface.surface.data = ffi.cast("void *", popups_tree)
+        monitor.layers[layer].append(ls)
+        ls.listeners.extend([
+            listen(lib.welpy_surface_commit(layer_surface.surface),
+                lambda data: layer_surface_commit(server, ls, data)),
+            listen(lib.welpy_surface_unmap(layer_surface.surface),
+                lambda data: layer_surface_unmap(server, ls, data)),
+            listen(lib.welpy_layer_surface_destroy(layer_surface),
+                lambda data: layer_surface_cleanup(server, ls, data)),
+        ])
+        lib.wlr_surface_send_enter(layer_surface.surface, monitor.output)
 
 
 def layer_surface_commit(server: Server, ls: LayerSurface, _data) -> None:
@@ -767,29 +759,28 @@ def layer_surface_commit(server: Server, ls: LayerSurface, _data) -> None:
     ffi = server.ffi
     layer_surface = ls.layer_surface
     monitor = ls.monitor
-    if monitor is None:
-        return
-    if layer_surface.initial_commit:
-        # Swap pending into current so the initial configure sees real size.
-        size = ffi.sizeof("struct wlr_layer_surface_v1_state")
-        saved = ffi.new("struct wlr_layer_surface_v1_state *")
-        ffi.memmove(saved, ffi.addressof(layer_surface, "current"), size)
-        ffi.memmove(ffi.addressof(layer_surface, "current"),
-                    ffi.addressof(layer_surface, "pending"), size)
-        arrange_layers(server, monitor)
-        ffi.memmove(ffi.addressof(layer_surface, "current"), saved, size)
-        return
-    new_layer = SHELL_LAYERS[layer_surface.current.layer]
-    if ls not in monitor.layers[new_layer]:
-        for bucket in monitor.layers.values():
-            if ls in bucket:
-                bucket.remove(ls)
-                break
-        monitor.layers[new_layer].append(ls)
-    arrange_layers(server, monitor)
-    apply_tree(server)
-    apply_geometry(server, monitor)
-    apply_focus(server)
+    if monitor is not None:
+        if layer_surface.initial_commit:
+            # Swap pending into current so the initial configure sees real size.
+            size = ffi.sizeof("struct wlr_layer_surface_v1_state")
+            saved = ffi.new("struct wlr_layer_surface_v1_state *")
+            ffi.memmove(saved, ffi.addressof(layer_surface, "current"), size)
+            ffi.memmove(ffi.addressof(layer_surface, "current"),
+                        ffi.addressof(layer_surface, "pending"), size)
+            arrange_layers(server, monitor)
+            ffi.memmove(ffi.addressof(layer_surface, "current"), saved, size)
+        else:
+            new_layer = SHELL_LAYERS[layer_surface.current.layer]
+            if ls not in monitor.layers[new_layer]:
+                for bucket in monitor.layers.values():
+                    if ls in bucket:
+                        bucket.remove(ls)
+                        break
+                monitor.layers[new_layer].append(ls)
+            arrange_layers(server, monitor)
+            apply_tree(server)
+            apply_geometry(server, monitor)
+            apply_focus(server)
 
 
 def layer_surface_unmap(server: Server, ls: LayerSurface, _data) -> None:
@@ -935,13 +926,11 @@ def cycle_focus(server: Server, direction: int) -> None:
     it until the user toggles fullscreen off."""
     monitor = selected_monitor(server)
     candidates = clients_on(server, monitor)
-    if not candidates:
-        return
-    if monitor.fullscreen is not None:
-        return
-    index = candidates.index(top_client(server, monitor))
-    focus_client(server, candidates[(index + direction) % len(candidates)])
-    apply_focus(server)
+    if candidates and monitor.fullscreen is None:
+        index = candidates.index(top_client(server, monitor))
+        focus_client(
+            server, candidates[(index + direction) % len(candidates)])
+        apply_focus(server)
 
 
 def toggle_fullscreen(server: Server) -> None:
@@ -949,71 +938,62 @@ def toggle_fullscreen(server: Server) -> None:
     Exiting restores the prior floating geometry if there was one, else
     re-tiles."""
     monitor = selected_monitor(server)
-    if monitor is None:
-        return
-    client = top_client(server, monitor)
-    if client is None:
-        return
-    if monitor.fullscreen is client:
-        set_fullscreen(server, monitor, None)
-    else:
-        set_fullscreen(server, monitor, client)
-    apply_tree(server)
-    apply_geometry(server, monitor)
-    apply_focus(server)
+    client = top_client(server, monitor) if monitor is not None else None
+    if client is not None:
+        if monitor.fullscreen is client:
+            set_fullscreen(server, monitor, None)
+        else:
+            set_fullscreen(server, monitor, client)
+        apply_tree(server)
+        apply_geometry(server, monitor)
+        apply_focus(server)
 
 
 def toggle_floating(server: Server) -> None:
     """Flip the focused window between tiled and floating. No-op while it
     is fullscreen."""
     monitor = selected_monitor(server)
-    if monitor is None:
-        return
-    client = top_client(server, monitor)
-    if client is None or monitor.fullscreen is client:
-        return
-    if client.floating_geom is None:
-        # Seed the float at the current outer rect so it starts where it tiled.
-        client.floating_geom = client_outer_rect(client)
-    else:
-        client.floating_geom = None
-    apply_tree(server)
-    apply_geometry(server, monitor)
-    apply_focus(server)
+    client = top_client(server, monitor) if monitor is not None else None
+    if client is not None and monitor.fullscreen is not client:
+        if client.floating_geom is None:
+            # Seed the float at the current outer rect so it starts where tiled.
+            client.floating_geom = client_outer_rect(client)
+        else:
+            client.floating_geom = None
+        apply_tree(server)
+        apply_geometry(server, monitor)
+        apply_focus(server)
 
 
 def zoom(server: Server) -> None:
     """Promote the focused window to master, or, if it already is, toggle
     back to the previously displaced master."""
     monitor = selected_monitor(server)
-    if monitor is None:
-        return
-    tiled = [c for c in clients_on(server, monitor)
-             if client_layer(c) == Layer.TILE]
-    if len(tiled) < 2:
-        return
-    focused = top_client(server, monitor)
-    if focused is None or client_layer(focused) != Layer.TILE:
-        return
-    master = tiled[0]
-    if focused is master:
-        partner = max(
-            (c for c in tiled if c is not master),
-            key=lambda c: c.focus_order)
-    else:
-        partner = master
-    i = server.clients.index(focused)
-    j = server.clients.index(partner)
-    server.clients[i], server.clients[j] = (
-        server.clients[j], server.clients[i])
-    if focused is master:
-        focus_client(server, partner)
-    else:
-        # Tag the displaced master so the next zoom toggles back to it.
-        partner.focus_order = focused.focus_order
-        focused.focus_order += 1
-    apply_geometry(server, monitor)
-    apply_focus(server)
+    tiled = ([c for c in clients_on(server, monitor)
+              if client_layer(c) == Layer.TILE]
+             if monitor is not None else [])
+    focused = top_client(server, monitor) if monitor is not None else None
+    if (len(tiled) >= 2 and focused is not None
+            and client_layer(focused) == Layer.TILE):
+        master = tiled[0]
+        if focused is master:
+            partner = max(
+                (c for c in tiled if c is not master),
+                key=lambda c: c.focus_order)
+        else:
+            partner = master
+        i = server.clients.index(focused)
+        j = server.clients.index(partner)
+        server.clients[i], server.clients[j] = (
+            server.clients[j], server.clients[i])
+        if focused is master:
+            focus_client(server, partner)
+        else:
+            # Tag the displaced master so the next zoom toggles back to it.
+            partner.focus_order = focused.focus_order
+            focused.focus_order += 1
+        apply_geometry(server, monitor)
+        apply_focus(server)
 
 
 def arrange_layers(server: Server, monitor: Monitor) -> None:
@@ -1148,17 +1128,16 @@ def set_fullscreen(
     """Set this screen's fullscreen window (None to clear), notifying the
     affected apps so their xdg-toplevel state matches."""
     prev = monitor.fullscreen
-    if prev is client:
-        return
-    monitor.fullscreen = client
-    if prev is not None:
-        serial = server.lib.wlr_xdg_toplevel_set_fullscreen(
-            prev.toplevel, False)
-        _track_configure(prev, serial)
-    if client is not None:
-        serial = server.lib.wlr_xdg_toplevel_set_fullscreen(
-            client.toplevel, True)
-        _track_configure(client, serial)
+    if prev is not client:
+        monitor.fullscreen = client
+        if prev is not None:
+            serial = server.lib.wlr_xdg_toplevel_set_fullscreen(
+                prev.toplevel, False)
+            _track_configure(prev, serial)
+        if client is not None:
+            serial = server.lib.wlr_xdg_toplevel_set_fullscreen(
+                client.toplevel, True)
+            _track_configure(client, serial)
 
 
 def _track_configure(client: Client, serial: int) -> None:
@@ -1171,8 +1150,8 @@ def _track_configure(client: Client, serial: int) -> None:
         logger.warning(
             "configure serial %d already acked (current=%d)", serial, acked)
         client.pending_serial = None
-        return
-    client.pending_serial = serial
+    else:
+        client.pending_serial = serial
 
 
 def client_layer(client: Client) -> Layer:
@@ -1303,9 +1282,9 @@ def forward_pointer_motion(server: Server, time_msec: int) -> None:
     surface, sx, sy = surface_at(server, cur.x, cur.y)
     if surface is None:
         lib.wlr_seat_pointer_clear_focus(server.seat)
-        return
-    lib.wlr_seat_pointer_notify_enter(server.seat, surface, sx, sy)
-    lib.wlr_seat_pointer_notify_motion(server.seat, time_msec, sx, sy)
+    else:
+        lib.wlr_seat_pointer_notify_enter(server.seat, surface, sx, sy)
+        lib.wlr_seat_pointer_notify_motion(server.seat, time_msec, sx, sy)
 
 
 def cursor_button(server: Server, data) -> None:
@@ -1356,19 +1335,19 @@ def begin_dragging_client(server: Server) -> None:
     snap the window under the pointer."""
     cur = server.cursor.cursor
     client = client_at(server, cur.x, cur.y)
-    if client is None:
-        return
-    monitor = client.monitor
-    if monitor is not None and monitor.fullscreen is client:
-        set_fullscreen(server, monitor, None)
-    if client.floating_geom is None:
-        client.floating_geom = client_outer_rect(client)
-    node = client.scene_tree.node
-    client.grab = Grab("move", int(cur.x - node.x), int(cur.y - node.y))
-    apply_tree(server)
-    if monitor is not None:
-        apply_geometry(server, monitor)
-    apply_focus(server)
+    if client is not None:
+        monitor = client.monitor
+        if monitor is not None and monitor.fullscreen is client:
+            set_fullscreen(server, monitor, None)
+        if client.floating_geom is None:
+            client.floating_geom = client_outer_rect(client)
+        node = client.scene_tree.node
+        client.grab = Grab(
+            "move", int(cur.x - node.x), int(cur.y - node.y))
+        apply_tree(server)
+        if monitor is not None:
+            apply_geometry(server, monitor)
+        apply_focus(server)
 
 
 def begin_resizing_client(server: Server) -> None:
@@ -1376,20 +1355,19 @@ def begin_resizing_client(server: Server) -> None:
     stays put; cursor delta is added to the original size."""
     cur = server.cursor.cursor
     client = client_at(server, cur.x, cur.y)
-    if client is None:
-        return
-    monitor = client.monitor
-    if monitor is not None and monitor.fullscreen is client:
-        set_fullscreen(server, monitor, None)
-    if client.floating_geom is None:
-        client.floating_geom = client_outer_rect(client)
-    rect = client.floating_geom
-    client.grab = Grab(
-        "resize", int(cur.x) - rect.width, int(cur.y) - rect.height)
-    apply_tree(server)
-    if monitor is not None:
-        apply_geometry(server, monitor)
-    apply_focus(server)
+    if client is not None:
+        monitor = client.monitor
+        if monitor is not None and monitor.fullscreen is client:
+            set_fullscreen(server, monitor, None)
+        if client.floating_geom is None:
+            client.floating_geom = client_outer_rect(client)
+        rect = client.floating_geom
+        client.grab = Grab(
+            "resize", int(cur.x) - rect.width, int(cur.y) - rect.height)
+        apply_tree(server)
+        if monitor is not None:
+            apply_geometry(server, monitor)
+        apply_focus(server)
 
 
 def drag_client(server: Server, grabbed: Client) -> None:
@@ -1452,10 +1430,9 @@ def build_keycode_map(lib, ffi, keymap) -> dict:
         # Layout 0, level 0: strips Shift so "q" and "Q" don't collide.
         n = lib.xkb_keymap_key_get_syms_by_level(keymap, kc, 0, 0, syms_pp)
         for i in range(n):
-            if lib.xkb_keysym_get_name(syms_pp[0][i], name_buf, 64) <= 0:
-                continue
-            # xkb keycodes are evdev + 8; store evdev to match event.keycode.
-            result[ffi.string(name_buf).decode()] = kc - 8
+            if lib.xkb_keysym_get_name(syms_pp[0][i], name_buf, 64) > 0:
+                # xkb keycodes are evdev + 8; store evdev to match keycode.
+                result[ffi.string(name_buf).decode()] = kc - 8
     return result
 
 
