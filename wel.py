@@ -175,6 +175,8 @@ def main():
 
     teardown(server)
 
+    logger.info("compositor shut down cleanly")
+
 
 def load_config(path=None) -> None:
     """Run the user's `config.py` if present."""
