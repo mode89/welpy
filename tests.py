@@ -3545,20 +3545,18 @@ def test_layer_cleanup_removes():
 
 
 def test_layer_cleanup_trees():
-    """Destroying a shell surface releases both its content tree and its
-    sibling popup tree."""
+    """Destroying a shell surface releases the popup tree we own; the
+    content tree is freed by wlr_scene_layer_surface_v1's own destroy
+    listener so we must not touch it."""
     server = make_server()
     monitor = make_monitor()
     ls = make_layer_surface(monitor=monitor)
     server.ffi.addressof.side_effect = lambda node: ("ADDR", node)
 
-    with patch("wel.arrange_layers"):
-        wel.layer_surface_cleanup(server, ls, None)
+    wel.layer_surface_cleanup(server, ls, None)
 
-    server.lib.wlr_scene_node_destroy.assert_has_calls([
-        call(("ADDR", ls.scene_tree.node)),
-        call(("ADDR", ls.popups_tree.node)),
-    ], any_order=True)
+    server.lib.wlr_scene_node_destroy.assert_called_once_with(
+        ("ADDR", ls.popups_tree.node))
 
 
 def test_monitor_cleanup_destroys_layers():

@@ -812,19 +812,15 @@ def layer_surface_cleanup(
     for listener in ls.listeners:
         listener.remove()
     ls.listeners.clear()
-    monitor = ls.monitor
-    if monitor is not None:
-        for bucket in monitor.layers.values():
+    if ls.monitor is not None:
+        for bucket in ls.monitor.layers.values():
             if ls in bucket:
                 bucket.remove(ls)
                 break
         ls.monitor = None
-    lib.wlr_scene_node_destroy(ffi.addressof(ls.scene_tree.node))
+    # wlr_scene_layer_surface_v1's destroy listener fires before ours
+    # and frees scene_tree.
     lib.wlr_scene_node_destroy(ffi.addressof(ls.popups_tree.node))
-    if monitor is not None and monitor in server.monitors:
-        arrange_layers(server, monitor)
-        apply_geometry(server, monitor)
-    apply_focus(server)
 
 
 def focus_client(server: Server, client: Client) -> None:
