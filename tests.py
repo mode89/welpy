@@ -70,6 +70,7 @@ def make_client(**kwargs):
         "monitor": None, "listeners": [],
         "pending_serial": None,
         "decoration": None, "handle": None,
+        "inner_size": None,
         **kwargs,
     })
 
@@ -557,6 +558,38 @@ def test_client_commit_initial_pending():
     wel.client_commit(server, client, None)
 
     assert client.pending_serial == 11
+
+
+def test_client_commit_reclips():
+    """On a post-map commit, the surface clip is refreshed with the current
+    xdg geometry offset so the picture stays correct when the client drops or
+    adds its CSD shadow (e.g. on entering / leaving fullscreen)."""
+    server = make_server()
+    toplevel = MagicMock()
+    toplevel.base.initial_commit = False
+    toplevel.base.geometry.x = 0
+    toplevel.base.geometry.y = 0
+    client = make_client(
+        toplevel=toplevel, scene_tree=MagicMock(), inner_size=(800, 600))
+
+    wel.client_commit(server, client, None)
+
+    server.ffi.new.assert_any_call("struct wlr_box *", [0, 0, 800, 600])
+    server.lib.wlr_scene_subsurface_tree_set_clip.assert_called_once_with(
+        server.ffi.addressof.return_value, server.ffi.new.return_value)
+
+
+def test_client_commit_premap():
+    """Before the first resize, inner_size is unset and we have no idea what
+    to clip to; the initial commit must not touch the clip."""
+    server = make_server()
+    toplevel = MagicMock()
+    toplevel.base.initial_commit = True
+    client = make_client(toplevel=toplevel, scene_tree=None, inner_size=None)
+
+    wel.client_commit(server, client, None)
+
+    server.lib.wlr_scene_subsurface_tree_set_clip.assert_not_called()
 
 
 def test_client_new_no_insert():
@@ -2620,6 +2653,25 @@ def test_borders_resize():
         call(right, bw, 400 - 2 * bw),
     ]
 
+
+def test_resize_client_clips():
+    """resize_client clips the xdg subtree to the inner area, anchored at
+    the surface's xdg geometry offset so CSD shadow margins are skipped."""
+    server = make_server()
+    toplevel = MagicMock()
+    toplevel.base.geometry.x = 12
+    toplevel.base.geometry.y = 34
+    client = make_client(
+        toplevel=toplevel, scene_tree=MagicMock(),
+        borders=tuple(MagicMock() for _ in range(4)))
+
+    wel.resize_client(server, client, wel.Rect(10, 20, 300, 400))
+
+    bw = wel.BORDER_WIDTH
+    server.ffi.new.assert_any_call(
+        "struct wlr_box *", [12, 34, 300 - 2 * bw, 400 - 2 * bw])
+    server.lib.wlr_scene_subsurface_tree_set_clip.assert_called_once_with(
+        server.ffi.addressof.return_value, server.ffi.new.return_value)
 
 
 

@@ -99,6 +99,7 @@ class Client: # pylint: disable=too-many-instance-attributes
     pending_serial: int | None   # configure serial; None when client caught up
     decoration: Any          # wlr_xdg_toplevel_decoration_v1, if any
     handle: Any              # ffi.new_handle: backs toplevel.base.data
+    inner_size: tuple[int, int] | None  # inner (w, h) configured; None pre-map
 
 
 @dataclass
@@ -484,7 +485,7 @@ def client_new(server: Server, data) -> None:
         toplevel=toplevel, scene_tree=None, xdg_tree=None, borders=(),
         focus_order=0, grab=None, floating_geom=None,
         monitor=None, listeners=[], pending_serial=None,
-        decoration=None, handle=None)
+        decoration=None, handle=None, inner_size=None)
     # Back-pointer toplevel -> Client, so per-surface protocols (xdg-decoration
     # etc.) can resolve the owning client before it joins server.clients at map.
     client.handle = ffi.new_handle(client)
@@ -508,11 +509,15 @@ def client_commit(server: Server, client: Client, _data) -> None:
     if client.toplevel.base.initial_commit:
         # Empty configure; real tile size is sent from client_map.
         set_size(server, client, 0, 0)
-    elif client.pending_serial is not None:
+        return
+    if client.pending_serial is not None:
         # Release the screen hold once the client has caught up.
         acked = client.toplevel.base.current.configure_serial
         if acked >= client.pending_serial:
             client.pending_serial = None
+    if client.inner_size is not None:
+        # geometry offset can shift between commits (CSD on/off); resync.
+        apply_clip(server, client)
 
 
 def client_map(server: Server, client: Client, _data) -> None:
@@ -1108,6 +1113,22 @@ def resize_client(server: Server, client: Client, rect: Rect) -> None:
         lib.welpy_scene_rect_node(left), 0, bw)
     lib.wlr_scene_node_set_position(
         lib.welpy_scene_rect_node(right), rect.width - bw, bw)
+    client.inner_size = (inner_w, inner_h)
+    apply_clip(server, client)
+
+
+def apply_clip(server: Server, client: Client) -> None:
+    """Clip the window's surface to its inner area so the app can't paint
+    over the border or leak its CSD shadow outside the wrapper."""
+    ffi, lib = server.ffi, server.lib
+    inner_w, inner_h = client.inner_size
+    # Anchor at the geometry offset so the CSD shadow margin (baked into the
+    # surface buffer by GTK/libadwaita) is clipped away.
+    geom = client.toplevel.base.geometry
+    clip = ffi.new("struct wlr_box *",
+        [geom.x, geom.y, inner_w, inner_h])
+    lib.wlr_scene_subsurface_tree_set_clip(
+        ffi.addressof(client.xdg_tree.node), clip)
 
 
 def set_border_color(server: Server, client: Client, color) -> None:
