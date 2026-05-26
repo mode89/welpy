@@ -408,12 +408,12 @@ def monitor_render(server: Server, monitor: Monitor, _data) -> None:
     screen's vsync."""
     ffi, lib = server.ffi, server.lib
     # Hold the paint until compositor-driven size changes are acked, so
-    # borders and content land together. Floats opt in only while resizing.
+    # borders and content land together. Floats never opt in: a slow client
+    # (e.g. Firefox) would otherwise stall the whole frame during a drag.
     held = any(
         c.pending_serial is not None
         for c in clients_on(server, monitor)
         if client_layer(c) != Layer.FLOAT
-        or (c.grab is not None and c.grab.kind == "resize")
     )
     if not held:
         lib.wlr_scene_output_commit(monitor.scene_output, ffi.NULL)

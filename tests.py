@@ -405,8 +405,8 @@ def test_monitor_render_floating():
 
 
 def test_monitor_render_resizing():
-    """A float being interactively resized *does* hold the screen so its new
-    borders and the app's new buffer land in the same frame."""
+    """A float being interactively resized does not hold the screen -- a slow
+    client (e.g. Firefox) would otherwise stall the whole frame during drag."""
     server = make_server()
     monitor = make_monitor(output="OUT", scene_output="SO_X")
     client = make_client(
@@ -417,7 +417,7 @@ def test_monitor_render_resizing():
 
     wel.monitor_render(server, monitor, None)
 
-    server.lib.wlr_scene_output_commit.assert_not_called()
+    server.lib.wlr_scene_output_commit.assert_called_once()
 
 
 def test_monitor_render_moving():
