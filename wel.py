@@ -60,13 +60,21 @@ class Grab:
 
 
 @dataclass
+class Workspace:
+    """Switchable container of windows on a monitor."""
+    name: str                # user-facing label, e.g. "1".."9", "0"
+    monitor: Any             # the screen this workspace lives on; may be None
+    fullscreen: Any          # Client occupying it fullscreen, or None
+
+
+@dataclass
 class Monitor:
     """Physical screen."""
     output: Any              # wlr_output: the physical screen
     scene_output: Any        # per-screen render state inside the scene graph
     layers: dict             # {Layer: list[LayerSurface]} per shell layer
     window_area: Rect        # screen rect minus shell exclusive zones
-    fullscreen: Any          # the Client occupying this screen, or None
+    active_workspace: Any    # currently shown Workspace, or None if empty
     frame_timer: Any         # safety valve: forces a paint if hold lingers
     listeners: list[Any]
 
@@ -94,7 +102,7 @@ class Client: # pylint: disable=too-many-instance-attributes
     focus_order: int         # bumped on each focus; higher = more recent
     grab: Grab | None        # active mouse drag (move/resize), or None
     floating_geom: Rect | None  # the float's rect; None means tiled
-    monitor: Any
+    workspace: Any           # Workspace this window belongs to; None pre-map
     listeners: list[Any]
     pending_serial: int | None   # configure serial; None when client caught up
     decoration: Any          # wlr_xdg_toplevel_decoration_v1, if any
@@ -144,7 +152,9 @@ class Server: # pylint: disable=too-many-instance-attributes
     cursor: Cursor
     keyboard_group: KeyboardGroup
     monitors: list[Monitor]
+    active_monitor: Any      # Monitor receiving new windows / key bindings
     clients: list[Client]
+    workspaces: list         # all Workspaces; created at setup, never resized
     layers: dict             # scene tree per Layer; key order = z order
     keycode: dict            # sym-name -> evdev-keycode
     bindings: dict           # (mods, code) -> action(server)
@@ -256,7 +266,10 @@ def setup() -> Server: # pylint: disable=too-many-locals
         scene=scene, scene_layout=scene_layout,
         xdg_shell=xdg_shell, layer_shell=layer_shell, seat=seat,
         cursor=None, keyboard_group=None,
-        monitors=[], clients=[],
+        monitors=[], active_monitor=None, clients=[],
+        workspaces=[
+            Workspace(name=name, monitor=None, fullscreen=None)
+            for name in ("1", "2", "3", "4", "5", "6", "7", "8", "9", "0")],
         layers=layers,
         keycode={}, bindings={}, listeners=[],
     )
@@ -344,7 +357,7 @@ def terminate(server):
 
 def close_window(server: Server) -> None:
     """Ask the focused app to close its window."""
-    client = top_client(server, selected_monitor(server))
+    client = top_client(server, server.active_monitor)
     if client is not None:
         server.lib.wlr_xdg_toplevel_send_close(client.toplevel)
 
@@ -377,7 +390,7 @@ def monitor_new(server: Server, data) -> None:
         output=output, scene_output=scene_output,
         layers={layer: [] for layer in SHELL_LAYERS},
         window_area=Rect(0, 0, 0, 0),
-        fullscreen=None,
+        active_workspace=None,
         frame_timer=None,
         listeners=[])
     monitor.frame_timer = server.add_timer(
@@ -413,7 +426,7 @@ def monitor_render(server: Server, monitor: Monitor, _data) -> None:
     # (e.g. Firefox) would otherwise stall the whole frame during a drag.
     held = any(
         c.pending_serial is not None
-        for c in clients_on(server, monitor)
+        for c in clients_visible(server, monitor)
         if client_layer(c) != Layer.FLOAT
     )
     if not held:
@@ -441,30 +454,94 @@ def monitor_cleanup(server: Server, monitor: Monitor, _data) -> None:
         listener.remove()
     monitor.listeners.clear()
     server.monitors.remove(monitor)
-    set_fullscreen(server, monitor, None)
-    for c in clients_on(server, monitor):
-        c.monitor = None
     update_monitors(server)
 
 
 def update_monitors(server: Server) -> None:
-    """Called whenever the output layout changes: adding or removing a monitor,
-    changing an output's mode or position, etc. This is where the change
-    officially happens and we update geometry, window positions, focus, etc."""
-    selected = selected_monitor(server)
-    if selected is not None:
-        for c in clients_on(server, None):
-            c.monitor = selected
+    """Called whenever the output layout changes: adding or removing a
+    monitor, changing an output's mode or position, etc. Repairs the
+    workspace hierarchy, then re-flows visibility, geometry, and focus."""
+    apply_hierarchy(server)
+    apply_visibility(server)
+    apply_tree(server)
     for m in server.monitors:
         arrange_layers(server, m)
         apply_geometry(server, m)
     apply_focus(server)
 
 
-def selected_monitor(server: Server):
-    """The monitor new windows go to and orphaned windows are adopted by;
-    by convention the first entry of `Server.monitors`."""
-    return server.monitors[0] if server.monitors else None
+def apply_hierarchy(server: Server) -> None: # pylint: disable=too-many-branches
+    """Repair Server↔Monitor↔Workspace edges so the requirements hold.
+    Idempotent: callable after any direct write to fix downstream state."""
+    # Clear stale workspace.fullscreen pointers.
+    for w in server.workspaces:
+        if w.fullscreen is not None and (
+                w.fullscreen not in server.clients
+                or w.fullscreen.workspace is not w):
+            w.fullscreen = None
+
+    if not server.monitors:
+        for w in server.workspaces:
+            w.monitor = None
+        server.active_monitor = None
+        return
+
+    home = (
+        server.active_monitor
+        if server.active_monitor in server.monitors
+        else server.monitors[0]
+    )
+
+    # Workspaces whose monitor went away: migrate non-empty, orphan empty.
+    for w in server.workspaces:
+        if w.monitor is not None and w.monitor not in server.monitors:
+            has_clients = any(c.workspace is w for c in server.clients)
+            w.monitor = home if has_clients else None
+
+    # Fix each monitor.active_workspace.
+    for m in server.monitors:
+        if (m.active_workspace is None or m.active_workspace.monitor is not m):
+            here = [w for w in server.workspaces if w.monitor is m]
+            m.active_workspace = here[0] if here else None
+
+    # Orphan non-active empty workspaces.
+    for w in server.workspaces:
+        if (w.monitor is not None
+                and w.monitor.active_workspace is not w
+                and not any(c.workspace is w for c in server.clients)):
+            w.monitor = None
+
+    # Fix server.active_monitor.
+    if (server.active_monitor not in server.monitors
+            or server.active_monitor.active_workspace is None):
+        server.active_monitor = next(
+            (m for m in server.monitors if m.active_workspace is not None),
+            None)
+
+    # Seed the first monitor with an orphan if nothing is assigned anywhere.
+    if server.active_monitor is None:
+        seed = server.monitors[0]
+        orphan = next(
+            (w for w in server.workspaces if w.monitor is None), None)
+        if orphan is not None:
+            orphan.monitor = seed
+            seed.active_workspace = orphan
+            server.active_monitor = seed
+
+
+def apply_visibility(server: Server) -> None:
+    """Show each client iff its workspace is the active one on its monitor."""
+    ffi, lib = server.ffi, server.lib
+    for client in server.clients:
+        if client.scene_tree is None:
+            continue
+        w = client.workspace
+        visible = (
+            w is not None
+            and w.monitor is not None
+            and w.monitor.active_workspace is w)
+        lib.wlr_scene_node_set_enabled(
+            ffi.addressof(client.scene_tree.node), visible)
 
 
 def monitor_box(server: Server, monitor: Monitor) -> Rect:
@@ -484,7 +561,7 @@ def client_new(server: Server, data) -> None:
     client = Client(
         toplevel=toplevel, scene_tree=None, xdg_tree=None, borders=(),
         focus_order=0, grab=None, floating_geom=None,
-        monitor=None, listeners=[], pending_serial=None,
+        workspace=None, listeners=[], pending_serial=None,
         decoration=None, handle=None, inner_size=None)
     # Back-pointer toplevel -> Client, so per-surface protocols (xdg-decoration
     # etc.) can resolve the owning client before it joins server.clients at map.
@@ -538,26 +615,31 @@ def client_map(server: Server, client: Client, _data) -> None:
     client.borders = tuple(
         lib.wlr_scene_rect_create(client.scene_tree, 0, 0, color)
         for _ in range(4))
-    client.monitor = selected_monitor(server)
-    # Un-fullscreen any window already fullscreen on this monitor so the new
-    # window isn't buried under it.
-    if client.monitor is not None and client.monitor.fullscreen is not None:
-        set_fullscreen(server, client.monitor, None)
+    if server.active_monitor is not None:
+        client.workspace = server.active_monitor.active_workspace
+    monitor = client_monitor(client)
+    workspace = client.workspace
+    # Un-fullscreen any window already fullscreen on this workspace so the
+    # new window isn't buried under it.
+    if workspace is not None and workspace.fullscreen is not None:
+        set_fullscreen(server, workspace, None)
     # Insert at the front so the newest window becomes the master tile.
     server.clients.insert(0, client)
-    if client.toplevel.parent and client.monitor is not None:
+    if client.toplevel.parent and monitor is not None:
         client.floating_geom = init_floating_geom(client)
     set_tiled(
         server, client,
         lib.WLR_EDGE_TOP | lib.WLR_EDGE_BOTTOM
         | lib.WLR_EDGE_LEFT | lib.WLR_EDGE_RIGHT)
-    if client.toplevel.requested.fullscreen and client.monitor is not None:
+    if client.toplevel.requested.fullscreen and workspace is not None:
         # Honor a pre-map or initial-commit fullscreen request.
-        set_fullscreen(server, client.monitor, client)
+        set_fullscreen(server, workspace, client)
     focus_client(server, client)
+    apply_hierarchy(server)
+    apply_visibility(server)
     apply_tree(server)
-    if client.monitor is not None:
-        apply_geometry(server, client.monitor)
+    if monitor is not None:
+        apply_geometry(server, monitor)
     apply_focus(server)
     # The decoration request may have arrived before the initial configure;
     # now that the surface is initialized, set_mode is safe.
@@ -570,17 +652,17 @@ def client_unmap(server: Server, client: Client, _data) -> None:
     and shifts focus -- in one event so removal lands in a single frame."""
     ffi, lib = server.ffi, server.lib
     client.grab = None
-    monitor = client.monitor
-    if monitor is not None and monitor.fullscreen is client:
-        monitor.fullscreen = None
+    monitor = client_monitor(client)
     server.clients.remove(client)
     # Wrapper isn't tied to the xdg role's lifetime
     lib.wlr_scene_node_destroy(ffi.addressof(client.scene_tree.node))
     client.toplevel.base.surface.data = ffi.NULL
     client.scene_tree = None
     client.borders = ()
-    client.monitor = None
-    candidates = clients_on(server, monitor) if monitor else []
+    client.workspace = None
+    apply_hierarchy(server)
+    apply_visibility(server)
+    candidates = clients_visible(server, monitor) if monitor else []
     if candidates:
         focus_client(server, max(candidates, key=lambda c: c.focus_order))
     if monitor is not None and monitor in server.monitors:
@@ -592,13 +674,14 @@ def client_request_fullscreen(
         server: Server, client: Client, _data) -> None:
     """An app asked to enter or leave fullscreen."""
     # Pre-map: client_map reads the same flag once the tree exists.
-    monitor = client.monitor if client.scene_tree is not None else None
-    if monitor is not None:
+    workspace = client.workspace if client.scene_tree is not None else None
+    monitor = client_monitor(client) if client.scene_tree is not None else None
+    if workspace is not None and monitor is not None:
         wants = bool(client.toplevel.requested.fullscreen)
-        if wants and monitor.fullscreen is not client:
-            set_fullscreen(server, monitor, client)
-        elif not wants and monitor.fullscreen is client:
-            set_fullscreen(server, monitor, None)
+        if wants and workspace.fullscreen is not client:
+            set_fullscreen(server, workspace, client)
+        elif not wants and workspace.fullscreen is client:
+            set_fullscreen(server, workspace, None)
         apply_tree(server)
         apply_geometry(server, monitor)
         apply_focus(server)
@@ -725,7 +808,7 @@ def _popup_owner(server: Server, root_surface):
     for c in server.clients:
         if (c.toplevel.base.surface == root_surface
                 and c.scene_tree is not None):
-            return c.scene_tree.node, c.monitor
+            return c.scene_tree.node, client_monitor(c)
     for m in server.monitors:
         for bucket in m.layers.values():
             for ls in bucket:
@@ -740,7 +823,7 @@ def layer_surface_new(server: Server, data) -> None:
     ffi, lib, listen = server.ffi, server.lib, server.listen
     layer_surface = ffi.cast("struct wlr_layer_surface_v1 *", data)
     if layer_surface.output == ffi.NULL:
-        monitor = selected_monitor(server)
+        monitor = server.active_monitor
         if monitor is not None:
             layer_surface.output = monitor.output
     else:
@@ -841,7 +924,7 @@ def layer_surface_cleanup(
 def focus_client(server: Server, client: Client) -> None:
     """Mark `client` as most-recently-focused. The actual focus effects
     are emitted by apply_focus at the handler boundary."""
-    previous = top_client(server, selected_monitor(server))
+    previous = top_client(server, server.active_monitor)
     client.focus_order = (previous.focus_order if previous else 0) + 1
 
 
@@ -876,7 +959,7 @@ def apply_focus(server: Server) -> None: # pylint: disable=too-many-branches
             if target_ls is not None:
                 break
 
-    target_client = (top_client(server, selected_monitor(server))
+    target_client = (top_client(server, server.active_monitor)
                      if target_ls is None else None)
     target_surface = (
         target_ls.layer_surface.surface if target_ls is not None
@@ -928,27 +1011,40 @@ def grabbed_client(server: Server):
     return grabbed[0] if grabbed else None
 
 
-def clients_on(server: Server, monitor):
-    """Clients assigned to `monitor`, preserving `Server.clients` order. Pass
-    `None` to get orphaned clients."""
-    return [c for c in server.clients if c.monitor is monitor]
+def clients_in(server: Server, workspace):
+    """Clients assigned to `workspace`, preserving `Server.clients` order."""
+    return [c for c in server.clients if c.workspace is workspace]
+
+
+def clients_visible(server: Server, monitor):
+    """Clients shown on `monitor` (its active workspace's clients)."""
+    if monitor is None or monitor.active_workspace is None:
+        return []
+    return clients_in(server, monitor.active_workspace)
+
+
+def client_monitor(client: Client):
+    """The monitor this window appears on, or None if orphaned/pre-map."""
+    return client.workspace.monitor if client.workspace is not None else None
 
 
 def top_client(server: Server, monitor):
-    """The most-recently-focused mapped window on `monitor`, or None."""
+    """The most-recently-focused visible window on `monitor`, or None."""
     return max(
-        (c for c in clients_on(server, monitor) if c.scene_tree is not None),
+        (c for c in clients_visible(server, monitor)
+         if c.scene_tree is not None),
         key=lambda c: c.focus_order, default=None)
 
 
 def cycle_focus(server: Server, direction: int) -> None:
-    """Step focus through the selected monitor's windows in layout order,
-    so repeated presses visit every window instead of toggling two.
-    No-op while a fullscreen window owns the monitor -- focus is pinned to
-    it until the user toggles fullscreen off."""
-    monitor = selected_monitor(server)
-    candidates = clients_on(server, monitor)
-    if candidates and monitor.fullscreen is None:
+    """Step focus through the active monitor's visible windows in layout
+    order. No-op while a fullscreen window owns the monitor -- focus is
+    pinned to it until the user toggles fullscreen off."""
+    monitor = server.active_monitor
+    if monitor is None:
+        return
+    candidates = clients_visible(server, monitor)
+    if candidates and monitor.active_workspace.fullscreen is None:
         index = candidates.index(top_client(server, monitor))
         focus_client(
             server, candidates[(index + direction) % len(candidates)])
@@ -959,13 +1055,14 @@ def toggle_fullscreen(server: Server) -> None:
     """Flip the focused window into or out of fullscreen on its monitor.
     Exiting restores the prior floating geometry if there was one, else
     re-tiles."""
-    monitor = selected_monitor(server)
+    monitor = server.active_monitor
     client = top_client(server, monitor) if monitor is not None else None
     if client is not None:
-        if monitor.fullscreen is client:
-            set_fullscreen(server, monitor, None)
+        workspace = monitor.active_workspace
+        if workspace.fullscreen is client:
+            set_fullscreen(server, workspace, None)
         else:
-            set_fullscreen(server, monitor, client)
+            set_fullscreen(server, workspace, client)
         apply_tree(server)
         apply_geometry(server, monitor)
         apply_focus(server)
@@ -974,9 +1071,10 @@ def toggle_fullscreen(server: Server) -> None:
 def toggle_floating(server: Server) -> None:
     """Flip the focused window between tiled and floating. No-op while it
     is fullscreen."""
-    monitor = selected_monitor(server)
+    monitor = server.active_monitor
     client = top_client(server, monitor) if monitor is not None else None
-    if client is not None and monitor.fullscreen is not client:
+    if (client is not None
+            and monitor.active_workspace.fullscreen is not client):
         if client.floating_geom is None:
             # Seed the float at the current outer rect so it starts where tiled.
             client.floating_geom = client_outer_rect(client)
@@ -990,8 +1088,8 @@ def toggle_floating(server: Server) -> None:
 def zoom(server: Server) -> None:
     """Promote the focused window to master, or, if it already is, toggle
     back to the previously displaced master."""
-    monitor = selected_monitor(server)
-    tiled = ([c for c in clients_on(server, monitor)
+    monitor = server.active_monitor
+    tiled = ([c for c in clients_visible(server, monitor)
               if client_layer(c) == Layer.TILE]
              if monitor is not None else [])
     focused = top_client(server, monitor) if monitor is not None else None
@@ -1016,6 +1114,76 @@ def zoom(server: Server) -> None:
             focused.focus_order += 1
         apply_geometry(server, monitor)
         apply_focus(server)
+
+
+def view_workspace(server: Server, name: str) -> None:
+    """Show workspace `name` on its monitor and shift focus there. Adopts
+    the workspace onto `active_monitor` first if it was orphaned. Ends any
+    in-progress mouse grabs since hidden windows can't be dragged."""
+    target = next(
+        (w for w in server.workspaces if w.name == name), None)
+    if target is None or server.active_monitor is None:
+        return
+    if target.monitor is None:
+        target.monitor = server.active_monitor
+    target.monitor.active_workspace = target
+    server.active_monitor = target.monitor
+    for c in server.clients:
+        c.grab = None
+    apply_hierarchy(server)
+    apply_visibility(server)
+    apply_tree(server)
+    for m in server.monitors:
+        apply_geometry(server, m)
+    apply_focus(server)
+
+
+def move_client_to_workspace(server: Server, name: str) -> None:
+    """Reassign the focused window to workspace `name`. Adopts the target
+    workspace onto `active_monitor` first if it was orphaned. Focus stays on
+    the source monitor."""
+    target = next(
+        (w for w in server.workspaces if w.name == name), None)
+    if target is None or server.active_monitor is None:
+        return
+    client = top_client(server, server.active_monitor)
+    if client is None or client.workspace is target:
+        return
+    source = client.workspace
+    if source is not None and source.fullscreen is client:
+        set_fullscreen(server, source, None)
+    if target.monitor is None:
+        target.monitor = server.active_monitor
+    if target.fullscreen is not None:
+        set_fullscreen(server, target, None)
+    client.workspace = target
+    apply_hierarchy(server)
+    apply_visibility(server)
+    apply_tree(server)
+    for m in server.monitors:
+        apply_geometry(server, m)
+    apply_focus(server)
+
+
+def move_active_workspace_to_monitor(
+        server: Server, direction: int) -> None:
+    """Move the currently-shown workspace to the previous (-1) or next (+1)
+    monitor with wraparound. No-op with fewer than two monitors."""
+    if len(server.monitors) < 2 or server.active_monitor is None:
+        return
+    source = server.active_monitor
+    workspace = source.active_workspace
+    target = server.monitors[
+        (server.monitors.index(source) + direction) % len(server.monitors)]
+    workspace.monitor = target
+    target.active_workspace = workspace
+    server.active_monitor = target
+    apply_hierarchy(server)
+    apply_visibility(server)
+    apply_tree(server)
+    for m in server.monitors:
+        apply_geometry(server, m)
+    apply_focus(server)
 
 
 def arrange_layers(server: Server, monitor: Monitor) -> None:
@@ -1055,11 +1223,13 @@ def arrange_layers(server: Server, monitor: Monitor) -> None:
 def apply_geometry(server: Server, monitor: Monitor) -> None:
     """Lay out this monitor's tiled, fullscreen, and floating windows so
     each matches its dataclass-described rect."""
-    clients = clients_on(server, monitor)
+    clients = clients_visible(server, monitor)
     tiled = [c for c in clients if client_layer(c) == Layer.TILE]
     full_box = monitor_box(server, monitor)
-    if monitor.fullscreen is not None and monitor.fullscreen.scene_tree:
-        resize_client(server, monitor.fullscreen, full_box)
+    workspace = monitor.active_workspace
+    fullscreen = workspace.fullscreen if workspace is not None else None
+    if fullscreen is not None and fullscreen.scene_tree:
+        resize_client(server, fullscreen, full_box)
     for c, rect in zip(
             tiled, master_stack(monitor.window_area, len(tiled))):
         if c.scene_tree is not None:
@@ -1162,12 +1332,12 @@ def set_tiled(server: Server, client: Client, edges: int) -> None:
 
 
 def set_fullscreen(
-        server: Server, monitor: Monitor, client: Client | None) -> None:
-    """Set this screen's fullscreen window (None to clear), notifying the
+        server: Server, workspace, client: Client | None) -> None:
+    """Set this workspace's fullscreen window (None to clear), notifying the
     affected apps so their xdg-toplevel state matches."""
-    prev = monitor.fullscreen
+    prev = workspace.fullscreen
     if prev is not client:
-        monitor.fullscreen = client
+        workspace.fullscreen = client
         if prev is not None:
             serial = server.lib.wlr_xdg_toplevel_set_fullscreen(
                 prev.toplevel, False)
@@ -1193,9 +1363,10 @@ def _track_configure(client: Client, serial: int) -> None:
 
 
 def client_layer(client: Client) -> Layer:
-    """The z-bucket this window lives in, derived from its monitor's
+    """The z-bucket this window lives in, derived from its workspace's
     fullscreen pointer and its own floating rect."""
-    if client.monitor is not None and client.monitor.fullscreen is client:
+    if (client.workspace is not None
+            and client.workspace.fullscreen is client):
         return Layer.FULLSCREEN
     if client.floating_geom is not None:
         return Layer.FLOAT
@@ -1215,7 +1386,7 @@ def client_outer_rect(client: Client) -> Rect:
 def init_floating_geom(client: Client) -> Rect:
     """Center a freshly-floated window in its screen's usable area at the
     size the app asked for (or a default if it didn't)."""
-    area = client.monitor.window_area
+    area = client_monitor(client).window_area
     geom = client.toplevel.base.geometry
     inner_w = geom.width or 250
     inner_h = geom.height or 200
@@ -1351,6 +1522,9 @@ def cursor_button(server: Server, data) -> None:
         client = client_at(
             server, server.cursor.cursor.x, server.cursor.cursor.y)
         if client is not None:
+            monitor = client_monitor(client)
+            if monitor is not None:
+                server.active_monitor = monitor
             focus_client(server, client)
         kb = lib.welpy_keyboard_group_keyboard(server.keyboard_group.group)
         mods = lib.wlr_keyboard_get_modifiers(kb)
@@ -1389,9 +1563,10 @@ def begin_dragging_client(server: Server) -> None:
     cur = server.cursor.cursor
     client = client_at(server, cur.x, cur.y)
     if client is not None:
-        monitor = client.monitor
-        if monitor is not None and monitor.fullscreen is client:
-            set_fullscreen(server, monitor, None)
+        monitor = client_monitor(client)
+        workspace = client.workspace
+        if workspace is not None and workspace.fullscreen is client:
+            set_fullscreen(server, workspace, None)
         if client.floating_geom is None:
             client.floating_geom = client_outer_rect(client)
         node = client.scene_tree.node
@@ -1409,9 +1584,10 @@ def begin_resizing_client(server: Server) -> None:
     cur = server.cursor.cursor
     client = client_at(server, cur.x, cur.y)
     if client is not None:
-        monitor = client.monitor
-        if monitor is not None and monitor.fullscreen is client:
-            set_fullscreen(server, monitor, None)
+        monitor = client_monitor(client)
+        workspace = client.workspace
+        if workspace is not None and workspace.fullscreen is client:
+            set_fullscreen(server, workspace, None)
         if client.floating_geom is None:
             client.floating_geom = client_outer_rect(client)
         rect = client.floating_geom
@@ -1457,7 +1633,7 @@ def key_bindings(server: Server) -> dict:
     """Built-in keybindings."""
     lib = server.lib
     mod = modkey(server)
-    return {
+    table = {
         # pylint: disable=consider-using-with
         (mod, server.keycode["Return"]): lambda _: spawn("foot"),
         (mod | lib.WLR_MODIFIER_SHIFT, server.keycode["e"]): terminate,
@@ -1468,9 +1644,19 @@ def key_bindings(server: Server) -> dict:
         (mod | lib.WLR_MODIFIER_SHIFT, server.keycode["space"]):
             toggle_floating,
         (mod, server.keycode["z"]): zoom,
+        (mod | lib.WLR_MODIFIER_CTRL, server.keycode["h"]):
+            lambda s: move_active_workspace_to_monitor(s, -1),
+        (mod | lib.WLR_MODIFIER_CTRL, server.keycode["l"]):
+            lambda s: move_active_workspace_to_monitor(s, +1),
         (mod, lib.BTN_LEFT): begin_dragging_client,
         (mod, lib.BTN_RIGHT): begin_resizing_client,
     }
+    for name in ("1", "2", "3", "4", "5", "6", "7", "8", "9", "0"):
+        table[(mod, server.keycode[name])] = (
+            lambda s, n=name: view_workspace(s, n))
+        table[(mod | lib.WLR_MODIFIER_SHIFT, server.keycode[name])] = (
+            lambda s, n=name: move_client_to_workspace(s, n))
+    return table
 
 
 def build_keycode_map(lib, ffi, keymap) -> dict:

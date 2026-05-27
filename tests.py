@@ -22,6 +22,8 @@ def make_server():
     server.listeners = []
     server.monitors = []
     server.clients = []
+    server.workspaces = []
+    server.active_monitor = None
     server.display = "DISPLAY"
     server.backend = "BACKEND"
     server.renderer = "RENDERER"
@@ -67,7 +69,7 @@ def make_client(**kwargs):
         "borders": tuple(MagicMock() for _ in range(4)),
         "focus_order": 0, "grab": None,
         "floating_geom": None,
-        "monitor": None, "listeners": [],
+        "workspace": None, "listeners": [],
         "pending_serial": None,
         "decoration": None, "handle": None,
         "inner_size": None,
@@ -81,9 +83,19 @@ def make_monitor(**kwargs):
         "output": MagicMock(), "scene_output": MagicMock(),
         "layers": {layer: [] for layer in wel.SHELL_LAYERS},
         "window_area": wel.Rect(0, 0, 800, 600),
-        "fullscreen": None,
+        "active_workspace": None,
         "frame_timer": MagicMock(name="frame_timer"),
         "listeners": [],
+        **kwargs,
+    })
+
+
+def make_workspace(**kwargs):
+    """Build a Workspace, filling fields the test doesn't care about."""
+    return wel.Workspace(**{
+        "name": "1",
+        "monitor": None,
+        "fullscreen": None,
         **kwargs,
     })
 
@@ -110,7 +122,9 @@ def make_keycode_map():
     """Stand-in keycode map covering every key referenced by built-in
     bindings, so `setup()` can build `server.bindings` without KeyError."""
     return {"Return": 28, "q": 16, "j": 36, "k": 37, "f": 33, "z": 44,
-            "e": 18, "space": 57}
+            "e": 18, "space": 57, "h": 35, "l": 38,
+            "1": 2, "2": 3, "3": 4, "4": 5, "5": 6,
+            "6": 7, "7": 8, "8": 9, "9": 10, "0": 11}
 
 
 def trigger(server, signal_accessor, data):
@@ -175,6 +189,7 @@ def test_setup_bindings():
     lib = MagicMock(name="lib")
     lib.WLR_MODIFIER_LOGO = 0x40
     lib.WLR_MODIFIER_SHIFT = 0x1
+    lib.WLR_MODIFIER_CTRL = 0x4
     lib.WLR_MODIFIER_ALT = 0x8
     lib.BTN_LEFT = 0x110
     lib.BTN_RIGHT = 0x111
@@ -377,9 +392,15 @@ def test_monitor_render_holds():
     frame-done still fires so the client keeps animating."""
     server = make_server()
     monitor = make_monitor(output="OUT", scene_output="SO_X")
-    a = make_client(scene_tree=MagicMock(), monitor=monitor, pending_serial=5)
+    monitor.active_workspace = make_workspace(monitor=monitor)
+    a = make_client(
+        workspace=monitor.active_workspace,
+        pending_serial=5,
+    )
     b = make_client(
-        scene_tree=MagicMock(), monitor=monitor, pending_serial=None)
+        workspace=monitor.active_workspace,
+        pending_serial=None,
+    )
     server.clients.extend([a, b])
 
     wel.monitor_render(server, monitor, None)
@@ -393,11 +414,16 @@ def test_monitor_render_floating():
     floating windows aren't synchronized with the layout."""
     server = make_server()
     monitor = make_monitor(output="OUT", scene_output="SO_X")
+    monitor.active_workspace = make_workspace(monitor=monitor)
     a = make_client(
-        scene_tree=MagicMock(), monitor=monitor,
-        floating_geom=wel.Rect(0, 0, 100, 100), pending_serial=5)
+        workspace=monitor.active_workspace,
+        floating_geom=wel.Rect(0, 0, 100, 100),
+        pending_serial=5,
+    )
     b = make_client(
-        scene_tree=MagicMock(), monitor=monitor, pending_serial=None)
+        workspace=monitor.active_workspace,
+        pending_serial=None,
+    )
     server.clients.extend([a, b])
 
     wel.monitor_render(server, monitor, None)
@@ -410,10 +436,13 @@ def test_monitor_render_resizing():
     client (e.g. Firefox) would otherwise stall the whole frame during drag."""
     server = make_server()
     monitor = make_monitor(output="OUT", scene_output="SO_X")
+    monitor.active_workspace = make_workspace(monitor=monitor)
     client = make_client(
-        scene_tree=MagicMock(), monitor=monitor,
-        floating_geom=wel.Rect(0, 0, 100, 100), pending_serial=5,
-        grab=wel.Grab("resize", 0, 0))
+        workspace=monitor.active_workspace,
+        floating_geom=wel.Rect(0, 0, 100, 100),
+        pending_serial=5,
+        grab=wel.Grab("resize", 0, 0),
+    )
     server.clients.append(client)
 
     wel.monitor_render(server, monitor, None)
@@ -426,10 +455,13 @@ def test_monitor_render_moving():
     is a pure scene-graph reposition, no configure to wait on."""
     server = make_server()
     monitor = make_monitor(output="OUT", scene_output="SO_X")
+    monitor.active_workspace = make_workspace(monitor=monitor)
     client = make_client(
-        scene_tree=MagicMock(), monitor=monitor,
-        floating_geom=wel.Rect(0, 0, 100, 100), pending_serial=5,
-        grab=wel.Grab("move", 0, 0))
+        workspace=monitor.active_workspace,
+        floating_geom=wel.Rect(0, 0, 100, 100),
+        pending_serial=5,
+        grab=wel.Grab("move", 0, 0),
+    )
     server.clients.append(client)
 
     wel.monitor_render(server, monitor, None)
@@ -442,10 +474,15 @@ def test_monitor_render_clear():
     runs normally."""
     server = make_server()
     monitor = make_monitor(output="OUT", scene_output="SO_X")
+    monitor.active_workspace = make_workspace(monitor=monitor)
     a = make_client(
-        scene_tree=MagicMock(), monitor=monitor, pending_serial=None)
+        workspace=monitor.active_workspace,
+        pending_serial=None,
+    )
     b = make_client(
-        scene_tree=MagicMock(), monitor=monitor, pending_serial=None)
+        workspace=monitor.active_workspace,
+        pending_serial=None,
+    )
     server.clients.extend([a, b])
 
     wel.monitor_render(server, monitor, None)
@@ -459,8 +496,11 @@ def test_monitor_render_arms_timer():
     so the screen doesn't stay frozen if the app never catches up."""
     server = make_server()
     monitor = make_monitor(output="OUT", scene_output="SO_X")
+    monitor.active_workspace = make_workspace(monitor=monitor)
     client = make_client(
-        scene_tree=MagicMock(), monitor=monitor, pending_serial=5)
+        workspace=monitor.active_workspace,
+        pending_serial=5,
+    )
     server.clients.append(client)
 
     wel.monitor_render(server, monitor, None)
@@ -674,14 +714,20 @@ def test_client_unmap_refocuses():
     """Unmapping a window hands focus to the next-most-recently-focused
     window so closing a terminal leaves the user typing into another one."""
     server = make_server()
-    m = MagicMock(name="m", fullscreen=None)
+    m = make_monitor()
+    m.active_workspace = make_workspace(monitor=m)
     server.monitors.append(m)
+    server.active_monitor = m
     a = make_client(
-        toplevel=MagicMock(name="a"), scene_tree=MagicMock(),
-        focus_order=2, monitor=m)
+        toplevel=MagicMock(name="a"),
+        focus_order=2,
+        workspace=m.active_workspace,
+    )
     b = make_client(
-        toplevel=MagicMock(name="b"), scene_tree=MagicMock(),
-        focus_order=1, monitor=m)
+        toplevel=MagicMock(name="b"),
+        focus_order=1,
+        workspace=m.active_workspace,
+    )
     server.clients.extend([a, b])
 
     with patch("wel.apply_geometry"), patch("wel.focus_client") as focus:
@@ -694,9 +740,7 @@ def test_client_unmap_ends_grab():
     """Unmapping a window in the middle of a drag clears its grab state so
     the user isn't left invisibly dragging a closed window."""
     server = make_server()
-    client = make_client(
-        toplevel=MagicMock(), scene_tree=MagicMock(),
-        grab=wel.Grab("move", 10, 20))
+    client = make_client(grab=wel.Grab("move", 10, 20))
     server.clients.append(client)
 
     wel.client_unmap(server, client, "DATA")
@@ -707,11 +751,14 @@ def test_client_unmap_ends_grab():
 def test_client_unmap_alone():
     """Unmapping the only window leaves focus alone -- nothing to focus."""
     server = make_server()
-    m = MagicMock(name="m", fullscreen=None)
+    m = make_monitor()
+    m.active_workspace = make_workspace(monitor=m)
     server.monitors.append(m)
+    server.active_monitor = m
     only = make_client(
-        toplevel=MagicMock(), scene_tree=MagicMock(),
-        focus_order=1, monitor=m)
+        focus_order=1,
+        workspace=m.active_workspace,
+    )
     server.clients.append(only)
 
     with patch("wel.focus_client") as focus:
@@ -742,8 +789,11 @@ def test_client_map_orders():
     """Mapping mutates focus_order before apply_geometry runs so the
     new window's order participates in the layout decision."""
     server = make_server()
-    server.monitors.append(MagicMock(name="m", fullscreen=None))
-    client = make_client(toplevel=MagicMock(), scene_tree=None)
+    m = make_monitor()
+    m.active_workspace = make_workspace(monitor=m)
+    server.monitors.append(m)
+    server.active_monitor = m
+    client = make_client(scene_tree=None)
 
     calls = []
     with patch(
@@ -878,9 +928,9 @@ def test_popup_new_unconstrain():
     box, translated into the parent client's local coordinates."""
     server = make_server()
     m = make_monitor()
+    m.active_workspace = make_workspace(monitor=m)
     server.monitors.append(m)
-    owner = make_client(toplevel=MagicMock(), scene_tree=MagicMock(),
-                        monitor=m)
+    owner = make_client(workspace=m.active_workspace)
     owner.scene_tree.node.x = 100
     owner.scene_tree.node.y = 50
     server.clients.append(owner)
@@ -1696,6 +1746,36 @@ def test_cursor_button_focuses():
     focus.assert_called_once_with(server, client)
 
 
+def test_cursor_button_active_monitor():
+    """Clicking a window on another monitor makes that monitor active so
+    keyboard focus follows the click."""
+    server = make_server()
+    server.cursor = make_cursor(cursor=MagicMock(), xcursor_manager="X")
+    m1 = make_monitor()
+    m2 = make_monitor()
+    ws1 = make_workspace(name="1", monitor=m1)
+    ws2 = make_workspace(name="2", monitor=m2)
+    m1.active_workspace = ws1
+    m2.active_workspace = ws2
+    server.workspaces = [ws1, ws2]
+    server.monitors.extend([m1, m2])
+    server.active_monitor = m1
+    client = make_client(workspace=ws2, focus_order=1)
+    server.clients.append(client)
+    server.lib.wlr_keyboard_get_modifiers.return_value = 0
+    event = server.ffi.cast.return_value
+    event.button = "ANY_BUTTON"
+    event.state = server.lib.WL_POINTER_BUTTON_STATE_PRESSED
+
+    with patch("wel.client_at", return_value=client):
+        wel.cursor_button(server, "BUTTON_DATA")
+
+    assert server.active_monitor is m2
+    server.lib.wlr_seat_keyboard_notify_enter.assert_called_once()
+    assert server.lib.wlr_seat_keyboard_notify_enter.call_args.args[1] is (
+        client.toplevel.base.surface)
+
+
 def test_cursor_button_release_ends():
     """Releasing the mouse button clears the active grab."""
     server = make_server()
@@ -1976,8 +2056,20 @@ def test_focus_client_order():
     """Each focus bumps the client's focus_order above every other client's,
     so the most-recently-focused window always has the highest value."""
     server = make_server()
-    a = make_client(toplevel=MagicMock(), scene_tree=MagicMock())
-    b = make_client(toplevel=MagicMock(), scene_tree=MagicMock())
+    m = make_monitor()
+    m.active_workspace = make_workspace(monitor=m)
+    server.monitors.append(m)
+    server.active_monitor = m
+    a = make_client(
+        toplevel=MagicMock(),
+        scene_tree=MagicMock(),
+        workspace=m.active_workspace,
+    )
+    b = make_client(
+        toplevel=MagicMock(),
+        scene_tree=MagicMock(),
+        workspace=m.active_workspace,
+    )
     server.clients.extend([a, b])
 
     wel.focus_client(server, a)
@@ -2094,14 +2186,17 @@ def test_apply_focus_idle():
 
 
 def test_apply_focus_client():
-    """With one client on the selected monitor and nothing focused yet,
+    """With one client on the active monitor and nothing focused yet,
     activate it, raise it, and hand it the keyboard."""
     server = make_server()
     monitor = make_monitor()
+    monitor.active_workspace = make_workspace(monitor=monitor)
     server.monitors.append(monitor)
+    server.active_monitor = monitor
     client = make_client(
-        toplevel=MagicMock(), scene_tree=MagicMock(),
-        focus_order=1, monitor=monitor)
+        focus_order=1,
+        workspace=monitor.active_workspace,
+    )
     server.clients.append(client)
 
     wel.apply_focus(server)
@@ -2119,10 +2214,13 @@ def test_apply_focus_shell():
     any client."""
     server = make_server()
     monitor = make_monitor()
+    monitor.active_workspace = make_workspace(monitor=monitor)
     server.monitors.append(monitor)
+    server.active_monitor = monitor
     client = make_client(
-        toplevel=MagicMock(), scene_tree=MagicMock(),
-        focus_order=1, monitor=monitor)
+        focus_order=1,
+        workspace=monitor.active_workspace,
+    )
     server.clients.append(client)
     ls = make_layer_surface(monitor=monitor)
     ls.layer_surface.surface.mapped = True
@@ -2143,10 +2241,13 @@ def test_apply_focus_releases():
     deactivate the client and route notify_enter to the shell surface."""
     server = make_server()
     monitor = make_monitor()
+    monitor.active_workspace = make_workspace(monitor=monitor)
     server.monitors.append(monitor)
+    server.active_monitor = monitor
     client = make_client(
-        toplevel=MagicMock(), scene_tree=MagicMock(),
-        focus_order=1, monitor=monitor)
+        focus_order=1,
+        workspace=monitor.active_workspace,
+    )
     server.clients.append(client)
     server.seat.keyboard_state.focused_surface = client.toplevel.base.surface # pylint: disable=no-member
     ls = make_layer_surface(monitor=monitor)
@@ -2180,13 +2281,19 @@ def test_apply_focus_handoff():
     one before activating the new one."""
     server = make_server()
     monitor = make_monitor()
+    monitor.active_workspace = make_workspace(monitor=monitor)
     server.monitors.append(monitor)
+    server.active_monitor = monitor
     a = make_client(
-        toplevel=MagicMock(name="a"), scene_tree=MagicMock(),
-        focus_order=1, monitor=monitor)
+        toplevel=MagicMock(name="a"),
+        focus_order=1,
+        workspace=monitor.active_workspace,
+    )
     b = make_client(
-        toplevel=MagicMock(name="b"), scene_tree=MagicMock(),
-        focus_order=2, monitor=monitor)
+        toplevel=MagicMock(name="b"),
+        focus_order=2,
+        workspace=monitor.active_workspace,
+    )
     server.clients.extend([a, b])
     server.seat.keyboard_state.focused_surface = a.toplevel.base.surface # pylint: disable=no-member
 
@@ -2205,10 +2312,13 @@ def test_apply_focus_idempotent():
     no effects."""
     server = make_server()
     monitor = make_monitor()
+    monitor.active_workspace = make_workspace(monitor=monitor)
     server.monitors.append(monitor)
+    server.active_monitor = monitor
     client = make_client(
-        toplevel=MagicMock(), scene_tree=MagicMock(),
-        focus_order=1, monitor=monitor)
+        focus_order=1,
+        workspace=monitor.active_workspace,
+    )
     server.clients.append(client)
     server.seat.keyboard_state.focused_surface = client.toplevel.base.surface # pylint: disable=no-member
 
@@ -2225,13 +2335,19 @@ def test_apply_focus_tracks():
     so the screen hold waits for the focused window to ack."""
     server = make_server()
     monitor = make_monitor()
+    monitor.active_workspace = make_workspace(monitor=monitor)
     server.monitors.append(monitor)
+    server.active_monitor = monitor
     a = make_client(
-        toplevel=MagicMock(name="a"), scene_tree=MagicMock(),
-        focus_order=1, monitor=monitor)
+        toplevel=MagicMock(name="a"),
+        focus_order=1,
+        workspace=monitor.active_workspace,
+    )
     b = make_client(
-        toplevel=MagicMock(name="b"), scene_tree=MagicMock(),
-        focus_order=2, monitor=monitor)
+        toplevel=MagicMock(name="b"),
+        focus_order=2,
+        workspace=monitor.active_workspace,
+    )
     a.toplevel.base.current.configure_serial = 5
     b.toplevel.base.current.configure_serial = 0
     server.clients.extend([a, b])
@@ -2250,15 +2366,21 @@ def test_apply_focus_borders():
     focused window's borders inactive."""
     server = make_server()
     monitor = make_monitor()
+    monitor.active_workspace = make_workspace(monitor=monitor)
     server.monitors.append(monitor)
+    server.active_monitor = monitor
     a = make_client(
-        toplevel=MagicMock(name="a"), scene_tree=MagicMock(),
+        toplevel=MagicMock(name="a"),
         borders=tuple(MagicMock() for _ in range(4)),
-        focus_order=1, monitor=monitor)
+        focus_order=1,
+        workspace=monitor.active_workspace,
+    )
     b = make_client(
-        toplevel=MagicMock(name="b"), scene_tree=MagicMock(),
+        toplevel=MagicMock(name="b"),
         borders=tuple(MagicMock() for _ in range(4)),
-        focus_order=2, monitor=monitor)
+        focus_order=2,
+        workspace=monitor.active_workspace,
+    )
     server.clients.extend([a, b])
     server.seat.keyboard_state.focused_surface = a.toplevel.base.surface # pylint: disable=no-member
 
@@ -2354,38 +2476,42 @@ def test_client_map_to_tile():
 
 
 def test_client_map_monitor_selected():
-    """A newly mapped window is assigned to the selected monitor
-    (monitors[0])."""
+    """A newly mapped window joins the active workspace of the active
+    monitor."""
     server = make_server()
-    m1 = MagicMock(name="m1", fullscreen=None)
-    m2 = MagicMock(name="m2", fullscreen=None)
+    m1 = make_monitor()
+    m1.active_workspace = make_workspace(monitor=m1)
+    m2 = make_monitor()
+    m2.active_workspace = make_workspace(monitor=m2)
     server.monitors.extend([m1, m2])
-    client = make_client(toplevel=MagicMock(), scene_tree=None)
+    server.active_monitor = m1
+    client = make_client(scene_tree=None)
 
     with patch("wel.focus_client"), patch("wel.apply_geometry"):
         wel.client_map(server, client, None)
 
-    assert client.monitor is m1
+    assert client.workspace is m1.active_workspace
 
 
 def test_client_map_monitor_none():
-    """A newly mapped window with no monitors yet is parked as orphaned."""
+    """A newly mapped window with no active monitor is parked as orphaned."""
     server = make_server()
-    client = make_client(toplevel=MagicMock(), scene_tree=None)
+    client = make_client(scene_tree=None)
 
     with patch("wel.focus_client"):
         wel.client_map(server, client, None)
 
-    assert client.monitor is None
+    assert client.workspace is None
 
 
 def test_client_map_floats_dialog():
     """A window opened as a child of another window (a dialog) lands in the
     FLOAT layer instead of joining the tiling layout."""
     server = make_server()
-    m = MagicMock(name="m", fullscreen=None,
-                  window_area=wel.Rect(0, 0, 800, 600))
+    m = make_monitor(window_area=wel.Rect(0, 0, 800, 600))
+    m.active_workspace = make_workspace(monitor=m)
     server.monitors.append(m)
+    server.active_monitor = m
     toplevel = MagicMock()
     toplevel.base.geometry.width = 400
     toplevel.base.geometry.height = 300
@@ -2401,10 +2527,11 @@ def test_client_map_floats_dialog():
 def test_client_map_no_parent():
     """A regular (unparented) window still joins the tiling layout."""
     server = make_server()
-    m = MagicMock(name="m", fullscreen=None,
-                  window_area=wel.Rect(0, 0, 800, 600))
+    m = make_monitor(window_area=wel.Rect(0, 0, 800, 600))
+    m.active_workspace = make_workspace(monitor=m)
     server.monitors.append(m)
-    client = make_client(toplevel=MagicMock(), scene_tree=None)
+    server.active_monitor = m
+    client = make_client(scene_tree=None)
 
     with patch("wel.focus_client"), patch("wel.apply_geometry"):
         wel.client_map(server, client, None)
@@ -2412,63 +2539,38 @@ def test_client_map_no_parent():
     assert wel.client_layer(client) == wel.Layer.TILE
 
 
-def test_selected_monitor_first():
-    """selected_monitor returns the first entry of server.monitors."""
-    server = make_server()
-    m1 = MagicMock(name="m1", fullscreen=None)
-    m2 = MagicMock(name="m2", fullscreen=None)
-    server.monitors.extend([m1, m2])
-
-    assert wel.selected_monitor(server) is m1
-
-
-def test_selected_monitor_empty():
-    """selected_monitor is None when no monitors are connected."""
-    server = make_server()
-
-    assert wel.selected_monitor(server) is None
-
-
-def test_clients_on_filters():
-    """clients_on returns only clients assigned to the given monitor,
-    preserving server.clients order."""
-    server = make_server()
-    m1 = MagicMock(name="m1", fullscreen=None)
-    m2 = MagicMock(name="m2", fullscreen=None)
-    a = make_client(toplevel="a", scene_tree=None, monitor=m1)
-    b = make_client(toplevel="b", scene_tree=None, monitor=m2)
-    c = make_client(toplevel="c", scene_tree=None, monitor=m1)
-    server.clients.extend([a, b, c])
-
-    assert wel.clients_on(server, m1) == [a, c]
-    assert wel.clients_on(server, m2) == [b]
-
-
-def test_clients_on_orphans():
-    """Passing monitor=None returns clients not yet assigned to any monitor."""
-    server = make_server()
-    m = MagicMock(name="m", fullscreen=None)
-    a = make_client(toplevel="a", scene_tree=None, monitor=m)
-    b = make_client(toplevel="b", scene_tree=None, monitor=None)
-    server.clients.extend([a, b])
-
-    assert wel.clients_on(server, None) == [b]
-
-
 def test_top_client_per_monitor():
-    """top_client picks the highest focus_order among clients on the given
-    monitor, ignoring clients on other monitors."""
+    """top_client picks the highest focus_order among clients visible on
+    the given monitor, ignoring clients on other monitors."""
     server = make_server()
-    m1 = MagicMock(name="m1", fullscreen=None)
-    m2 = MagicMock(name="m2", fullscreen=None)
+    m1 = make_monitor()
+    m1.active_workspace = make_workspace(monitor=m1)
+    m2 = make_monitor()
+    m2.active_workspace = make_workspace(monitor=m2)
     a = make_client(
-        toplevel="a", scene_tree=MagicMock(), focus_order=1, monitor=m1)
+        toplevel="a",
+        scene_tree=MagicMock(),
+        focus_order=1,
+        workspace=m1.active_workspace,
+    )
     b = make_client(
-        toplevel="b", scene_tree=MagicMock(), focus_order=3, monitor=m1)
+        toplevel="b",
+        scene_tree=MagicMock(),
+        focus_order=3,
+        workspace=m1.active_workspace,
+    )
     c = make_client(
-        toplevel="c", scene_tree=MagicMock(), focus_order=2, monitor=m1)
+        toplevel="c",
+        scene_tree=MagicMock(),
+        focus_order=2,
+        workspace=m1.active_workspace,
+    )
     d = make_client(
-        toplevel="d", scene_tree=MagicMock(), focus_order=5, monitor=m2)
+        toplevel="d",
+        scene_tree=MagicMock(),
+        focus_order=5,
+        workspace=m2.active_workspace,
+    )
     server.clients.extend([a, b, c, d])
 
     assert wel.top_client(server, m1) is b
@@ -2476,22 +2578,34 @@ def test_top_client_per_monitor():
 
 
 def test_top_client_empty():
-    """top_client returns None when no clients are on the monitor."""
+    """top_client returns None when no clients are visible on the monitor."""
     server = make_server()
-    m = MagicMock(name="m", fullscreen=None)
+    m = make_monitor()
+    m.active_workspace = make_workspace(monitor=m)
 
     assert wel.top_client(server, m) is None
 
 
 def test_cycle_focus_next():
-    """cycle_focus(+1) moves focus to the next window on the selected
-    monitor in layout order."""
+    """cycle_focus(+1) moves focus to the next visible window in layout
+    order."""
     server = make_server()
-    m = MagicMock(name="m", fullscreen=None)
+    m = make_monitor()
+    m.active_workspace = make_workspace(monitor=m)
     server.monitors.append(m)
-    a = make_client(toplevel=MagicMock(name="a"), monitor=m)
-    b = make_client(toplevel=MagicMock(name="b"), monitor=m)
-    c = make_client(toplevel=MagicMock(name="c"), monitor=m)
+    server.active_monitor = m
+    a = make_client(
+        toplevel=MagicMock(name="a"),
+        workspace=m.active_workspace,
+    )
+    b = make_client(
+        toplevel=MagicMock(name="b"),
+        workspace=m.active_workspace,
+    )
+    c = make_client(
+        toplevel=MagicMock(name="c"),
+        workspace=m.active_workspace,
+    )
     server.clients.extend([a, b, c])
     wel.focus_client(server, a)
 
@@ -2504,11 +2618,22 @@ def test_cycle_focus_next():
 def test_cycle_focus_prev_wraps():
     """cycle_focus(-1) wraps around past the first window."""
     server = make_server()
-    m = MagicMock(name="m", fullscreen=None)
+    m = make_monitor()
+    m.active_workspace = make_workspace(monitor=m)
     server.monitors.append(m)
-    a = make_client(toplevel=MagicMock(name="a"), monitor=m)
-    b = make_client(toplevel=MagicMock(name="b"), monitor=m)
-    c = make_client(toplevel=MagicMock(name="c"), monitor=m)
+    server.active_monitor = m
+    a = make_client(
+        toplevel=MagicMock(name="a"),
+        workspace=m.active_workspace,
+    )
+    b = make_client(
+        toplevel=MagicMock(name="b"),
+        workspace=m.active_workspace,
+    )
+    c = make_client(
+        toplevel=MagicMock(name="c"),
+        workspace=m.active_workspace,
+    )
     server.clients.extend([a, b, c])
     wel.focus_client(server, a)
 
@@ -2519,9 +2644,13 @@ def test_cycle_focus_prev_wraps():
 
 
 def test_cycle_focus_empty():
-    """cycle_focus is a no-op when no windows are on the selected monitor."""
+    """cycle_focus is a no-op when no windows are visible on the active
+    monitor."""
     server = make_server()
-    server.monitors.append(MagicMock(name="m", fullscreen=None))
+    m = make_monitor()
+    m.active_workspace = make_workspace(monitor=m)
+    server.monitors.append(m)
+    server.active_monitor = m
 
     with patch("wel.focus_client") as focus:
         wel.cycle_focus(server, +1)
@@ -2529,33 +2658,17 @@ def test_cycle_focus_empty():
     focus.assert_not_called()
 
 
-def test_client_unmap_selected():
-    """Unmapping a window on the selected monitor refocuses the next
-    most-recent window on the same monitor."""
-    server = make_server()
-    m = MagicMock(name="m", fullscreen=None)
-    server.monitors.append(m)
-    a = make_client(toplevel=MagicMock(name="a"), scene_tree=MagicMock(),
-                  focus_order=2, monitor=m)
-    b = make_client(toplevel=MagicMock(name="b"), scene_tree=MagicMock(),
-                  focus_order=1, monitor=m)
-    server.clients.extend([a, b])
-
-    with patch("wel.apply_geometry"), patch("wel.focus_client") as focus:
-        wel.client_unmap(server, a, "DATA")
-
-    focus.assert_called_once_with(server, b)
-
-
 def test_client_unmap_unselected():
-    """Unmapping a window not on the selected monitor leaves focus alone
-    when there's nothing to refocus on the selected monitor."""
+    """Unmapping a window not on the active monitor leaves focus alone
+    when there's nothing to refocus on the active monitor."""
     server = make_server()
-    m1 = MagicMock(name="m1", fullscreen=None)
-    m2 = MagicMock(name="m2", fullscreen=None)
+    m1 = make_monitor()
+    m1.active_workspace = make_workspace(monitor=m1)
+    m2 = make_monitor()
+    m2.active_workspace = make_workspace(monitor=m2)
     server.monitors.append(m1)
-    a = make_client(toplevel=MagicMock(), scene_tree=MagicMock(),
-                  focus_order=1, monitor=m2)
+    server.active_monitor = m1
+    a = make_client(focus_order=1, workspace=m2.active_workspace)
     server.clients.append(a)
 
     with patch("wel.focus_client") as focus:
@@ -2683,7 +2796,8 @@ def test_apply_geometry_single_full():
     """One tile client fills the whole window area."""
     server = make_server()
     m = make_monitor(window_area=wel.Rect(0, 0, 800, 600))
-    a = make_client(toplevel=MagicMock(), scene_tree=MagicMock(), monitor=m)
+    m.active_workspace = make_workspace(monitor=m)
+    a = make_client(workspace=m.active_workspace)
     server.clients.append(a)
 
     with patch("wel.resize_client") as resize:
@@ -2697,9 +2811,10 @@ def test_apply_geometry_master_stack():
     half with heights summing exactly to the window area's height."""
     server = make_server()
     m = make_monitor(window_area=wel.Rect(0, 0, 800, 600))
-    a = make_client(toplevel=MagicMock(), scene_tree=MagicMock(), monitor=m)
-    b = make_client(toplevel=MagicMock(), scene_tree=MagicMock(), monitor=m)
-    c = make_client(toplevel=MagicMock(), scene_tree=MagicMock(), monitor=m)
+    m.active_workspace = make_workspace(monitor=m)
+    a = make_client(workspace=m.active_workspace)
+    b = make_client(workspace=m.active_workspace)
+    c = make_client(workspace=m.active_workspace)
     server.clients.extend([a, b, c])
 
     with patch("wel.resize_client") as resize:
@@ -2713,12 +2828,14 @@ def test_apply_geometry_master_stack():
 
 
 def test_apply_geometry_other_monitor():
-    """apply_geometry only touches clients assigned to its monitor."""
+    """apply_geometry only touches clients visible on its monitor."""
     server = make_server()
     m1 = make_monitor(window_area=wel.Rect(0, 0, 800, 600))
+    m1.active_workspace = make_workspace(monitor=m1)
     m2 = make_monitor(window_area=wel.Rect(0, 0, 800, 600))
-    a = make_client(toplevel=MagicMock(), scene_tree=MagicMock(), monitor=m1)
-    b = make_client(toplevel=MagicMock(), scene_tree=MagicMock(), monitor=m2)
+    m2.active_workspace = make_workspace(monitor=m2)
+    a = make_client(workspace=m1.active_workspace)
+    b = make_client(workspace=m2.active_workspace)
     server.clients.extend([a, b])
 
     with patch("wel.resize_client") as resize:
@@ -2732,13 +2849,12 @@ def test_apply_geometry_skips_floating():
     leaves the tile path to tiles only."""
     server = make_server()
     m = make_monitor(window_area=wel.Rect(0, 0, 800, 600))
+    m.active_workspace = make_workspace(monitor=m)
     a = make_client(
-        toplevel=MagicMock(),
-        scene_tree=MagicMock(),
-        monitor=m,
+        workspace=m.active_workspace,
         floating_geom=wel.Rect(50, 60, 100, 80),
     )
-    b = make_client(toplevel=MagicMock(), scene_tree=MagicMock(), monitor=m)
+    b = make_client(workspace=m.active_workspace)
     server.clients.extend([a, b])
 
     with patch("wel.resize_client") as resize:
@@ -2756,10 +2872,10 @@ def test_apply_geometry_sizes_fullscreen():
     current box so monitor mode changes propagate. Tiles tile alongside."""
     server = make_server()
     m = make_monitor(window_area=wel.Rect(0, 0, 800, 600))
-    fs = make_client(toplevel=MagicMock(), scene_tree=MagicMock(),
-                  monitor=m)
-    m.fullscreen = fs
-    tile = make_client(toplevel=MagicMock(), scene_tree=MagicMock(), monitor=m)
+    m.active_workspace = make_workspace(monitor=m)
+    fs = make_client(workspace=m.active_workspace)
+    m.active_workspace.fullscreen = fs
+    tile = make_client(workspace=m.active_workspace)
     server.clients.extend([fs, tile])
 
     with patch("wel.monitor_box", return_value=wel.Rect(0, 0, 800, 600)), \
@@ -2776,6 +2892,7 @@ def test_apply_geometry_empty():
     does nothing."""
     server = make_server()
     m = make_monitor()
+    m.active_workspace = make_workspace(monitor=m)
 
     with patch("wel.resize_client") as resize:
         wel.apply_geometry(server, m)
@@ -2789,11 +2906,10 @@ def test_apply_geometry_reconciles_float():
     state converges."""
     server = make_server()
     m = make_monitor()
+    m.active_workspace = make_workspace(monitor=m)
     saved = wel.Rect(10, 20, 300, 200)
     c = make_client(
-        toplevel=MagicMock(),
-        scene_tree=MagicMock(),
-        monitor=m,
+        workspace=m.active_workspace,
         floating_geom=saved,
     )
     server.clients.append(c)
@@ -2818,47 +2934,14 @@ def test_update_monitors_arranges_all():
     assert apply_geom.call_args_list == [call(server, m1), call(server, m2)]
 
 
-def test_update_monitors_adopts_orphans():
-    """Orphaned clients are adopted by the selected monitor before
-    arranging."""
-    server = make_server()
-    m = MagicMock(name="m", fullscreen=None)
-    server.monitors.append(m)
-    orphan = make_client(toplevel="t", scene_tree=None, monitor=None)
-    server.clients.append(orphan)
-
-    with patch("wel.apply_geometry"):
-        wel.update_monitors(server)
-
-    assert orphan.monitor is m
-
-
 def test_update_monitors_no_monitors():
-    """With no monitors, orphans stay orphaned and arrange isn't called."""
+    """With no monitors connected, apply_geometry isn't called."""
     server = make_server()
-    orphan = make_client(toplevel="t", scene_tree=None, monitor=None)
-    server.clients.append(orphan)
 
     with patch("wel.apply_geometry") as apply_geom:
         wel.update_monitors(server)
 
-    assert orphan.monitor is None
     apply_geom.assert_not_called()
-
-
-def test_update_monitors_keeps_assigned():
-    """Clients already on a non-None monitor are not reassigned."""
-    server = make_server()
-    m1 = MagicMock(name="m1", fullscreen=None)
-    m2 = MagicMock(name="m2", fullscreen=None)
-    server.monitors.extend([m1, m2])
-    c = make_client(toplevel="t", scene_tree=None, monitor=m2)
-    server.clients.append(c)
-
-    with patch("wel.apply_geometry"):
-        wel.update_monitors(server)
-
-    assert c.monitor is m2
 
 
 def test_client_layer_tile():
@@ -2879,16 +2962,14 @@ def test_client_layer_float():
 
 
 def test_client_layer_fullscreen():
-    """A client occupying its monitor's fullscreen slot is fullscreen,
+    """A client occupying its workspace's fullscreen slot is fullscreen,
     even if it also has a floating_geom stashed for restore."""
-    m = make_monitor()
     client = make_client(
         toplevel=MagicMock(),
         scene_tree=MagicMock(),
-        monitor=m,
         floating_geom=wel.Rect(0, 0, 100, 100),
     )
-    m.fullscreen = client
+    client.workspace = make_workspace(fullscreen=client)
     assert wel.client_layer(client) == wel.Layer.FULLSCREEN
 
 
@@ -2896,10 +2977,11 @@ def test_init_floating_geom_centers():
     """init_floating_geom centers the window in its screen's usable area at
     the size the app asked for plus border."""
     m = make_monitor(window_area=wel.Rect(100, 50, 800, 600))
+    m.active_workspace = make_workspace(monitor=m)
     toplevel = MagicMock()
     toplevel.base.geometry.width = 400
     toplevel.base.geometry.height = 300
-    client = make_client(toplevel=toplevel, monitor=m)
+    client = make_client(toplevel=toplevel, workspace=m.active_workspace)
 
     outer_w = 400 + 2 * wel.BORDER_WIDTH
     outer_h = 300 + 2 * wel.BORDER_WIDTH
@@ -2913,10 +2995,11 @@ def test_init_floating_geom_fallback():
     """When the app commits with empty geometry, init_floating_geom picks
     a default size so the window isn't invisibly small."""
     m = make_monitor(window_area=wel.Rect(0, 0, 800, 600))
+    m.active_workspace = make_workspace(monitor=m)
     toplevel = MagicMock()
     toplevel.base.geometry.width = 0
     toplevel.base.geometry.height = 0
-    client = make_client(toplevel=toplevel, monitor=m)
+    client = make_client(toplevel=toplevel, workspace=m.active_workspace)
 
     rect = wel.init_floating_geom(client)
 
@@ -2925,19 +3008,19 @@ def test_init_floating_geom_fallback():
 
 
 def test_fullscreen_slot_enters():
-    """Assigning a client to the monitor's fullscreen slot notifies the
+    """Assigning a client to its workspace's fullscreen slot notifies the
     app so its xdg state matches."""
     server = make_server()
-    m = make_monitor()
+    workspace = make_workspace()
     client = make_client(
         toplevel=MagicMock(),
         scene_tree=MagicMock(),
-        monitor=m,
+        workspace=workspace,
     )
 
-    wel.set_fullscreen(server, m, client)
+    wel.set_fullscreen(server, workspace, client)
 
-    assert m.fullscreen is client
+    assert workspace.fullscreen is client
     server.lib.wlr_xdg_toplevel_set_fullscreen.assert_called_once_with(
         client.toplevel, True)
 
@@ -2946,12 +3029,12 @@ def test_fullscreen_slot_exits():
     """Clearing the slot notifies the previously-fullscreen app."""
     server = make_server()
     client = make_client(toplevel=MagicMock(), scene_tree=MagicMock())
-    m = make_monitor(fullscreen=client)
-    client.monitor = m
+    workspace = make_workspace(fullscreen=client)
+    client.workspace = workspace
 
-    wel.set_fullscreen(server, m, None)
+    wel.set_fullscreen(server, workspace, None)
 
-    assert m.fullscreen is None
+    assert workspace.fullscreen is None
     server.lib.wlr_xdg_toplevel_set_fullscreen.assert_called_once_with(
         client.toplevel, False)
 
@@ -2961,10 +3044,10 @@ def test_fullscreen_slot_noop():
     configure goes out."""
     server = make_server()
     client = make_client(toplevel=MagicMock(), scene_tree=MagicMock())
-    m = make_monitor(fullscreen=client)
-    client.monitor = m
+    workspace = make_workspace(fullscreen=client)
+    client.workspace = workspace
 
-    wel.set_fullscreen(server, m, client)
+    wel.set_fullscreen(server, workspace, client)
 
     server.lib.wlr_xdg_toplevel_set_fullscreen.assert_not_called()
 
@@ -2981,13 +3064,13 @@ def test_fullscreen_slot_replaces():
         toplevel=MagicMock(name="in"),
         scene_tree=MagicMock(),
     )
-    m = make_monitor(fullscreen=outgoing)
-    outgoing.monitor = m
-    incoming.monitor = m
+    workspace = make_workspace(fullscreen=outgoing)
+    outgoing.workspace = workspace
+    incoming.workspace = workspace
 
-    wel.set_fullscreen(server, m, incoming)
+    wel.set_fullscreen(server, workspace, incoming)
 
-    assert m.fullscreen is incoming
+    assert workspace.fullscreen is incoming
     assert server.lib.wlr_xdg_toplevel_set_fullscreen.call_args_list == [
         call(outgoing.toplevel, False),
         call(incoming.toplevel, True),
@@ -2999,39 +3082,41 @@ def test_fullscreen_slot_keeps_float():
     window that was floating before going fullscreen returns to floating
     at the same rect; a window that was tiled stays tiled."""
     server = make_server()
-    m = make_monitor()
+    workspace = make_workspace()
     saved = wel.Rect(50, 60, 304, 204)
     floater = make_client(
         toplevel=MagicMock(),
         scene_tree=MagicMock(),
-        monitor=m,
+        workspace=workspace,
         floating_geom=saved,
     )
     tiler = make_client(
         toplevel=MagicMock(),
         scene_tree=MagicMock(),
-        monitor=m,
+        workspace=workspace,
     )
 
-    wel.set_fullscreen(server, m, floater)
-    wel.set_fullscreen(server, m, None)
+    wel.set_fullscreen(server, workspace, floater)
+    wel.set_fullscreen(server, workspace, None)
     assert floater.floating_geom == saved
 
-    wel.set_fullscreen(server, m, tiler)
-    wel.set_fullscreen(server, m, None)
+    wel.set_fullscreen(server, workspace, tiler)
+    wel.set_fullscreen(server, workspace, None)
     assert tiler.floating_geom is None
 
 
 def test_toggle_fullscreen_enters():
     """toggle_fullscreen on a tiled focused window pins it to the
-    monitor's fullscreen slot."""
+    workspace's fullscreen slot."""
     server = make_server()
     m = make_monitor()
+    m.active_workspace = make_workspace(monitor=m)
     server.monitors.append(m)
+    server.active_monitor = m
     client = make_client(
         toplevel=MagicMock(),
         scene_tree=MagicMock(),
-        monitor=m,
+        workspace=m.active_workspace,
     )
     server.clients.append(client)
     wel.focus_client(server, client)
@@ -3039,7 +3124,7 @@ def test_toggle_fullscreen_enters():
     with patch("wel.apply_geometry"):
         wel.toggle_fullscreen(server)
 
-    assert m.fullscreen is client
+    assert m.active_workspace.fullscreen is client
 
 
 def test_toggle_fullscreen_to_tile():
@@ -3047,16 +3132,18 @@ def test_toggle_fullscreen_to_tile():
     geometry clears the slot; client becomes tiled again."""
     server = make_server()
     m = make_monitor()
+    m.active_workspace = make_workspace(monitor=m)
     server.monitors.append(m)
+    server.active_monitor = m
     client = make_client(toplevel=MagicMock(), scene_tree=MagicMock(),
-                       monitor=m, focus_order=1)
-    m.fullscreen = client
+                       workspace=m.active_workspace, focus_order=1)
+    m.active_workspace.fullscreen = client
     server.clients.append(client)
 
     with patch("wel.apply_geometry"):
         wel.toggle_fullscreen(server)
 
-    assert m.fullscreen is None
+    assert m.active_workspace.fullscreen is None
     assert wel.client_layer(client) == wel.Layer.TILE
 
 
@@ -3065,22 +3152,24 @@ def test_toggle_fullscreen_to_float():
     the float; floating_geom is preserved through fullscreen."""
     server = make_server()
     m = make_monitor()
+    m.active_workspace = make_workspace(monitor=m)
     server.monitors.append(m)
+    server.active_monitor = m
     saved = wel.Rect(10, 20, 300, 200)
     client = make_client(
         toplevel=MagicMock(),
         scene_tree=MagicMock(),
-        monitor=m,
+        workspace=m.active_workspace,
         floating_geom=saved,
         focus_order=1,
     )
-    m.fullscreen = client
+    m.active_workspace.fullscreen = client
     server.clients.append(client)
 
     with patch("wel.apply_geometry"):
         wel.toggle_fullscreen(server)
 
-    assert m.fullscreen is None
+    assert m.active_workspace.fullscreen is None
     assert client.floating_geom == saved
     assert wel.client_layer(client) == wel.Layer.FLOAT
 
@@ -3088,7 +3177,10 @@ def test_toggle_fullscreen_to_float():
 def test_toggle_fullscreen_no_focus():
     """toggle_fullscreen with nothing focused is a no-op."""
     server = make_server()
-    server.monitors.append(MagicMock(name="m", fullscreen=None))
+    m = make_monitor()
+    m.active_workspace = make_workspace(monitor=m)
+    server.monitors.append(m)
+    server.active_monitor = m
 
     with patch("wel.set_fullscreen") as sf:
         wel.toggle_fullscreen(server)
@@ -3101,11 +3193,13 @@ def test_toggle_floating_to_float():
     the current outer rect so the float starts where it tiled."""
     server = make_server()
     m = make_monitor()
+    m.active_workspace = make_workspace(monitor=m)
     server.monitors.append(m)
+    server.active_monitor = m
     client = make_client(
         toplevel=MagicMock(),
         scene_tree=MagicMock(),
-        monitor=m,
+        workspace=m.active_workspace,
     )
     server.clients.append(client)
     wel.focus_client(server, client)
@@ -3122,12 +3216,14 @@ def test_toggle_floating_to_tile():
     """toggle_floating on a floating focused window clears floating_geom so
     it re-tiles."""
     server = make_server()
-    m = MagicMock(name="m", fullscreen=None)
+    m = make_monitor()
+    m.active_workspace = make_workspace(monitor=m)
     server.monitors.append(m)
+    server.active_monitor = m
     client = make_client(
         toplevel=MagicMock(),
         scene_tree=MagicMock(),
-        monitor=m,
+        workspace=m.active_workspace,
         floating_geom=wel.Rect(10, 20, 300, 200),
         focus_order=1,
     )
@@ -3143,14 +3239,16 @@ def test_toggle_floating_fullscreen_noop():
     """toggle_floating is a no-op while the focused window is fullscreen."""
     server = make_server()
     m = make_monitor()
+    m.active_workspace = make_workspace(monitor=m)
     server.monitors.append(m)
+    server.active_monitor = m
     client = make_client(
         toplevel=MagicMock(),
         scene_tree=MagicMock(),
-        monitor=m,
+        workspace=m.active_workspace,
         focus_order=1,
     )
-    m.fullscreen = client
+    m.active_workspace.fullscreen = client
     server.clients.append(client)
     before = client.floating_geom
 
@@ -3164,7 +3262,10 @@ def test_toggle_floating_fullscreen_noop():
 def test_toggle_floating_no_focus():
     """toggle_floating with nothing focused is a no-op."""
     server = make_server()
-    server.monitors.append(MagicMock(name="m", fullscreen=None))
+    m = make_monitor()
+    m.active_workspace = make_workspace(monitor=m)
+    server.monitors.append(m)
+    server.active_monitor = m
 
     with patch("wel.apply_geometry") as apply_geom:
         wel.toggle_floating(server)
@@ -3176,14 +3277,25 @@ def test_zoom_promotes():
     """zoom on a non-master tile swaps it with the master and re-arranges.
     The focused window naturally lands as the new master."""
     server = make_server()
-    m = MagicMock(name="m", fullscreen=None)
+    m = make_monitor()
+    m.active_workspace = make_workspace(monitor=m)
     server.monitors.append(m)
-    a = make_client(toplevel=MagicMock(name="a"), scene_tree=MagicMock(),
-                  monitor=m)
-    b = make_client(toplevel=MagicMock(name="b"), scene_tree=MagicMock(),
-                  monitor=m)
-    c = make_client(toplevel=MagicMock(name="c"), scene_tree=MagicMock(),
-                  monitor=m)
+    server.active_monitor = m
+    a = make_client(
+        toplevel=MagicMock(name="a"),
+        scene_tree=MagicMock(),
+        workspace=m.active_workspace,
+    )
+    b = make_client(
+        toplevel=MagicMock(name="b"),
+        scene_tree=MagicMock(),
+        workspace=m.active_workspace,
+    )
+    c = make_client(
+        toplevel=MagicMock(name="c"),
+        scene_tree=MagicMock(),
+        workspace=m.active_workspace,
+    )
     server.clients.extend([a, b, c])
     wel.focus_client(server, b)  # b becomes most-recent on m
 
@@ -3199,14 +3311,25 @@ def test_zoom_toggles():
     """zoom on the master swaps it with the most-recently-focused other
     tile and follows focus to the new master."""
     server = make_server()
-    m = MagicMock(name="m", fullscreen=None)
+    m = make_monitor()
+    m.active_workspace = make_workspace(monitor=m)
     server.monitors.append(m)
-    a = make_client(toplevel=MagicMock(name="a"), scene_tree=MagicMock(),
-                  monitor=m)
-    b = make_client(toplevel=MagicMock(name="b"), scene_tree=MagicMock(),
-                  monitor=m)
-    c = make_client(toplevel=MagicMock(name="c"), scene_tree=MagicMock(),
-                  monitor=m)
+    server.active_monitor = m
+    a = make_client(
+        toplevel=MagicMock(name="a"),
+        scene_tree=MagicMock(),
+        workspace=m.active_workspace,
+    )
+    b = make_client(
+        toplevel=MagicMock(name="b"),
+        scene_tree=MagicMock(),
+        workspace=m.active_workspace,
+    )
+    c = make_client(
+        toplevel=MagicMock(name="c"),
+        scene_tree=MagicMock(),
+        workspace=m.active_workspace,
+    )
     server.clients.extend([a, b, c])
     # b focused most recently among non-masters; a is master and focused last.
     wel.focus_client(server, c)
@@ -3224,10 +3347,15 @@ def test_zoom_toggles():
 def test_zoom_single_tile():
     """zoom is a no-op when fewer than two tiled windows are on the monitor."""
     server = make_server()
-    m = MagicMock(name="m", fullscreen=None)
+    m = make_monitor()
+    m.active_workspace = make_workspace(monitor=m)
     server.monitors.append(m)
-    a = make_client(toplevel=MagicMock(name="a"), scene_tree=MagicMock(),
-                  monitor=m)
+    server.active_monitor = m
+    a = make_client(
+        toplevel=MagicMock(name="a"),
+        scene_tree=MagicMock(),
+        workspace=m.active_workspace,
+    )
     server.clients.append(a)
     wel.focus_client(server, a)
 
@@ -3242,14 +3370,25 @@ def test_zoom_remembers_master():
     """After promoting a non-master, the next zoom toggles back to the
     displaced master, not to whatever else has the next-highest focus order."""
     server = make_server()
-    m = MagicMock(name="m", fullscreen=None)
+    m = make_monitor()
+    m.active_workspace = make_workspace(monitor=m)
     server.monitors.append(m)
-    a = make_client(toplevel=MagicMock(name="a"), scene_tree=MagicMock(),
-                  monitor=m)
-    b = make_client(toplevel=MagicMock(name="b"), scene_tree=MagicMock(),
-                  monitor=m)
-    c = make_client(toplevel=MagicMock(name="c"), scene_tree=MagicMock(),
-                  monitor=m)
+    server.active_monitor = m
+    a = make_client(
+        toplevel=MagicMock(name="a"),
+        scene_tree=MagicMock(),
+        workspace=m.active_workspace,
+    )
+    b = make_client(
+        toplevel=MagicMock(name="b"),
+        scene_tree=MagicMock(),
+        workspace=m.active_workspace,
+    )
+    c = make_client(
+        toplevel=MagicMock(name="c"),
+        scene_tree=MagicMock(),
+        workspace=m.active_workspace,
+    )
     server.clients.extend([a, b, c])
     # Focus history: c then b then nothing on a (a is master, never focused).
     wel.focus_client(server, c)
@@ -3269,14 +3408,19 @@ def test_zoom_remembers_master():
 def test_zoom_floating_focus():
     """zoom is a no-op when the focused window isn't on the tile layer."""
     server = make_server()
-    m = MagicMock(name="m", fullscreen=None)
+    m = make_monitor()
+    m.active_workspace = make_workspace(monitor=m)
     server.monitors.append(m)
-    a = make_client(toplevel=MagicMock(name="a"), scene_tree=MagicMock(),
-                  monitor=m)
+    server.active_monitor = m
+    a = make_client(
+        toplevel=MagicMock(name="a"),
+        scene_tree=MagicMock(),
+        workspace=m.active_workspace,
+    )
     b = make_client(
         toplevel=MagicMock(name="b"),
         scene_tree=MagicMock(),
-        monitor=m,
+        workspace=m.active_workspace,
         floating_geom=wel.Rect(0, 0, 100, 100),
     )
     server.clients.extend([a, b])
@@ -3290,14 +3434,15 @@ def test_zoom_floating_focus():
 
 
 def test_request_fullscreen_enters():
-    """A tiled client whose app requests fullscreen lands in its monitor's
-    fullscreen slot."""
+    """A tiled client whose app requests fullscreen lands in its
+    workspace's fullscreen slot."""
     server = make_server()
     m = make_monitor()
+    m.active_workspace = make_workspace(monitor=m)
     client = make_client(
         toplevel=MagicMock(),
         scene_tree=MagicMock(),
-        monitor=m,
+        workspace=m.active_workspace,
     )
     client.toplevel.requested.fullscreen = True
 
@@ -3305,7 +3450,7 @@ def test_request_fullscreen_enters():
          patch("wel.apply_focus"):
         wel.client_request_fullscreen(server, client, None)
 
-    assert m.fullscreen is client
+    assert m.active_workspace.fullscreen is client
     server.lib.wlr_xdg_toplevel_set_fullscreen.assert_called_once_with(
         client.toplevel, True)
 
@@ -3315,11 +3460,12 @@ def test_request_fullscreen_keeps_float():
     intact, so exit later returns to the same rect."""
     server = make_server()
     m = make_monitor()
+    m.active_workspace = make_workspace(monitor=m)
     saved = wel.Rect(10, 20, 300, 200)
     client = make_client(
         toplevel=MagicMock(),
         scene_tree=MagicMock(),
-        monitor=m,
+        workspace=m.active_workspace,
         floating_geom=saved,
     )
     client.toplevel.requested.fullscreen = True
@@ -3328,7 +3474,7 @@ def test_request_fullscreen_keeps_float():
          patch("wel.apply_focus"):
         wel.client_request_fullscreen(server, client, None)
 
-    assert m.fullscreen is client
+    assert m.active_workspace.fullscreen is client
     assert client.floating_geom == saved
 
 
@@ -3337,19 +3483,20 @@ def test_request_fullscreen_to_tile():
     when its app requests un-fullscreen."""
     server = make_server()
     m = make_monitor()
+    m.active_workspace = make_workspace(monitor=m)
     client = make_client(
         toplevel=MagicMock(),
         scene_tree=MagicMock(),
-        monitor=m,
+        workspace=m.active_workspace,
     )
-    m.fullscreen = client
+    m.active_workspace.fullscreen = client
     client.toplevel.requested.fullscreen = False
 
     with patch("wel.apply_tree"), patch("wel.apply_geometry"), \
          patch("wel.apply_focus"):
         wel.client_request_fullscreen(server, client, None)
 
-    assert m.fullscreen is None
+    assert m.active_workspace.fullscreen is None
     assert wel.client_layer(client) == wel.Layer.TILE
 
 
@@ -3358,21 +3505,22 @@ def test_request_fullscreen_to_float():
     requests un-fullscreen."""
     server = make_server()
     m = make_monitor()
+    m.active_workspace = make_workspace(monitor=m)
     saved = wel.Rect(10, 20, 300, 200)
     client = make_client(
         toplevel=MagicMock(),
         scene_tree=MagicMock(),
-        monitor=m,
+        workspace=m.active_workspace,
         floating_geom=saved,
     )
-    m.fullscreen = client
+    m.active_workspace.fullscreen = client
     client.toplevel.requested.fullscreen = False
 
     with patch("wel.apply_tree"), patch("wel.apply_geometry"), \
          patch("wel.apply_focus"):
         wel.client_request_fullscreen(server, client, None)
 
-    assert m.fullscreen is None
+    assert m.active_workspace.fullscreen is None
     assert client.floating_geom == saved
     assert wel.client_layer(client) == wel.Layer.FLOAT
 
@@ -3382,7 +3530,9 @@ def test_request_fullscreen_pre_map():
     client_map then promotes the window using requested.fullscreen."""
     server = make_server()
     m = make_monitor()
+    m.active_workspace = make_workspace(monitor=m)
     server.monitors.append(m)
+    server.active_monitor = m
     client = make_client(toplevel=MagicMock(), scene_tree=None)
     client.toplevel.requested.fullscreen = True
 
@@ -3392,7 +3542,7 @@ def test_request_fullscreen_pre_map():
 
     with patch("wel.set_fullscreen") as sf, patch("wel.focus_client"):
         wel.client_map(server, client, None)
-    sf.assert_called_with(server, m, client)
+    sf.assert_called_with(server, m.active_workspace, client)
 
 
 def test_request_fullscreen_noop():
@@ -3400,12 +3550,13 @@ def test_request_fullscreen_noop():
     no-op so no spurious configure goes out."""
     server = make_server()
     m = make_monitor()
+    m.active_workspace = make_workspace(monitor=m)
     client = make_client(
         toplevel=MagicMock(),
         scene_tree=MagicMock(),
-        monitor=m,
+        workspace=m.active_workspace,
     )
-    m.fullscreen = client
+    m.active_workspace.fullscreen = client
     client.toplevel.requested.fullscreen = True
 
     with patch("wel.apply_tree"), patch("wel.apply_geometry"), \
@@ -3420,10 +3571,18 @@ def test_cycle_focus_fullscreen():
     focus stays pinned to it."""
     server = make_server()
     m = make_monitor()
+    m.active_workspace = make_workspace(monitor=m)
     server.monitors.append(m)
-    a = make_client(toplevel=MagicMock(name="a"), monitor=m)
-    b = make_client(toplevel=MagicMock(name="b"), monitor=m)
-    m.fullscreen = a
+    server.active_monitor = m
+    a = make_client(
+        toplevel=MagicMock(name="a"),
+        workspace=m.active_workspace,
+    )
+    b = make_client(
+        toplevel=MagicMock(name="b"),
+        workspace=m.active_workspace,
+    )
+    m.active_workspace.fullscreen = a
     server.clients.extend([a, b])
 
     with patch("wel.focus_client") as focus:
@@ -3433,24 +3592,25 @@ def test_cycle_focus_fullscreen():
 
 
 def test_client_map_unfullscreens_existing():
-    """A new window on a monitor that already hosts a fullscreen window
+    """A new window on a workspace that already hosts a fullscreen window
     un-fullscreens that window first so the new one isn't buried."""
     server = make_server()
     m = make_monitor()
+    m.active_workspace = make_workspace(monitor=m)
     server.monitors.append(m)
+    server.active_monitor = m
     existing = make_client(
         toplevel=MagicMock(name="old"),
-        scene_tree=MagicMock(),
-        monitor=m,
+        workspace=m.active_workspace,
     )
-    m.fullscreen = existing
+    m.active_workspace.fullscreen = existing
     server.clients.append(existing)
     fresh = make_client(toplevel=MagicMock(name="new"), scene_tree=None)
 
     with patch("wel.focus_client"), patch("wel.apply_geometry"):
         wel.client_map(server, fresh, None)
 
-    assert m.fullscreen is None
+    assert m.active_workspace.fullscreen is None
     server.lib.wlr_xdg_toplevel_set_fullscreen.assert_called_once_with(
         existing.toplevel, False)
 
@@ -3461,13 +3621,12 @@ def test_resize_client_fullscreen():
     border rects collapse to zero size."""
     server = make_server()
     m = make_monitor()
+    m.active_workspace = make_workspace(monitor=m)
     client = make_client(
-        toplevel=MagicMock(),
-        scene_tree=MagicMock(),
-        monitor=m,
+        workspace=m.active_workspace,
         borders=tuple(MagicMock(name=f"b{i}") for i in range(4)),
     )
-    m.fullscreen = client
+    m.active_workspace.fullscreen = client
 
     wel.resize_client(server, client, wel.Rect(0, 0, 800, 600))
 
@@ -3512,6 +3671,7 @@ def _stage_layer_surface_new(server, *, layer=0, output=None, monitor=None):
     }.get(type_str, ("CAST", type_str, val))
     if monitor is not None and monitor not in server.monitors:
         server.monitors.append(monitor)
+        server.active_monitor = monitor
     return layer_surface
 
 
@@ -3661,11 +3821,14 @@ def test_layer_unmap_refocuses_client():
     top client on the active screen."""
     server = make_server()
     monitor = make_monitor()
+    monitor.active_workspace = make_workspace(monitor=monitor)
     server.monitors.append(monitor)
+    server.active_monitor = monitor
     ls = make_layer_surface(monitor=monitor, focused=True)
     client = make_client(
-        toplevel=MagicMock(), scene_tree=MagicMock(),
-        monitor=monitor, focus_order=1)
+        workspace=monitor.active_workspace,
+        focus_order=1,
+    )
     server.clients.append(client)
 
     with patch("wel.arrange_layers"), patch("wel.focus_client") as focus:
@@ -3679,15 +3842,20 @@ def test_layer_unmap_refocuses_monitor():
     top client, not the globally selected screen."""
     server = make_server()
     selected = make_monitor()
+    selected.active_workspace = make_workspace(monitor=selected)
     monitor = make_monitor()
+    monitor.active_workspace = make_workspace(monitor=monitor)
     server.monitors.extend([selected, monitor])
+    server.active_monitor = selected
     ls = make_layer_surface(monitor=monitor, focused=True)
     selected_client = make_client(
-        toplevel=MagicMock(), scene_tree=MagicMock(),
-        monitor=selected, focus_order=10)
+        workspace=selected.active_workspace,
+        focus_order=10,
+    )
     monitor_client = make_client(
-        toplevel=MagicMock(), scene_tree=MagicMock(),
-        monitor=monitor, focus_order=1)
+        workspace=monitor.active_workspace,
+        focus_order=1,
+    )
     server.clients.extend([selected_client, monitor_client])
 
     with patch("wel.arrange_layers"), patch("wel.focus_client") as focus:
@@ -3905,10 +4073,10 @@ def test_client_commit_initial_tiled():
     """A tiled client's initial commit defers tiling to map so siblings
     don't reflow before the new window can appear."""
     server = make_server()
-    m = MagicMock(name="m", fullscreen=None)
+    workspace = make_workspace()
     toplevel = MagicMock()
     toplevel.base.initial_commit = True
-    client = make_client(toplevel=toplevel, scene_tree=MagicMock(), monitor=m)
+    client = make_client(toplevel=toplevel, workspace=workspace)
 
     with patch("wel.apply_geometry") as apply_geom:
         wel.client_commit(server, client, None)
@@ -3921,14 +4089,13 @@ def test_client_commit_initial_tiled():
 def test_client_commit_initial_floating():
     """A floating client falls back to the (0, 0) initial configure."""
     server = make_server()
-    m = MagicMock(name="m", fullscreen=None)
+    workspace = make_workspace()
     toplevel = MagicMock()
     toplevel.base.initial_commit = True
     client = make_client(
         toplevel=toplevel,
-        scene_tree=MagicMock(),
         floating_geom=wel.Rect(0, 0, 100, 100),
-        monitor=m,
+        workspace=workspace,
     )
 
     with patch("wel.apply_geometry") as apply_geom:
@@ -3940,13 +4107,12 @@ def test_client_commit_initial_floating():
 
 
 def test_client_commit_initial_unassigned():
-    """A tiled client with no monitor falls back to the (0, 0) initial
+    """A tiled client with no workspace falls back to the (0, 0) initial
     configure so the required configure still goes out."""
     server = make_server()
     toplevel = MagicMock()
     toplevel.base.initial_commit = True
-    client = make_client(
-        toplevel=toplevel, scene_tree=MagicMock(), monitor=None)
+    client = make_client(toplevel=toplevel, workspace=None)
 
     with patch("wel.apply_geometry") as apply_geom:
         wel.client_commit(server, client, None)
@@ -3961,14 +4127,22 @@ def test_client_unmap_arranges():
     tiles expand -- in the same event as the window's removal so it lands
     in a single frame."""
     server = make_server()
-    m = MagicMock(name="m", fullscreen=None)
+    m = make_monitor()
+    m.active_workspace = make_workspace(monitor=m)
     server.monitors.append(m)
-    client = make_client(
-        toplevel=MagicMock(name="tl"), scene_tree=MagicMock(), monitor=m)
-    server.clients.append(client)
+    server.active_monitor = m
+    a = make_client(
+        toplevel=MagicMock(name="a"),
+        workspace=m.active_workspace,
+    )
+    b = make_client(
+        toplevel=MagicMock(name="b"),
+        workspace=m.active_workspace,
+    )
+    server.clients.extend([a, b])
 
     with patch("wel.apply_geometry") as apply_geom:
-        wel.client_unmap(server, client, None)
+        wel.client_unmap(server, a, None)
 
     apply_geom.assert_called_once_with(server, m)
 
@@ -3978,7 +4152,7 @@ def test_client_unmap_destroys_tree():
     reflow, and the focus shift all happen together."""
     server = make_server()
     scene_tree = MagicMock(name="scene_tree")
-    client = make_client(toplevel=MagicMock(name="tl"), scene_tree=scene_tree)
+    client = make_client(scene_tree=scene_tree)
     server.clients.append(client)
 
     wel.client_unmap(server, client, None)
@@ -3992,8 +4166,7 @@ def test_client_unmap_destroys_tree():
 def test_client_unmap_orphan():
     """Unmapping an orphaned client doesn't trigger an arrange."""
     server = make_server()
-    client = make_client(
-        toplevel=MagicMock(name="tl"), scene_tree=MagicMock(), monitor=None)
+    client = make_client(workspace=None)
     server.clients.append(client)
 
     with patch("wel.apply_geometry") as apply_geom:
@@ -4006,9 +4179,9 @@ def test_client_unmap_stale():
     """Unmapping a client whose monitor has already been removed is a
     no-op for arrange."""
     server = make_server()
-    m = MagicMock(name="m", fullscreen=None)  # not in server.monitors
-    client = make_client(
-        toplevel=MagicMock(name="tl"), scene_tree=MagicMock(), monitor=m)
+    m = make_monitor()  # not in server.monitors
+    m.active_workspace = make_workspace(monitor=m)
+    client = make_client(workspace=m.active_workspace)
     server.clients.append(client)
 
     with patch("wel.apply_geometry") as apply_geom:
@@ -4028,19 +4201,17 @@ def test_monitor_new_updates():
     upd.assert_called_once_with(server)
 
 
-def test_monitor_cleanup_orphans():
-    """When a monitor goes away its windows are first orphaned, then
-    update_monitors adopts them onto the new selected monitor."""
+def test_monitor_cleanup_removes():
+    """monitor_cleanup drops the monitor from server.monitors and triggers
+    update_monitors so apply_hierarchy migrates its workspaces."""
     server = make_server()
     monitor = make_monitor(output="OUT", scene_output="SO")
     server.monitors.append(monitor)
-    c = make_client(toplevel="t", scene_tree=None, monitor=monitor)
-    server.clients.append(c)
 
     with patch("wel.update_monitors") as upd:
         wel.monitor_cleanup(server, monitor, None)
 
-    assert c.monitor is None
+    assert monitor not in server.monitors
     upd.assert_called_once_with(server)
 
 
@@ -4231,3 +4402,589 @@ def test_load_config_sys_path(tmp_path, monkeypatch):
     """))
     wel.load_config(tmp_path / "config.py")
     assert wel.modkey(MagicMock()) == 0xDEAD
+
+
+# --- workspaces: setup -----------------------------------------------------
+
+
+def test_setup_workspaces_orphaned():
+    """Setup creates 10 orphaned workspaces named "1".."9", "0"."""
+    ffi = MagicMock(name="ffi")
+    lib = MagicMock(name="lib")
+    listen = MagicMock(side_effect=lambda *_a: MagicMock())
+    build = (ffi, lib, listen, MagicMock(), MagicMock())
+    with patch("wel.bindings.build", return_value=build), \
+         patch("wel.build_keycode_map",
+               return_value=make_keycode_map()):
+        server = wel.setup()
+    assert [w.name for w in server.workspaces] == [
+        "1", "2", "3", "4", "5", "6", "7", "8", "9", "0"]
+    assert all(w.monitor is None for w in server.workspaces)
+    assert all(w.fullscreen is None for w in server.workspaces)
+    assert server.active_monitor is None
+
+
+# --- workspaces: apply_hierarchy ------------------------------------------
+
+
+def test_hierarchy_seed():
+    """A monitor with no workspaces gets seeded with the first orphan,
+    becoming the active monitor."""
+    server = make_server()
+    server.workspaces = [make_workspace(name="1"), make_workspace(name="2")]
+    monitor = make_monitor()
+    server.monitors.append(monitor)
+
+    wel.apply_hierarchy(server)
+
+    assert server.workspaces[0].monitor is monitor
+    assert monitor.active_workspace is server.workspaces[0]
+    assert server.active_monitor is monitor
+    assert server.workspaces[1].monitor is None
+
+
+def test_hierarchy_hotplug():
+    """When a new monitor joins an existing layout, it stays empty -- no
+    orphan is auto-claimed."""
+    server = make_server()
+    first = make_monitor()
+    ws = make_workspace(name="1", monitor=first)
+    server.workspaces = [ws]
+    first.active_workspace = ws
+    server.active_monitor = first
+    server.monitors.append(first)
+    second = make_monitor()
+    server.monitors.append(second)
+
+    wel.apply_hierarchy(server)
+
+    assert second.active_workspace is None
+    assert server.active_monitor is first
+
+
+def test_hierarchy_unplug_migrate():
+    """When a monitor is removed, non-empty workspaces migrate to the
+    active monitor."""
+    server = make_server()
+    gone = make_monitor()
+    survivor = make_monitor()
+    ws_gone = make_workspace(name="1", monitor=gone)
+    ws_surv = make_workspace(name="2", monitor=survivor)
+    server.workspaces = [ws_gone, ws_surv]
+    survivor.active_workspace = ws_surv
+    server.active_monitor = survivor
+    server.monitors.append(survivor)
+    server.clients.append(make_client(workspace=ws_gone))
+
+    wel.apply_hierarchy(server)
+
+    assert ws_gone.monitor is survivor
+
+
+def test_hierarchy_unplug_orphan():
+    """When a monitor is removed, empty workspaces on it are orphaned."""
+    server = make_server()
+    gone = make_monitor()
+    survivor = make_monitor()
+    ws_gone = make_workspace(name="1", monitor=gone)
+    ws_surv = make_workspace(name="2", monitor=survivor)
+    server.workspaces = [ws_gone, ws_surv]
+    survivor.active_workspace = ws_surv
+    server.active_monitor = survivor
+    server.monitors.append(survivor)
+
+    wel.apply_hierarchy(server)
+
+    assert ws_gone.monitor is None
+
+
+def test_hierarchy_unplug_repoint():
+    """When the active monitor is removed, active falls to a survivor."""
+    server = make_server()
+    gone = make_monitor()
+    survivor = make_monitor()
+    ws = make_workspace(name="1", monitor=survivor)
+    server.workspaces = [ws]
+    survivor.active_workspace = ws
+    server.active_monitor = gone
+    server.monitors.append(survivor)
+
+    wel.apply_hierarchy(server)
+
+    assert server.active_monitor is survivor
+
+
+def test_hierarchy_idempotent():
+    """Calling apply_hierarchy twice produces the same state as once."""
+    server = make_server()
+    server.workspaces = [make_workspace(name="1"), make_workspace(name="2")]
+    server.monitors.append(make_monitor())
+
+    wel.apply_hierarchy(server)
+    snapshot = (
+        server.active_monitor,
+        [(w.name, w.monitor) for w in server.workspaces],
+        [(m, m.active_workspace) for m in server.monitors])
+    wel.apply_hierarchy(server)
+
+    assert snapshot == (
+        server.active_monitor,
+        [(w.name, w.monitor) for w in server.workspaces],
+        [(m, m.active_workspace) for m in server.monitors])
+
+
+def test_hierarchy_fullscreen_unmapped():
+    """A fullscreen pointer to a client that's no longer mapped is cleared."""
+    server = make_server()
+    monitor = make_monitor()
+    ws = make_workspace(name="1", monitor=monitor)
+    server.workspaces = [ws]
+    monitor.active_workspace = ws
+    server.active_monitor = monitor
+    server.monitors.append(monitor)
+    ghost = make_client(workspace=ws)
+    ws.fullscreen = ghost  # not in server.clients
+
+    wel.apply_hierarchy(server)
+
+    assert ws.fullscreen is None
+
+
+def test_hierarchy_fullscreen_mismatch():
+    """A fullscreen pointer to a client on a different workspace is cleared."""
+    server = make_server()
+    monitor = make_monitor()
+    active = make_workspace(name="1", monitor=monitor)
+    other = make_workspace(name="2")
+    server.workspaces = [active, other]
+    monitor.active_workspace = active
+    server.active_monitor = monitor
+    server.monitors.append(monitor)
+    client = make_client(workspace=other)
+    server.clients.append(client)
+    active.fullscreen = client
+
+    wel.apply_hierarchy(server)
+
+    assert active.fullscreen is None
+
+
+def test_hierarchy_inactive_empty():
+    """A non-active workspace with no clients is orphaned."""
+    server = make_server()
+    monitor = make_monitor()
+    active = make_workspace(name="1", monitor=monitor)
+    inactive = make_workspace(name="2", monitor=monitor)
+    server.workspaces = [active, inactive]
+    monitor.active_workspace = active
+    server.active_monitor = monitor
+    server.monitors.append(monitor)
+
+    wel.apply_hierarchy(server)
+
+    assert inactive.monitor is None
+
+
+def test_hierarchy_inactive_kept():
+    """A non-active workspace with clients stays assigned."""
+    server = make_server()
+    monitor = make_monitor()
+    active = make_workspace(name="1", monitor=monitor)
+    inactive = make_workspace(name="2", monitor=monitor)
+    server.workspaces = [active, inactive]
+    monitor.active_workspace = active
+    server.active_monitor = monitor
+    server.monitors.append(monitor)
+    server.clients.append(make_client(workspace=inactive))
+
+    wel.apply_hierarchy(server)
+
+    assert inactive.monitor is monitor
+
+
+def test_hierarchy_no_monitors():
+    """Without monitors, all workspaces are orphaned and active is None."""
+    server = make_server()
+    ws = make_workspace(name="1", monitor=MagicMock())
+    server.workspaces = [ws]
+    server.active_monitor = MagicMock()
+
+    wel.apply_hierarchy(server)
+
+    assert ws.monitor is None
+    assert server.active_monitor is None
+
+
+def test_hierarchy_active_repair():
+    """A monitor whose active_workspace lives elsewhere gets repointed."""
+    server = make_server()
+    monitor = make_monitor()
+    on_monitor = make_workspace(name="1", monitor=monitor)
+    elsewhere = make_workspace(name="2")
+    server.workspaces = [on_monitor, elsewhere]
+    monitor.active_workspace = elsewhere  # not on monitor
+    server.active_monitor = monitor
+    server.monitors.append(monitor)
+
+    wel.apply_hierarchy(server)
+
+    assert monitor.active_workspace is on_monitor
+
+
+# --- workspaces: apply_visibility -----------------------------------------
+
+
+def test_apply_visibility_active():
+    """Clients on a monitor's active workspace have their scene nodes
+    enabled."""
+    server = make_server()
+    monitor = make_monitor()
+    ws = make_workspace(name="1", monitor=monitor)
+    server.workspaces = [ws]
+    monitor.active_workspace = ws
+    server.monitors.append(monitor)
+    client = make_client(workspace=ws)
+    server.clients.append(client)
+
+    wel.apply_visibility(server)
+
+    server.lib.wlr_scene_node_set_enabled.assert_called_with(
+        server.ffi.addressof.return_value, True)
+
+
+def test_apply_visibility_inactive():
+    """Clients on a non-active workspace have their scene nodes disabled."""
+    server = make_server()
+    monitor = make_monitor()
+    active = make_workspace(name="1", monitor=monitor)
+    inactive = make_workspace(name="2", monitor=monitor)
+    server.workspaces = [active, inactive]
+    monitor.active_workspace = active
+    server.monitors.append(monitor)
+    client = make_client(workspace=inactive)
+    server.clients.append(client)
+
+    wel.apply_visibility(server)
+
+    server.lib.wlr_scene_node_set_enabled.assert_called_with(
+        server.ffi.addressof.return_value, False)
+
+
+def test_apply_visibility_orphan():
+    """Clients on an orphaned workspace are hidden."""
+    server = make_server()
+    ws = make_workspace(name="1")
+    server.workspaces = [ws]
+    client = make_client(workspace=ws)
+    server.clients.append(client)
+
+    wel.apply_visibility(server)
+
+    server.lib.wlr_scene_node_set_enabled.assert_called_with(
+        server.ffi.addressof.return_value, False)
+
+
+# --- workspaces: view_workspace -------------------------------------------
+
+
+def test_view_workspace_activates():
+    """view_workspace makes the target workspace active on its monitor and
+    switches the active monitor."""
+    server = make_server()
+    m1 = make_monitor()
+    m2 = make_monitor()
+    ws1 = make_workspace(name="1", monitor=m1)
+    ws2 = make_workspace(name="2", monitor=m2)
+    server.workspaces = [ws1, ws2]
+    m1.active_workspace = ws1
+    m2.active_workspace = ws2
+    server.active_monitor = m1
+    server.monitors.extend([m1, m2])
+
+    wel.view_workspace(server, "2")
+
+    assert m2.active_workspace is ws2
+    assert server.active_monitor is m2
+
+
+def test_view_workspace_adopts_orphan():
+    """view_workspace on an orphaned workspace binds it to the active
+    monitor before activating it."""
+    server = make_server()
+    monitor = make_monitor()
+    ws1 = make_workspace(name="1", monitor=monitor)
+    orphan = make_workspace(name="2")
+    server.workspaces = [ws1, orphan]
+    monitor.active_workspace = ws1
+    server.active_monitor = monitor
+    server.monitors.append(monitor)
+
+    wel.view_workspace(server, "2")
+
+    assert orphan.monitor is monitor
+    assert monitor.active_workspace is orphan
+
+
+def test_view_workspace_ends_grabs():
+    """view_workspace clears any in-progress mouse grabs."""
+    server = make_server()
+    monitor = make_monitor()
+    ws1 = make_workspace(name="1", monitor=monitor)
+    ws2 = make_workspace(name="2")
+    server.workspaces = [ws1, ws2]
+    monitor.active_workspace = ws1
+    server.active_monitor = monitor
+    server.monitors.append(monitor)
+    client = make_client(workspace=ws1, grab=wel.Grab("move", 0, 0))
+    server.clients.append(client)
+
+    wel.view_workspace(server, "2")
+
+    assert client.grab is None
+
+
+def test_view_workspace_unknown():
+    """view_workspace with an unknown name leaves state untouched."""
+    server = make_server()
+    monitor = make_monitor()
+    ws = make_workspace(name="1", monitor=monitor)
+    server.workspaces = [ws]
+    monitor.active_workspace = ws
+    server.active_monitor = monitor
+    server.monitors.append(monitor)
+
+    wel.view_workspace(server, "xyz")
+
+    assert monitor.active_workspace is ws
+
+
+def test_view_workspace_outgoing():
+    """Switching away from an empty workspace orphans it."""
+    server = make_server()
+    monitor = make_monitor()
+    ws1 = make_workspace(name="1", monitor=monitor)
+    ws2 = make_workspace(name="2")
+    server.workspaces = [ws1, ws2]
+    monitor.active_workspace = ws1
+    server.active_monitor = monitor
+    server.monitors.append(monitor)
+
+    wel.view_workspace(server, "2")
+
+    assert ws1.monitor is None
+
+
+# --- workspaces: move_client_to_workspace ----------------------------------
+
+
+def test_move_client_reassigns():
+    """move_client_to_workspace changes the focused client's workspace."""
+    server = make_server()
+    monitor = make_monitor()
+    ws1 = make_workspace(name="1", monitor=monitor)
+    ws2 = make_workspace(name="3")
+    server.workspaces = [ws1, ws2]
+    monitor.active_workspace = ws1
+    server.active_monitor = monitor
+    server.monitors.append(monitor)
+    client = make_client(workspace=ws1, focus_order=1)
+    server.clients.append(client)
+
+    wel.move_client_to_workspace(server, "3")
+
+    assert client.workspace is ws2
+
+
+def test_move_client_adopts():
+    """move_client_to_workspace adopts the target onto active_monitor
+    if it was orphaned."""
+    server = make_server()
+    monitor = make_monitor()
+    ws1 = make_workspace(name="1", monitor=monitor)
+    orphan = make_workspace(name="4")
+    server.workspaces = [ws1, orphan]
+    monitor.active_workspace = ws1
+    server.active_monitor = monitor
+    server.monitors.append(monitor)
+    client = make_client(workspace=ws1, focus_order=1)
+    server.clients.append(client)
+
+    wel.move_client_to_workspace(server, "4")
+
+    assert orphan.monitor is monitor
+
+
+def test_move_client_fullscreen():
+    """Moving the fullscreen client off its workspace clears that
+    workspace's fullscreen pointer."""
+    server = make_server()
+    monitor = make_monitor()
+    ws1 = make_workspace(name="1", monitor=monitor)
+    ws2 = make_workspace(name="2")
+    server.workspaces = [ws1, ws2]
+    monitor.active_workspace = ws1
+    server.active_monitor = monitor
+    server.monitors.append(monitor)
+    client = make_client(workspace=ws1, focus_order=1)
+    ws1.fullscreen = client
+    server.clients.append(client)
+
+    wel.move_client_to_workspace(server, "2")
+
+    assert ws1.fullscreen is None
+
+
+def test_move_client_fullscreen_notifies():
+    """Moving a fullscreen client out of a workspace also tells the app
+    it is no longer fullscreen."""
+    server = make_server()
+    monitor = make_monitor()
+    ws1 = make_workspace(name="1", monitor=monitor)
+    ws2 = make_workspace(name="2")
+    server.workspaces = [ws1, ws2]
+    monitor.active_workspace = ws1
+    server.active_monitor = monitor
+    server.monitors.append(monitor)
+    client = make_client(workspace=ws1, focus_order=1)
+    ws1.fullscreen = client
+    server.clients.append(client)
+
+    wel.move_client_to_workspace(server, "2")
+
+    server.lib.wlr_xdg_toplevel_set_fullscreen.assert_any_call(
+        client.toplevel, False)
+
+
+def test_move_client_target_fullscreen():
+    """Moving a client into a workspace with a fullscreen client clears the
+    old fullscreen state so the moved window is not buried."""
+    server = make_server()
+    monitor = make_monitor()
+    ws1 = make_workspace(name="1", monitor=monitor)
+    ws2 = make_workspace(name="2", monitor=monitor)
+    server.workspaces = [ws1, ws2]
+    monitor.active_workspace = ws1
+    server.active_monitor = monitor
+    server.monitors.append(monitor)
+    moved = make_client(workspace=ws1, focus_order=2)
+    fullscreen = make_client(workspace=ws2, focus_order=1)
+    ws2.fullscreen = fullscreen
+    server.clients.extend([moved, fullscreen])
+
+    wel.move_client_to_workspace(server, "2")
+
+    assert ws2.fullscreen is None
+    server.lib.wlr_xdg_toplevel_set_fullscreen.assert_any_call(
+        fullscreen.toplevel, False)
+
+
+# --- workspaces: move_active_workspace_to_monitor --------------------------
+
+
+def test_move_workspace_next():
+    """move_active_workspace_to_monitor(+1) migrates the active workspace
+    to the next monitor and switches focus there."""
+    server = make_server()
+    m1 = make_monitor()
+    m2 = make_monitor()
+    ws1 = make_workspace(name="1", monitor=m1)
+    ws2 = make_workspace(name="2", monitor=m2)
+    server.workspaces = [ws1, ws2]
+    m1.active_workspace = ws1
+    m2.active_workspace = ws2
+    server.active_monitor = m1
+    server.monitors.extend([m1, m2])
+
+    wel.move_active_workspace_to_monitor(server, +1)
+
+    assert ws1.monitor is m2
+    assert m2.active_workspace is ws1
+    assert server.active_monitor is m2
+
+
+def test_move_workspace_wraps():
+    """move_active_workspace_to_monitor wraps from the first monitor to
+    the last with direction -1."""
+    server = make_server()
+    m1 = make_monitor()
+    m2 = make_monitor()
+    ws1 = make_workspace(name="1", monitor=m1)
+    ws2 = make_workspace(name="2", monitor=m2)
+    server.workspaces = [ws1, ws2]
+    m1.active_workspace = ws1
+    m2.active_workspace = ws2
+    server.active_monitor = m1
+    server.monitors.extend([m1, m2])
+
+    wel.move_active_workspace_to_monitor(server, -1)
+
+    assert server.active_monitor is m2
+
+
+def test_move_workspace_single():
+    """move_active_workspace_to_monitor is a no-op with one monitor."""
+    server = make_server()
+    monitor = make_monitor()
+    ws = make_workspace(name="1", monitor=monitor)
+    server.workspaces = [ws]
+    monitor.active_workspace = ws
+    server.active_monitor = monitor
+    server.monitors.append(monitor)
+
+    wel.move_active_workspace_to_monitor(server, +1)
+
+    assert server.active_monitor is monitor
+
+
+# --- workspaces: helpers --------------------------------------------------
+
+
+def test_clients_in_filters():
+    """clients_in returns only the clients assigned to the workspace."""
+    server = make_server()
+    ws1 = make_workspace(name="1")
+    ws2 = make_workspace(name="2")
+    a = make_client(workspace=ws1)
+    b = make_client(workspace=ws2)
+    c = make_client(workspace=ws1)
+    server.clients.extend([a, b, c])
+
+    assert wel.clients_in(server, ws1) == [a, c]
+
+
+def test_clients_visible_active():
+    """clients_visible returns clients on the monitor's active workspace."""
+    server = make_server()
+    monitor = make_monitor()
+    active = make_workspace(name="1", monitor=monitor)
+    inactive = make_workspace(name="2", monitor=monitor)
+    monitor.active_workspace = active
+    on_active = make_client(workspace=active)
+    on_inactive = make_client(workspace=inactive)
+    server.clients.extend([on_active, on_inactive])
+
+    assert wel.clients_visible(server, monitor) == [on_active]
+
+
+def test_clients_visible_empty():
+    """clients_visible returns [] for a monitor with no active workspace."""
+    server = make_server()
+    monitor = make_monitor()
+
+    assert wel.clients_visible(server, monitor) == []
+
+
+def test_client_monitor_derives():
+    """client_monitor reads the monitor through the client's workspace."""
+    monitor = make_monitor()
+    workspace = make_workspace(monitor=monitor)
+    client = make_client(workspace=workspace)
+
+    assert wel.client_monitor(client) is monitor
+
+
+def test_client_monitor_orphaned():
+    """A client with no workspace has no monitor."""
+    client = make_client(workspace=None)
+
+    assert wel.client_monitor(client) is None
