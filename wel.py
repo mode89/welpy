@@ -24,6 +24,7 @@ logger = logging.getLogger(__name__)
 BORDER_WIDTH = 2
 BORDER_COLOR_ACTIVE = (0.0, 0.5, 1.0, 1.0)
 BORDER_COLOR_INACTIVE = (0.3, 0.3, 0.3, 1.0)
+WORKSPACE_NAMES = ("1", "2", "3", "4", "5", "6", "7", "8", "9", "10")
 
 
 class Layer(enum.Enum):
@@ -272,7 +273,8 @@ def setup() -> Server: # pylint: disable=too-many-locals
         monitors=[], active_monitor=None, clients=[],
         workspaces=[
             Workspace(name=name, monitor=None, fullscreen=None)
-            for name in ("1", "2", "3", "4", "5", "6", "7", "8", "9", "0")],
+            for name in WORKSPACE_NAMES
+        ],
         previous_workspace=None,
         ext_workspace=None,
         layers=layers,
@@ -1696,10 +1698,11 @@ def key_bindings(server: Server) -> dict:
         (mod, lib.BTN_RIGHT): begin_resizing_client,
         (mod, server.keycode["Tab"]): view_previous_workspace,
     }
-    for name in ("1", "2", "3", "4", "5", "6", "7", "8", "9", "0"):
-        table[(mod, server.keycode[name])] = (
+    for name in WORKSPACE_NAMES:
+        key = name if name != "10" else "0"
+        table[(mod, server.keycode[key])] = (
             lambda s, n=name: view_workspace(s, n))
-        table[(mod | lib.WLR_MODIFIER_SHIFT, server.keycode[name])] = (
+        table[(mod | lib.WLR_MODIFIER_SHIFT, server.keycode[key])] = (
             lambda s, n=name: move_client_to_workspace(s, n))
     return table
 

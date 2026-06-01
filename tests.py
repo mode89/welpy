@@ -4409,7 +4409,7 @@ def test_load_config_sys_path(tmp_path, monkeypatch):
 
 
 def test_setup_workspaces_orphaned():
-    """Setup creates 10 orphaned workspaces named "1".."9", "0"."""
+    """Setup creates 10 orphaned workspaces named "1".."9", "10"."""
     ffi = MagicMock(name="ffi")
     lib = MagicMock(name="lib")
     listen = MagicMock(side_effect=lambda *_a: MagicMock())
@@ -4419,7 +4419,7 @@ def test_setup_workspaces_orphaned():
                return_value=make_keycode_map()):
         server = wel.setup()
     assert [w.name for w in server.workspaces] == [
-        "1", "2", "3", "4", "5", "6", "7", "8", "9", "0"]
+        "1", "2", "3", "4", "5", "6", "7", "8", "9", "10"]
     assert all(w.monitor is None for w in server.workspaces)
     assert all(w.fullscreen is None for w in server.workspaces)
     assert server.active_monitor is None
