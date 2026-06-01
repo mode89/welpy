@@ -156,6 +156,7 @@ class Server: # pylint: disable=too-many-instance-attributes
     active_monitor: Any      # Monitor receiving new windows / key bindings
     clients: list[Client]
     workspaces: list         # all Workspaces; created at setup, never resized
+    previous_workspace: Any  # name of last-viewed workspace, for toggling back
     ext_workspace: Any       # ext-workspace-v1 protocol state
     layers: dict             # scene tree per Layer; key order = z order
     keycode: dict            # sym-name -> evdev-keycode
@@ -272,6 +273,7 @@ def setup() -> Server: # pylint: disable=too-many-locals
         workspaces=[
             Workspace(name=name, monitor=None, fullscreen=None)
             for name in ("1", "2", "3", "4", "5", "6", "7", "8", "9", "0")],
+        previous_workspace=None,
         ext_workspace=None,
         layers=layers,
         keycode={}, bindings={}, listeners=[],
@@ -1136,6 +1138,9 @@ def view_workspace(server: Server, name: str) -> None:
         (w for w in server.workspaces if w.name == name), None)
     if target is None or server.active_monitor is None:
         return
+    current = server.active_monitor.active_workspace
+    if current is not None and current is not target:
+        server.previous_workspace = current.name
     if target.monitor is None:
         target.monitor = server.active_monitor
     target.monitor.active_workspace = target
@@ -1150,6 +1155,12 @@ def view_workspace(server: Server, name: str) -> None:
     apply_focus(server)
     if server.ext_workspace is not None:
         ext_workspace.publish(server)
+
+
+def view_previous_workspace(server: Server) -> None:
+    """Switch back to the workspace shown before the current one."""
+    if server.previous_workspace is not None:
+        view_workspace(server, server.previous_workspace)
 
 
 def move_client_to_workspace(server: Server, name: str) -> None:
@@ -1683,6 +1694,7 @@ def key_bindings(server: Server) -> dict:
             lambda s: move_active_workspace_to_monitor(s, +1),
         (mod, lib.BTN_LEFT): begin_dragging_client,
         (mod, lib.BTN_RIGHT): begin_resizing_client,
+        (mod, server.keycode["Tab"]): view_previous_workspace,
     }
     for name in ("1", "2", "3", "4", "5", "6", "7", "8", "9", "0"):
         table[(mod, server.keycode[name])] = (

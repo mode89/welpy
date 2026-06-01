@@ -123,7 +123,7 @@ def make_keycode_map():
     """Stand-in keycode map covering every key referenced by built-in
     bindings, so `setup()` can build `server.bindings` without KeyError."""
     return {"Return": 28, "q": 16, "j": 36, "k": 37, "f": 33, "z": 44,
-            "e": 18, "space": 57, "h": 35, "l": 38,
+            "e": 18, "space": 57, "h": 35, "l": 38, "Tab": 15,
             "1": 2, "2": 3, "3": 4, "4": 5, "5": 6,
             "6": 7, "7": 8, "8": 9, "9": 10, "0": 11}
 
@@ -4755,6 +4755,56 @@ def test_view_workspace_unknown():
     server.monitors.append(monitor)
 
     wel.view_workspace(server, "xyz")
+
+    assert monitor.active_workspace is ws
+
+
+def test_view_workspace_records_previous():
+    """Switching workspaces remembers the one being left."""
+    server = make_server()
+    monitor = make_monitor()
+    ws1 = make_workspace(name="1", monitor=monitor)
+    ws2 = make_workspace(name="2")
+    server.workspaces = [ws1, ws2]
+    monitor.active_workspace = ws1
+    server.active_monitor = monitor
+    server.monitors.append(monitor)
+
+    wel.view_workspace(server, "2")
+
+    assert server.previous_workspace == "1"
+
+
+def test_view_previous_switches_back():
+    """view_previous_workspace returns to the last-viewed workspace."""
+    server = make_server()
+    monitor = make_monitor()
+    ws1 = make_workspace(name="1", monitor=monitor)
+    ws2 = make_workspace(name="2")
+    server.workspaces = [ws1, ws2]
+    monitor.active_workspace = ws1
+    server.active_monitor = monitor
+    server.monitors.append(monitor)
+    server.previous_workspace = None
+
+    wel.view_workspace(server, "2")
+    wel.view_previous_workspace(server)
+
+    assert monitor.active_workspace is ws1
+
+
+def test_view_previous_noop():
+    """view_previous_workspace does nothing when there is no history."""
+    server = make_server()
+    monitor = make_monitor()
+    ws = make_workspace(name="1", monitor=monitor)
+    server.workspaces = [ws]
+    monitor.active_workspace = ws
+    server.active_monitor = monitor
+    server.monitors.append(monitor)
+    server.previous_workspace = None
+
+    wel.view_previous_workspace(server)
 
     assert monitor.active_workspace is ws
 
