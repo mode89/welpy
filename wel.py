@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 import bindings
+import ext_workspace
 
 
 logger = logging.getLogger(__name__)
@@ -155,6 +156,7 @@ class Server: # pylint: disable=too-many-instance-attributes
     active_monitor: Any      # Monitor receiving new windows / key bindings
     clients: list[Client]
     workspaces: list         # all Workspaces; created at setup, never resized
+    ext_workspace: Any       # ext-workspace-v1 protocol state
     layers: dict             # scene tree per Layer; key order = z order
     keycode: dict            # sym-name -> evdev-keycode
     bindings: dict           # (mods, code) -> action(server)
@@ -270,6 +272,7 @@ def setup() -> Server: # pylint: disable=too-many-locals
         workspaces=[
             Workspace(name=name, monitor=None, fullscreen=None)
             for name in ("1", "2", "3", "4", "5", "6", "7", "8", "9", "0")],
+        ext_workspace=None,
         layers=layers,
         keycode={}, bindings={}, listeners=[],
     )
@@ -278,6 +281,12 @@ def setup() -> Server: # pylint: disable=too-many-locals
     server.keyboard_group = create_keyboard_group(server)
     server.keycode = build_keycode_map(lib, ffi, server.keyboard_group.keymap)
     server.bindings = key_bindings(server)
+    server.ext_workspace = ext_workspace.create(
+        server,
+        on_activate=lambda name: view_workspace(server, name),
+        on_assign=lambda ws, target: assign_workspace_to_monitor(
+            server, ws, target),
+    )
 
     server.listeners.extend([
         listen(lib.welpy_backend_new_output(backend),
@@ -343,6 +352,7 @@ def teardown(server: Server) -> None:
     for listener in server.listeners:
         listener.remove()
     server.listeners.clear()
+    ext_workspace.destroy(server.ext_workspace)
     destroy_keyboard_group(lib, server.keyboard_group)
     destroy_cursor(lib, server.cursor)
     lib.wl_display_destroy_clients(server.display)
@@ -468,6 +478,8 @@ def update_monitors(server: Server) -> None:
         arrange_layers(server, m)
         apply_geometry(server, m)
     apply_focus(server)
+    if server.ext_workspace is not None:
+        ext_workspace.publish(server)
 
 
 def apply_hierarchy(server: Server) -> None: # pylint: disable=too-many-branches
@@ -1136,6 +1148,8 @@ def view_workspace(server: Server, name: str) -> None:
     for m in server.monitors:
         apply_geometry(server, m)
     apply_focus(server)
+    if server.ext_workspace is not None:
+        ext_workspace.publish(server)
 
 
 def move_client_to_workspace(server: Server, name: str) -> None:
@@ -1163,6 +1177,23 @@ def move_client_to_workspace(server: Server, name: str) -> None:
     for m in server.monitors:
         apply_geometry(server, m)
     apply_focus(server)
+    if server.ext_workspace is not None:
+        ext_workspace.publish(server)
+
+
+def assign_workspace_to_monitor(
+        server: Server, workspace: Workspace, target: Monitor) -> None:
+    """Move `workspace` onto `target`. Used by ext-workspace clients to
+    drag a workspace between monitors from a bar."""
+    workspace.monitor = target
+    apply_hierarchy(server)
+    apply_visibility(server)
+    apply_tree(server)
+    for m in server.monitors:
+        apply_geometry(server, m)
+    apply_focus(server)
+    if server.ext_workspace is not None:
+        ext_workspace.publish(server)
 
 
 def move_active_workspace_to_monitor(
@@ -1184,6 +1215,8 @@ def move_active_workspace_to_monitor(
     for m in server.monitors:
         apply_geometry(server, m)
     apply_focus(server)
+    if server.ext_workspace is not None:
+        ext_workspace.publish(server)
 
 
 def arrange_layers(server: Server, monitor: Monitor) -> None:

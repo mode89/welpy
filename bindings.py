@@ -19,12 +19,81 @@ import os
 import subprocess
 import sys
 import tempfile
+from dataclasses import dataclass, field
 from types import SimpleNamespace
 
 import cffi
 
+import ext_workspace
+
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class Builder:  # pylint: disable=too-many-instance-attributes
+    """Collects cffi contributions and drives the final compile.
+    Centralizes wayland-scanner invocation so each contributor declares
+    what it needs without duplicating subprocess plumbing."""
+    build_dir: str
+    include_dirs: list = field(default_factory=list)
+    libraries: list = field(default_factory=list)
+    library_dirs: list = field(default_factory=list)
+    extra_compile_args: list = field(default_factory=list)
+    ffi: cffi.FFI = field(default_factory=cffi.FFI)
+    cdef: str = ""
+    source: str = ""
+    c_sources: list = field(default_factory=list)
+
+    def append(  # pylint: disable=too-many-arguments
+            self, *, cdef: str = "", source: str = "",
+            c_sources: list = (), include_dirs: list = (),
+            libraries: list = (), library_dirs: list = (),
+            extra_compile_args: list = ()) -> None:
+        """Append fragments. Callers are append-only; no reordering."""
+        self.cdef += cdef
+        self.source += source
+        self.c_sources.extend(c_sources)
+        self.include_dirs.extend(include_dirs)
+        self.libraries.extend(libraries)
+        self.library_dirs.extend(library_dirs)
+        self.extra_compile_args.extend(extra_compile_args)
+
+    def scanner(self, pkg: str, rel_xml: str, stem: str, *,
+                private_code: bool = True) -> tuple:
+        """Generate `<stem>-protocol.h` (and optionally `<stem>-protocol.c`)
+        from `<pkg>'s pkgdatadir/<rel_xml>` into `build_dir`. Returns
+        (header_path, c_path-or-None). With `private_code=False`, skip
+        marshalling code generation -- use for protocols whose private
+        code is already linked by a library we depend on."""
+        protocols_dir = subprocess.check_output(
+            ["pkg-config", "--variable=pkgdatadir", pkg]
+        ).decode().strip()
+        xml = os.path.join(protocols_dir, rel_xml)
+        header = os.path.join(self.build_dir, f"{stem}-protocol.h")
+        subprocess.check_call(
+            ["wayland-scanner", "server-header", xml, header])
+        if not private_code:
+            return header, None
+        csrc = os.path.join(self.build_dir, f"{stem}-protocol.c")
+        subprocess.check_call(
+            ["wayland-scanner", "private-code", xml, csrc])
+        return header, csrc
+
+    def compile(self, module_name: str) -> str:
+        """Apply accumulated cdef/source and produce a compiled .so.
+        `build_dir` is added to `include_dirs` so scanner outputs are
+        visible to the C compiler."""
+        self.ffi.cdef(self.cdef)
+        self.ffi.set_source(
+            module_name, self.source,
+            sources=self.c_sources,
+            include_dirs=[*self.include_dirs, self.build_dir],
+            libraries=self.libraries,
+            library_dirs=self.library_dirs,
+            extra_compile_args=self.extra_compile_args,
+        )
+        return self.ffi.compile(tmpdir=self.build_dir)
 
 
 _PKGS = ("wlroots-0.19", "wayland-server", "xkbcommon", "pixman-1")
@@ -984,53 +1053,36 @@ def _build():
 
     cflags = pkgcfg("--cflags", *_PKGS)
     libs = pkgcfg("--libs", *_PKGS)
-    include_dirs = [a[2:] for a in cflags if a.startswith("-I")]
-    extra_cflags = (
-        [a for a in cflags if not a.startswith("-I")]
-        + ["-DWLR_USE_UNSTABLE"]
-    )
-    libraries = [a[2:] for a in libs if a.startswith("-l")]
-    library_dirs = [a[2:] for a in libs if a.startswith("-L")]
 
     build_dir = tempfile.mkdtemp(prefix="welpy-build-")
-
-    # wlroots includes <xdg-shell-protocol.h>, which must be generated
-    # locally from the xdg-shell.xml protocol description shipped with
-    # wayland-protocols.
-    protocols_dir = subprocess.check_output(
-        ["pkg-config", "--variable=pkgdatadir", "wayland-protocols"]
-    ).decode().strip()
-    subprocess.check_call([
-        "wayland-scanner", "server-header",
-        os.path.join(protocols_dir, "stable/xdg-shell/xdg-shell.xml"),
-        os.path.join(build_dir, "xdg-shell-protocol.h"),
-    ])
-    wlr_protocols_dir = subprocess.check_output(
-        ["pkg-config", "--variable=pkgdatadir", "wlr-protocols"]
-    ).decode().strip()
-    for stem in (
-            "wlr-layer-shell-unstable-v1",
-            "wlr-output-power-management-unstable-v1",
-    ):
-        subprocess.check_call([
-            "wayland-scanner", "server-header",
-            os.path.join(wlr_protocols_dir, f"unstable/{stem}.xml"),
-            os.path.join(build_dir, f"{stem}-protocol.h"),
-        ])
-    include_dirs.append(build_dir)
-
-    builder = cffi.FFI()
-    builder.cdef(CDEF)
-    builder.set_source(
-        _MODULE,
-        SOURCE,
-        include_dirs=include_dirs,
-        libraries=libraries,
-        library_dirs=library_dirs,
-        extra_compile_args=extra_cflags + ["-w"],
+    builder = Builder(build_dir=build_dir)
+    builder.append(
+        cdef=CDEF, source=SOURCE,
+        include_dirs=[a[2:] for a in cflags if a.startswith("-I")],
+        libraries=[a[2:] for a in libs if a.startswith("-l")],
+        library_dirs=[a[2:] for a in libs if a.startswith("-L")],
+        extra_compile_args=(
+            [a for a in cflags if not a.startswith("-I")]
+            + ["-DWLR_USE_UNSTABLE", "-w"]),
     )
+
+    # wlroots includes the protocol headers below; their marshalling code
+    # is already linked by wlroots, so we only need the server headers.
+    builder.scanner(
+        "wayland-protocols", "stable/xdg-shell/xdg-shell.xml",
+        "xdg-shell", private_code=False)
+    builder.scanner(
+        "wlr-protocols", "unstable/wlr-layer-shell-unstable-v1.xml",
+        "wlr-layer-shell-unstable-v1", private_code=False)
+    builder.scanner(
+        "wlr-protocols",
+        "unstable/wlr-output-power-management-unstable-v1.xml",
+        "wlr-output-power-management-unstable-v1", private_code=False)
+
+    ext_workspace.contribute(builder)
+
     logger.info("building in %s ...", build_dir)
-    so_path = builder.compile(tmpdir=build_dir)
+    so_path = builder.compile(_MODULE)
 
     spec = importlib.util.spec_from_file_location(_MODULE, so_path)
     mod = importlib.util.module_from_spec(spec)
