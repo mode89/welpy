@@ -143,6 +143,7 @@ struct wlr_subcompositor;
 struct wlr_data_device_manager;
 struct wlr_data_control_manager_v1;
 struct wlr_ext_data_control_manager_v1;
+struct wlr_primary_selection_v1_device_manager;
 struct xkb_context;
 struct xkb_keymap;
 // wlr_keyboard_modifiers is embedded in wlr_keyboard, so cffi needs a
@@ -297,6 +298,8 @@ struct wlr_data_control_manager_v1 *wlr_data_control_manager_v1_create(
         struct wl_display *);
 struct wlr_ext_data_control_manager_v1 *wlr_ext_data_control_manager_v1_create(
         struct wl_display *, uint32_t version);
+struct wlr_primary_selection_v1_device_manager
+        *wlr_primary_selection_v1_device_manager_create(struct wl_display *);
 
 struct wlr_output_layout *wlr_output_layout_create(struct wl_display *);
 struct wlr_output_layout_output *wlr_output_layout_add_auto(
@@ -814,6 +817,7 @@ SOURCE = r"""
 #include <linux/input-event-codes.h>
 #include <wayland-server-core.h>
 #include <wlr/types/wlr_primary_selection.h>
+#include <wlr/types/wlr_primary_selection_v1.h>
 #include <wlr/backend.h>
 #include <wlr/backend/session.h>
 #include <wlr/render/allocator.h>

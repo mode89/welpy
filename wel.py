@@ -232,6 +232,11 @@ def setup() -> Server: # pylint: disable=too-many-locals
     compositor = lib.wlr_compositor_create(display, 6, renderer)
     lib.wlr_subcompositor_create(display)
     lib.wlr_data_device_manager_create(display)
+    lib.wlr_primary_selection_v1_device_manager_create(display)
+    # Privileged clipboard access for managers/tools (wl-clipboard, history
+    # daemons); both protocol versions cover tooling mid-migration.
+    lib.wlr_data_control_manager_v1_create(display)
+    lib.wlr_ext_data_control_manager_v1_create(display, 1)
 
     # Two parallel hierarchies + a bridge: output_layout positions physical
     # screens in 2D, scene holds the drawable content, scene_layout pairs
@@ -307,9 +312,29 @@ def setup() -> Server: # pylint: disable=too-many-locals
             lambda data: decoration_new(server, data)),
         listen(lib.welpy_layer_shell_new_surface(layer_shell),
             lambda data: layer_surface_new(server, data)),
+        listen(lib.welpy_seat_request_set_selection(seat),
+            lambda data: seat_set_selection(server, data)),
+        listen(lib.welpy_seat_request_set_primary_selection(seat),
+            lambda data: seat_set_primary_selection(server, data)),
     ])
 
     return server
+
+
+def seat_set_selection(server: Server, data) -> None:
+    """Honor an app's request to put its copied data on the clipboard."""
+    ffi, lib = server.ffi, server.lib
+    event = ffi.cast("struct wlr_seat_request_set_selection_event *", data)
+    lib.wlr_seat_set_selection(server.seat, event.source, event.serial)
+
+
+def seat_set_primary_selection(server: Server, data) -> None:
+    """Honor an app's request to set the middle-click paste selection."""
+    ffi, lib = server.ffi, server.lib
+    event = ffi.cast(
+        "struct wlr_seat_request_set_primary_selection_event *", data)
+    lib.wlr_seat_set_primary_selection(
+        server.seat, event.source, event.serial)
 
 
 def install_signals(server: Server) -> None:

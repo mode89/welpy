@@ -208,6 +208,54 @@ def test_setup_bindings():
         assert callable(action)
 
 
+def test_setup_clipboard_managers():
+    """Setup creates the clipboard protocol globals so apps and clipboard
+    tools can exchange selections."""
+    ffi = MagicMock(name="ffi")
+    lib = MagicMock(name="lib")
+    listen = MagicMock(side_effect=lambda *_a: MagicMock())
+    build = (ffi, lib, listen, MagicMock(), MagicMock())
+    with patch("wel.bindings.build", return_value=build), \
+         patch("wel.build_keycode_map",
+               return_value=make_keycode_map()):
+        server = wel.setup()
+
+    lib.wlr_primary_selection_v1_device_manager_create.assert_called_once_with(
+        server.display)
+    lib.wlr_data_control_manager_v1_create.assert_called_once_with(
+        server.display)
+    lib.wlr_ext_data_control_manager_v1_create.assert_called_once_with(
+        server.display, 1)
+
+
+def test_seat_set_selection():
+    """An app's set-selection request is honored by putting its source on
+    the seat clipboard with the request's serial."""
+    server = make_server()
+    event = server.ffi.cast.return_value
+    event.source = "SOURCE"
+    event.serial = 42
+
+    wel.seat_set_selection(server, "SEL_DATA")
+
+    server.lib.wlr_seat_set_selection.assert_called_once_with(
+        server.seat, "SOURCE", 42)
+
+
+def test_seat_set_primary_selection():
+    """An app's set-primary-selection request is honored on the seat so
+    middle-click paste tracks the latest highlight."""
+    server = make_server()
+    event = server.ffi.cast.return_value
+    event.source = "PSOURCE"
+    event.serial = 7
+
+    wel.seat_set_primary_selection(server, "PSEL_DATA")
+
+    server.lib.wlr_seat_set_primary_selection.assert_called_once_with(
+        server.seat, "PSOURCE", 7)
+
+
 # --- teardown --------------------------------------------------------------
 
 
