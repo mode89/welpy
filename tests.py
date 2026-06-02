@@ -458,6 +458,26 @@ def test_monitor_render_holds():
     server.lib.wlr_scene_output_send_frame_done.assert_called_once()
 
 
+def test_monitor_render_fullscreen():
+    """A fullscreen window suppresses the hold: the occluded tiled window
+    behind it never gets frame-done to ack, so its pending configure must
+    not freeze the screen."""
+    server = make_server()
+    monitor = make_monitor(output="OUT", scene_output="SO_X")
+    monitor.active_workspace = make_workspace(monitor=monitor)
+    full = make_client(workspace=monitor.active_workspace)
+    monitor.active_workspace.fullscreen = full
+    hidden = make_client(
+        workspace=monitor.active_workspace,
+        pending_serial=5,
+    )
+    server.clients.extend([full, hidden])
+
+    wel.monitor_render(server, monitor, None)
+
+    server.lib.wlr_scene_output_commit.assert_called_once()
+
+
 def test_monitor_render_floating():
     """A floating window's pending configure does not hold the screen --
     floating windows aren't synchronized with the layout."""

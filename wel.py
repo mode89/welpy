@@ -460,13 +460,9 @@ def monitor_render(server: Server, monitor: Monitor, _data) -> None:
     visible on it to start producing the next, keeping them in sync with this
     screen's vsync."""
     ffi, lib = server.ffi, server.lib
-    # Hold the paint until compositor-driven size changes are acked, so
-    # borders and content land together. Floats never opt in: a slow client
-    # (e.g. Firefox) would otherwise stall the whole frame during a drag.
     held = any(
-        c.pending_serial is not None
+        client_holds_paint(c)
         for c in clients_visible(server, monitor)
-        if client_layer(c) != Layer.FLOAT
     )
     if not held:
         lib.wlr_scene_output_commit(monitor.scene_output, ffi.NULL)
@@ -474,6 +470,23 @@ def monitor_render(server: Server, monitor: Monitor, _data) -> None:
     lib.wlr_scene_output_send_frame_done(monitor.scene_output, ts)
     # No commit = no future refresh events; the timer caps the freeze.
     monitor.frame_timer.update(100 if held else 0)
+
+
+def client_holds_paint(client: Client) -> bool:
+    """Whether an unacked compositor-driven resize on this window should hold
+    the screen paint, so its border and content land in the same frame."""
+    workspace = client.workspace
+    # Floats have no border to sync; a tiled window under a fullscreen peer is
+    # occluded, so it gets no frame-done, never acks, and would hold forever.
+    # The fullscreen test is a coarse proxy for "actually presented on a
+    # screen" -- the precise check is whether the surface entered an output
+    # (see dwl's client_is_rendered_on_mon).
+    return (
+        client.pending_serial is not None
+        and client_layer(client) == Layer.TILE
+        and workspace is not None
+        and workspace.fullscreen is None
+    )
 
 
 def monitor_force_paint(server: Server, monitor: Monitor) -> None:
