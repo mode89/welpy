@@ -4552,6 +4552,25 @@ def test_hierarchy_unplug_migrate():
     assert ws_gone.monitor is survivor
 
 
+def test_hierarchy_rehome_occupied():
+    """After every monitor briefly vanished (e.g. a VT switch) orphaned all
+    workspaces, a returning monitor re-homes the occupied ones so the bar
+    sees them again, not just the seeded active workspace."""
+    server = make_server()
+    monitor = make_monitor()
+    ws_active = make_workspace(name="1", monitor=None)
+    ws_occupied = make_workspace(name="2", monitor=None)
+    ws_empty = make_workspace(name="3", monitor=None)
+    server.workspaces = [ws_active, ws_occupied, ws_empty]
+    server.monitors.append(monitor)
+    server.clients.append(make_client(workspace=ws_occupied))
+
+    wel.apply_hierarchy(server)
+
+    assert ws_occupied.monitor is monitor
+    assert ws_empty.monitor is None
+
+
 def test_hierarchy_unplug_orphan():
     """When a monitor is removed, empty workspaces on it are orphaned."""
     server = make_server()

@@ -554,7 +554,7 @@ def apply_hierarchy(server: Server) -> None: # pylint: disable=too-many-branches
 
     # Workspaces whose monitor went away: migrate non-empty, orphan empty.
     for w in server.workspaces:
-        if w.monitor is not None and w.monitor not in server.monitors:
+        if w.monitor not in server.monitors:
             has_clients = any(c.workspace is w for c in server.clients)
             w.monitor = home if has_clients else None
 
