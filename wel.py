@@ -142,6 +142,7 @@ class Server: # pylint: disable=too-many-instance-attributes
     display: Any
     event_loop: Any
     backend: Any
+    session: Any             # NULL under nested wayland/x11 backends
     renderer: Any
     allocator: Any
     compositor: Any
@@ -224,7 +225,8 @@ def setup() -> Server: # pylint: disable=too-many-locals
 
     display = lib.wl_display_create()
     event_loop = lib.wl_display_get_event_loop(display)
-    backend = lib.wlr_backend_autocreate(event_loop, ffi.NULL)
+    session = ffi.new("struct wlr_session **")
+    backend = lib.wlr_backend_autocreate(event_loop, session)
     renderer = lib.wlr_renderer_autocreate(backend)
     lib.wlr_renderer_init_wl_display(renderer, display)
     allocator = lib.wlr_allocator_autocreate(backend, renderer)
@@ -269,6 +271,7 @@ def setup() -> Server: # pylint: disable=too-many-locals
         add_signal=lambda signum, cb: add_signal(event_loop, signum, cb),
         add_timer=lambda cb: add_timer(event_loop, cb),
         display=display, event_loop=event_loop, backend=backend,
+        session=session[0],
         renderer=renderer, allocator=allocator,
         compositor=compositor,
         output_layout=output_layout,
@@ -1720,6 +1723,7 @@ def key_bindings(server: Server) -> dict:
     """Built-in keybindings."""
     lib = server.lib
     mod = modkey(server)
+    chvt = lib.WLR_MODIFIER_CTRL | lib.WLR_MODIFIER_ALT
     table = {
         # pylint: disable=consider-using-with
         (mod, server.keycode["Return"]): lambda _: spawn("foot"),
@@ -1745,6 +1749,9 @@ def key_bindings(server: Server) -> dict:
             lambda s, n=name: view_workspace(s, n))
         table[(mod | lib.WLR_MODIFIER_SHIFT, server.keycode[key])] = (
             lambda s, n=name: move_client_to_workspace(s, n))
+    for i in range(1, 13):
+        table[(chvt, server.keycode[f"F{i}"])] = (
+            lambda s, n=i: change_vt(s, n))
     return table
 
 
@@ -1832,6 +1839,13 @@ def keyboard_modifiers(server: Server, _data) -> None:
     kb_group = lib.welpy_keyboard_group_keyboard(server.keyboard_group.group)
     lib.wlr_seat_keyboard_notify_modifiers(
         server.seat, ffi.addressof(kb_group, "modifiers"))
+
+
+def change_vt(server: Server, n: int) -> None:
+    """Switch the kernel to virtual terminal `n`. No-op under nested
+    backends, where there is no session to act on."""
+    if server.session != server.ffi.NULL:
+        server.lib.wlr_session_change_vt(server.session, n)
 
 
 def override(arg):
