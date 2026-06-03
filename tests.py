@@ -380,7 +380,7 @@ def test_monitor_cleanup_drops():
     server's tracking list."""
     server = make_server()
     h1, h2 = MagicMock(name="h1"), MagicMock(name="h2")
-    monitor = make_monitor(output="OUT", scene_output="SO", listeners=[h1, h2])
+    monitor = make_monitor(scene_output="SO", listeners=[h1, h2])
     server.monitors.append(monitor)
 
     wel.monitor_cleanup(server, monitor, None)
@@ -411,8 +411,7 @@ def test_monitor_cleanup_removes_timer():
     """Cleanup detaches the safety-valve timer alongside other listeners."""
     server = make_server()
     timer = MagicMock(name="frame_timer")
-    monitor = make_monitor(
-        output="OUT", scene_output="SO", frame_timer=timer)
+    monitor = make_monitor(scene_output="SO", frame_timer=timer)
     server.monitors.append(monitor)
 
     wel.monitor_cleanup(server, monitor, None)
@@ -4274,7 +4273,7 @@ def test_monitor_cleanup_removes():
     """monitor_cleanup drops the monitor from server.monitors and triggers
     update_monitors so apply_hierarchy migrates its workspaces."""
     server = make_server()
-    monitor = make_monitor(output="OUT", scene_output="SO")
+    monitor = make_monitor(scene_output="SO")
     server.monitors.append(monitor)
 
     with patch("wel.update_monitors") as upd:

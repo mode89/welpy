@@ -407,6 +407,7 @@ def monitor_new(server: Server, data) -> None:
     start its frame loop."""
     ffi, lib, listen = server.ffi, server.lib, server.listen
     output = ffi.cast("struct wlr_output *", data)
+    logger.info("new output: %s", ffi.string(output.name).decode())
     lib.wlr_output_init_render(output, server.allocator, server.renderer)
 
     state = lib.welpy_output_state_new()
@@ -498,6 +499,8 @@ def monitor_force_paint(server: Server, monitor: Monitor) -> None:
 def monitor_cleanup(server: Server, monitor: Monitor, _data) -> None:
     """Fires when a screen goes away -- unplugged, or the backend is shutting
     down. Detaches our listeners and drops the monitor."""
+    logger.info("removing output: %s",
+        server.ffi.string(monitor.output.name).decode())
     # Each destroy callback mutates the bucket, so iterate a snapshot.
     for ls in [s for bucket in monitor.layers.values() for s in bucket]:
         server.lib.wlr_layer_surface_v1_destroy(ls.layer_surface)
