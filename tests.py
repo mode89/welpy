@@ -68,7 +68,7 @@ def make_client(**kwargs):
         "scene_tree": MagicMock(),
         "xdg_tree": MagicMock(),
         "borders": tuple(MagicMock() for _ in range(4)),
-        "focus_order": 0, "grab": None,
+        "focus_order": 0, "urgent": False, "grab": None,
         "floating_geom": None,
         "workspace": None, "listeners": [],
         "pending_serial": None,
@@ -5130,6 +5130,60 @@ def test_client_monitor_orphaned():
     assert wel.client_monitor(client) is None
 
 
+def test_urgent_marks():
+    """An activation request flags an unfocused window urgent."""
+    server = make_server()
+    server.ext_workspace = None
+    monitor = make_monitor()
+    monitor.active_workspace = make_workspace(monitor=monitor)
+    server.monitors.append(monitor)
+    client = make_client(workspace=monitor.active_workspace)
+    server.clients.append(client)
+    event = MagicMock(name="event")
+    event.surface = client.toplevel.base.surface
+    server.ffi.cast.return_value = event # pylint: disable=no-member
+
+    wel.client_request_activate(server, "DATA")
+
+    assert client.urgent
+
+
+def test_urgent_skips_focused():
+    """Activating the already-focused window does not mark it urgent."""
+    server = make_server()
+    server.ext_workspace = None
+    monitor = make_monitor()
+    monitor.active_workspace = make_workspace(monitor=monitor)
+    server.monitors.append(monitor)
+    client = make_client(workspace=monitor.active_workspace)
+    server.clients.append(client)
+    server.seat.keyboard_state.focused_surface = client.toplevel.base.surface # pylint: disable=no-member
+    event = MagicMock(name="event")
+    event.surface = client.toplevel.base.surface
+    server.ffi.cast.return_value = event # pylint: disable=no-member
+
+    wel.client_request_activate(server, "DATA")
+
+    assert not client.urgent
+
+
+def test_urgent_clears_on_focus():
+    """Focusing an urgent window clears its urgent flag."""
+    server = make_server()
+    server.ext_workspace = None
+    monitor = make_monitor()
+    monitor.active_workspace = make_workspace(monitor=monitor)
+    server.monitors.append(monitor)
+    server.active_monitor = monitor
+    client = make_client(
+        focus_order=1, urgent=True, workspace=monitor.active_workspace)
+    server.clients.append(client)
+
+    wel.apply_focus(server)
+
+    assert not client.urgent
+
+
 # --- ext-workspace-v1 -----------------------------------------------------
 
 
@@ -5412,6 +5466,30 @@ def test_extws_active_change():
     sent = {c.args for c in server.lib.welpy_extws_send_state.mock_calls}
     assert (handle_r1, 0) in sent
     assert (handle_r2, 1) in sent
+
+
+def test_extws_urgent_state():
+    """A window flagged urgent publishes the urgent bit on its workspace
+    handle, OR'd with the active bit."""
+    server = make_extws_server()
+    monitor = make_monitor()
+    ws1 = make_workspace(name="1", monitor=monitor)
+    monitor.active_workspace = ws1
+    server.monitors.append(monitor)
+    server.workspaces = [ws1]
+    client = make_client(workspace=ws1)
+    server.clients.append(client)
+    ext, externs = make_extws(server)
+    bind_extws_client(ext, externs)
+    manager = ext.managers[0]
+    handle_r1 = extws_handle(manager, ws1).resource
+    server.lib.welpy_extws_send_state.reset_mock()
+
+    client.urgent = True
+    ext_workspace.publish(server)
+
+    sent = {c.args for c in server.lib.welpy_extws_send_state.mock_calls}
+    assert (handle_r1, 3) in sent
 
 
 def test_setup_extws():

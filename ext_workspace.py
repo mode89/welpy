@@ -27,6 +27,7 @@ logger = logging.getLogger(__name__)
 
 # Workspace state bitfield from the protocol's `state` enum.
 _STATE_ACTIVE = 1
+_STATE_URGENT = 2
 
 # Workspace capabilities the compositor exposes.
 _HANDLE_CAPS = (
@@ -307,6 +308,7 @@ class _Workspace:
     resource: Any
     monitor: Any  # last-emitted group assignment
     active: bool  # last-emitted active flag
+    urgent: bool  # last-emitted urgent flag
 
 
 @dataclass
@@ -417,12 +419,13 @@ def _publish_manager(server, ext: ExtWorkspace, manager: _Manager) -> None:
             lib.welpy_extws_send_coordinates(res, coords, 1)
             lib.welpy_extws_send_handle_capabilities(res, _HANDLE_CAPS)
             active = ws.monitor.active_workspace is ws
-            lib.welpy_extws_send_state(
-                res, _STATE_ACTIVE if active else 0)
+            urgent = _is_urgent(server, ws)
+            lib.welpy_extws_send_state(res, _state_bits(active, urgent))
             lib.welpy_extws_send_workspace_enter(
                 _group_for_monitor(manager, ws.monitor).resource, res)
             entry = _Workspace(
-                workspace=ws, resource=res, monitor=ws.monitor, active=active)
+                workspace=ws, resource=res, monitor=ws.monitor,
+                active=active, urgent=urgent)
             manager.workspaces.append(entry)
 
     # Phase 4: emit deltas for surviving workspaces (reassignment + state).
@@ -437,12 +440,22 @@ def _publish_manager(server, ext: ExtWorkspace, manager: _Manager) -> None:
                 entry.resource)
             entry.monitor = ws.monitor
         active = ws.monitor.active_workspace is ws
-        if entry.active != active:
+        urgent = _is_urgent(server, ws)
+        if entry.active != active or entry.urgent != urgent:
             lib.welpy_extws_send_state(
-                entry.resource, _STATE_ACTIVE if active else 0)
+                entry.resource, _state_bits(active, urgent))
             entry.active = active
+            entry.urgent = urgent
 
     lib.welpy_extws_send_done(manager.resource)
+
+
+def _is_urgent(server, ws) -> bool:
+    return any(c.urgent for c in server.clients if c.workspace is ws)
+
+
+def _state_bits(active: bool, urgent: bool) -> int:
+    return (_STATE_ACTIVE if active else 0) | (_STATE_URGENT if urgent else 0)
 
 
 def _addr(ffi, resource) -> int:

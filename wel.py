@@ -24,6 +24,7 @@ logger = logging.getLogger(__name__)
 BORDER_WIDTH = 2
 BORDER_COLOR_ACTIVE = (0.0, 0.5, 1.0, 1.0)
 BORDER_COLOR_INACTIVE = (0.3, 0.3, 0.3, 1.0)
+BORDER_COLOR_URGENT = (0.9, 0.0, 0.0, 1.0)
 WORKSPACE_NAMES = ("1", "2", "3", "4", "5", "6", "7", "8", "9", "10")
 
 
@@ -102,6 +103,7 @@ class Client: # pylint: disable=too-many-instance-attributes
     xdg_tree: Any            # xdg subtree; inset within the wrapper by border
     borders: tuple           # (top, bottom, left, right) wlr_scene_rect handles
     focus_order: int         # bumped on each focus; higher = more recent
+    urgent: bool             # app asked for attention while unfocused
     grab: Grab | None        # active mouse drag (move/resize), or None
     floating_geom: Rect | None  # the float's rect; None means tiled
     workspace: Any           # Workspace this window belongs to; None pre-map
@@ -262,6 +264,8 @@ def setup() -> Server: # pylint: disable=too-many-locals
 
     lib.wlr_xdg_output_manager_v1_create(display, output_layout)
 
+    xdg_activation = lib.wlr_xdg_activation_v1_create(display)
+
     seat = lib.wlr_seat_create(display, b"seat0")
     lib.wlr_seat_set_capabilities(seat,
         lib.WL_SEAT_CAPABILITY_POINTER | lib.WL_SEAT_CAPABILITY_KEYBOARD)
@@ -319,6 +323,8 @@ def setup() -> Server: # pylint: disable=too-many-locals
             lambda data: seat_set_selection(server, data)),
         listen(lib.welpy_seat_request_set_primary_selection(seat),
             lambda data: seat_set_primary_selection(server, data)),
+        listen(lib.welpy_xdg_activation_request_activate(xdg_activation),
+            lambda data: client_request_activate(server, data)),
     ])
 
     return server
@@ -620,7 +626,7 @@ def client_new(server: Server, data) -> None:
     toplevel = ffi.cast("struct wlr_xdg_toplevel *", data)
     client = Client(
         toplevel=toplevel, scene_tree=None, xdg_tree=None, borders=(),
-        focus_order=0, grab=None, floating_geom=None,
+        focus_order=0, urgent=False, grab=None, floating_geom=None,
         workspace=None, listeners=[], pending_serial=None,
         decoration=None, handle=None, inner_size=None)
     # Back-pointer toplevel -> Client, so per-surface protocols (xdg-decoration
@@ -745,6 +751,21 @@ def client_request_fullscreen(
         apply_tree(server)
         apply_geometry(server, monitor)
         apply_focus(server)
+
+
+def client_request_activate(server: Server, data) -> None:
+    """An app asked to be brought to the foreground. We never steal focus:
+    the window just shows an urgent border until the user focuses it."""
+    event = server.ffi.cast(
+        "struct wlr_xdg_activation_v1_request_activate_event *", data)
+    client = client_for_surface(server, event.surface)
+    if client is None or client is client_for_surface(
+            server, server.seat.keyboard_state.focused_surface):
+        return
+    client.urgent = True
+    set_border_color(server, client, BORDER_COLOR_URGENT)
+    if server.ext_workspace is not None:
+        ext_workspace.publish(server)
 
 
 def client_cleanup(_server: Server, client: Client, _data) -> None:
@@ -1035,10 +1056,12 @@ def apply_focus(server: Server) -> None: # pylint: disable=too-many-branches
     current_surface = server.seat.keyboard_state.focused_surface
     if current_surface == ffi.NULL:
         current_surface = None
-    current_client = next((
-        c for c in server.clients
-        if c.scene_tree is not None
-        and c.toplevel.base.surface == current_surface), None)
+    current_client = client_for_surface(server, current_surface)
+
+    if target_client is not None and target_client.urgent:
+        target_client.urgent = False
+        if server.ext_workspace is not None:
+            ext_workspace.publish(server)
 
     if (current_client is not None
             and current_client is not target_client):
@@ -1094,6 +1117,16 @@ def top_client(server: Server, monitor):
         (c for c in clients_visible(server, monitor)
          if c.scene_tree is not None),
         key=lambda c: c.focus_order, default=None)
+
+
+def client_for_surface(server: Server, surface):
+    """The mapped window backing `surface`, or None."""
+    if surface is None or surface == server.ffi.NULL:
+        return None
+    return next((
+        c for c in server.clients
+        if c.scene_tree is not None
+        and c.toplevel.base.surface == surface), None)
 
 
 def cycle_focus(server: Server, direction: int) -> None:
