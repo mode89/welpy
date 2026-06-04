@@ -11,7 +11,7 @@
 11. [ ] **Screen blanking** — `wlr_output_power_management_v1`: blank screens to save power (DPMS), turning displays off when idle and back on when activity resumes. Pairs with idle daemons.
 12. [ ] **Night light** — `wlr_gamma_control_v1`: adjust a screen's color curve to warm it at night (reduce blue light) and to calibrate color. `wlsunset`, `gammastep`.
 13. [ ] **Themed cursors** — `wlr_cursor_shape_v1`: request a themed cursor by name (resize, text, grab) so the pointer matches the user's cursor theme consistently, without each app shipping its own bitmap.
-14. [ ] **HiDPI scaling** — `wlr_fractional_scale_v1`: render crisply at in-between scales (1.25x, 1.5x) on HiDPI screens, instead of being forced to 1x or 2x and looking too small or blurry.
+14. [x] **HiDPI scaling** — `wlr_fractional_scale_v1`: render crisply at in-between scales (1.25x, 1.5x) on HiDPI screens, instead of being forced to 1x or 2x and looking too small or blurry.
 15. [ ] **Screen capture** — `wlr_screencopy_v1` + `wlr_export_dmabuf_v1`: capture the screen for screenshots, recording, and streaming, the latter sharing GPU buffers directly for low-overhead capture. `grim`, `wf-recorder`, `wayvnc`.
 16. [ ] **Drag and drop** — drag content between apps, with a drag icon that follows the cursor to indicate what's being moved.
 17. [ ] **Surface effects** — `wlr_viewporter`, `wlr_alpha_modifier_v1`, `wlr_single_pixel_buffer_v1`: common surface optimizations apps rely on: scale/crop a video or buffer to fit, fade a window with per-surface transparency, and fill a solid color cheaply for backgrounds.

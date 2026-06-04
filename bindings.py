@@ -634,6 +634,11 @@ struct wlr_xdg_output_manager_v1;
 struct wlr_xdg_output_manager_v1 *wlr_xdg_output_manager_v1_create(
         struct wl_display *, struct wlr_output_layout *);
 
+// fractional-scale: lets apps render crisply at in-between scales (1.25x, 1.5x).
+struct wlr_fractional_scale_manager_v1;
+struct wlr_fractional_scale_manager_v1 *wlr_fractional_scale_manager_v1_create(
+        struct wl_display *, uint32_t version);
+
 // output-management: clients like wlr-randr / kanshi reconfigure outputs.
 struct wlr_output_head_v1_state {
     struct wlr_output *output;
@@ -881,6 +886,7 @@ SOURCE = r"""
 #include <wlr/types/wlr_xdg_activation_v1.h>
 #include <wlr/types/wlr_xdg_decoration_v1.h>
 #include <wlr/types/wlr_xdg_output_v1.h>
+#include <wlr/types/wlr_fractional_scale_v1.h>
 #include <wlr/types/wlr_output_management_v1.h>
 #include <wlr/types/wlr_output_power_management_v1.h>
 #include <wlr/types/wlr_gamma_control_v1.h>

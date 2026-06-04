@@ -23,6 +23,8 @@ logger = logging.getLogger(__name__)
 
 
 BORDER_WIDTH = 2
+OUTPUT_SCALE = {}  # screen name -> scale factor; e.g. {"eDP-1": 2.0}
+DEFAULT_SCALE = 1.0
 BORDER_COLOR_ACTIVE = (0.0, 0.5, 1.0, 1.0)
 BORDER_COLOR_INACTIVE = (0.3, 0.3, 0.3, 1.0)
 BORDER_COLOR_URGENT = (0.9, 0.0, 0.0, 1.0)
@@ -278,6 +280,8 @@ def setup() -> Server: # pylint: disable=too-many-locals
 
     lib.wlr_xdg_output_manager_v1_create(display, output_layout)
 
+    lib.wlr_fractional_scale_manager_v1_create(display, 1)
+
     xdg_activation = lib.wlr_xdg_activation_v1_create(display)
 
     seat = lib.wlr_seat_create(display, b"seat0")
@@ -464,16 +468,23 @@ def monitor_new(server: Server, data) -> None:
     start its frame loop."""
     ffi, lib, listen = server.ffi, server.lib, server.listen
     output = ffi.cast("struct wlr_output *", data)
-    logger.info("new output: %s", ffi.string(output.name).decode())
+    name = ffi.string(output.name).decode()
+    logger.info("new output: %s", name)
     lib.wlr_output_init_render(output, server.allocator, server.renderer)
+
+    scale = OUTPUT_SCALE.get(name, DEFAULT_SCALE)
 
     state = lib.welpy_output_state_new()
     lib.wlr_output_state_set_enabled(state, True)
+    lib.wlr_output_state_set_scale(state, scale)
     mode = lib.wlr_output_preferred_mode(output)
     if mode != ffi.NULL:
         lib.wlr_output_state_set_mode(state, mode)
     lib.wlr_output_commit_state(output, state)
     lib.welpy_output_state_free(state)
+
+    # Pre-render the pointer at this screen's scale so it stays crisp on HiDPI.
+    lib.wlr_xcursor_manager_load(server.cursor.xcursor_manager, scale)
 
     # Place the screen in the geometric layout, give the scene a render
     # target for it, and pair the two so layout changes auto-reposition the

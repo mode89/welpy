@@ -438,6 +438,29 @@ def test_monitor_new_order():
     assert positions == sorted(positions)
 
 
+def test_monitor_scale_configured():
+    """A screen listed in OUTPUT_SCALE is committed at its configured scale."""
+    server = make_server()
+    server.ffi.string.return_value.decode.return_value = "eDP-1"
+
+    with patch.dict(wel.OUTPUT_SCALE, {"eDP-1": 2.0}, clear=True):
+        wel.monitor_new(server, "OUTPUT_DATA")
+
+    server.lib.wlr_output_state_set_scale.assert_called_once_with(ANY, 2.0)
+
+
+def test_monitor_scale_default():
+    """A screen absent from OUTPUT_SCALE falls back to DEFAULT_SCALE."""
+    server = make_server()
+    server.ffi.string.return_value.decode.return_value = "HDMI-A-1"
+
+    with patch.dict(wel.OUTPUT_SCALE, {"eDP-1": 2.0}, clear=True):
+        wel.monitor_new(server, "OUTPUT_DATA")
+
+    server.lib.wlr_output_state_set_scale.assert_called_once_with(
+        ANY, wel.DEFAULT_SCALE)
+
+
 def test_monitor_new_appends():
     """Each new screen produces exactly one Monitor in server.monitors."""
     server = make_server()
