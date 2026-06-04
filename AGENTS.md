@@ -5,6 +5,7 @@ Wayland compositor written in Python on top of wlroots.
 - `wel.py`: entry point.
 - `bindings.py`: inline cffi bindings.
 - `tests.py`: unit tests.
+- `TODO.md`: planned features, ordered by priority.
 
 ## Bindings
 
