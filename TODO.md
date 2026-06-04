@@ -3,7 +3,7 @@
 3.  [x] **Middle-click paste** — primary-selection clipboard (`wlr_primary_selection_v1`).
 4.  [x] **Clipboard managers** — privileged clipboard access for `wl-clipboard`, `cliphist` (`wlr_data_control_v1` + `wlr_ext_data_control_v1`).
 5.  [x] **GPU rendering** — `wlr_drm` + `wlr_linux_dmabuf_v1` + `wlr_linux_drm_syncobj_v1`: zero-copy GPU buffers and explicit sync for modern GL/Vulkan clients.
-6.  [ ] **Input tuning** — tune how touchpads and mice feel: tap-to-click, tap-and-drag, natural scrolling, pointer acceleration, disable-while-typing, left-handed, click/scroll method, send-events mode (libinput).
+6.  [x] **Input tuning** — tune how touchpads and mice feel: tap-to-click, tap-and-drag, natural scrolling, pointer acceleration, disable-while-typing, left-handed, click/scroll method, send-events mode (libinput).
 7.  [ ] **Focus on hover** — focus the window under the pointer as it moves, so users switch windows by hovering instead of clicking. Toggled by `sloppy_focus`.
 8.  [ ] **Monitor config** — `wlr_output_management_v1`: external tools reconfigure screens (resolution, position, scale, rotation, on/off), so users can set up multi-monitor layouts and switch them per environment (docked, undocked). `kanshi`, `wlr-randr`.
 9.  [ ] **Idle handling** — `wlr_idle_notifier_v1` + `wlr_idle_inhibit_v1`: background daemons act on inactivity (dim, lock, suspend), while apps can hold that off when it matters (video playback, presentations). `idle_inhibit_ignore_visibility` (`config.py`) decides whether a hidden app still inhibits. `swayidle`.

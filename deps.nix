@@ -11,4 +11,5 @@ pkgs: with pkgs; [
   wayland-scanner
   libxkbcommon
   pixman
+  libinput
 ]

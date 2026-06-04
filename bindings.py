@@ -25,6 +25,7 @@ from types import SimpleNamespace
 import cffi
 
 import ext_workspace
+import libinput
 
 
 logger = logging.getLogger(__name__)
@@ -47,10 +48,12 @@ class Builder:  # pylint: disable=too-many-instance-attributes
 
     def append(  # pylint: disable=too-many-arguments
             self, *, cdef: str = "", source: str = "",
-            c_sources: list = (), include_dirs: list = (),
+            c_sources: list = (), pkgs: tuple = (), include_dirs: list = (),
             libraries: list = (), library_dirs: list = (),
             extra_compile_args: list = ()) -> None:
-        """Append fragments. Callers are append-only; no reordering."""
+        """Append fragments. `pkgs` are resolved via pkg-config so a
+        contributor can pull in its own dependency's include dirs, libraries,
+        and compile flags. Callers are append-only; no reordering."""
         self.cdef += cdef
         self.source += source
         self.c_sources.extend(c_sources)
@@ -58,6 +61,19 @@ class Builder:  # pylint: disable=too-many-instance-attributes
         self.libraries.extend(libraries)
         self.library_dirs.extend(library_dirs)
         self.extra_compile_args.extend(extra_compile_args)
+        if pkgs:
+            self._add_pkgs(pkgs)
+
+    def _add_pkgs(self, pkgs: tuple) -> None:
+        cflags = subprocess.check_output(
+            ["pkg-config", "--cflags", *pkgs]).decode().split()
+        libs = subprocess.check_output(
+            ["pkg-config", "--libs", *pkgs]).decode().split()
+        self.include_dirs.extend(a[2:] for a in cflags if a.startswith("-I"))
+        self.libraries.extend(a[2:] for a in libs if a.startswith("-l"))
+        self.library_dirs.extend(a[2:] for a in libs if a.startswith("-L"))
+        self.extra_compile_args.extend(
+            a for a in cflags if not a.startswith("-I"))
 
     def scanner(self, pkg: str, rel_xml: str, stem: str, *,
                 private_code: bool = True) -> tuple:
@@ -1077,25 +1093,11 @@ struct wlr_idle_inhibitor_v1 *welpy_idle_inhibitor_from_link(struct wl_list *l) 
 
 def _build():
     """Compile the inline cffi extension and return its (ffi, lib)."""
-    def pkgcfg(flag, *pkgs):
-        return subprocess.check_output(
-            ["pkg-config", flag, *pkgs]
-        ).decode().split()
-
-    cflags = pkgcfg("--cflags", *_PKGS)
-    libs = pkgcfg("--libs", *_PKGS)
-
     build_dir = tempfile.mkdtemp(prefix="welpy-build-")
     builder = Builder(build_dir=build_dir)
     builder.append(
-        cdef=CDEF, source=SOURCE,
-        include_dirs=[a[2:] for a in cflags if a.startswith("-I")],
-        libraries=[a[2:] for a in libs if a.startswith("-l")],
-        library_dirs=[a[2:] for a in libs if a.startswith("-L")],
-        extra_compile_args=(
-            [a for a in cflags if not a.startswith("-I")]
-            + ["-DWLR_USE_UNSTABLE", "-w"]),
-    )
+        cdef=CDEF, source=SOURCE, pkgs=_PKGS,
+        extra_compile_args=["-DWLR_USE_UNSTABLE", "-w"])
 
     # wlroots includes the protocol headers below; their marshalling code
     # is already linked by wlroots, so we only need the server headers.
@@ -1111,6 +1113,7 @@ def _build():
         "wlr-output-power-management-unstable-v1", private_code=False)
 
     ext_workspace.contribute(builder)
+    libinput.contribute(builder)
 
     logger.info("building in %s ...", build_dir)
     so_path = builder.compile(_MODULE)

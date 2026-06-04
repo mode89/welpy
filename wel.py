@@ -16,6 +16,7 @@ from typing import Any
 
 import bindings
 import ext_workspace
+import libinput
 
 
 logger = logging.getLogger(__name__)
@@ -1893,6 +1894,7 @@ def input_new(server: Server, data) -> None:
         lib.wlr_keyboard_group_add_keyboard(
             server.keyboard_group.group, keyboard)
     elif device.type == lib.WLR_INPUT_DEVICE_POINTER:
+        libinput.configure(server, device)
         lib.wlr_cursor_attach_input_device(server.cursor.cursor, device)
 
 
