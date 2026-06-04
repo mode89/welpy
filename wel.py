@@ -147,6 +147,7 @@ class Server: # pylint: disable=too-many-instance-attributes
     session: Any             # NULL under nested wayland/x11 backends
     renderer: Any
     allocator: Any
+    renderer_lost: Any       # listener handle, re-bound on GPU reset
     compositor: Any
     output_layout: Any       # geometric arrangement of physical screens
     scene: Any               # root of the scene graph -- everything to draw
@@ -288,7 +289,7 @@ def setup() -> Server: # pylint: disable=too-many-locals
         add_timer=lambda cb: add_timer(event_loop, cb),
         display=display, event_loop=event_loop, backend=backend,
         session=session[0],
-        renderer=renderer, allocator=allocator,
+        renderer=renderer, allocator=allocator, renderer_lost=None,
         compositor=compositor,
         output_layout=output_layout,
         scene=scene, scene_layout=scene_layout,
@@ -304,6 +305,11 @@ def setup() -> Server: # pylint: disable=too-many-locals
         layers=layers,
         keycode={}, bindings={}, listeners=[],
     )
+
+    # Off server.listeners: re-bound on every GPU reset, torn down on its own.
+    server.renderer_lost = listen(
+        lib.welpy_renderer_lost_signal(renderer),
+        lambda _data: renderer_lost(server))
 
     server.cursor = create_cursor(server)
     server.keyboard_group = create_keyboard_group(server)
@@ -402,6 +408,7 @@ def teardown(server: Server) -> None:
     for listener in server.listeners:
         listener.remove()
     server.listeners.clear()
+    server.renderer_lost.remove()
     ext_workspace.destroy(server.ext_workspace)
     destroy_keyboard_group(lib, server.keyboard_group)
     destroy_cursor(lib, server.cursor)
@@ -413,6 +420,34 @@ def teardown(server: Server) -> None:
 def terminate(server):
     """Terminate event loop of wlroots."""
     server.lib.wl_display_terminate(server.display)
+
+
+def renderer_lost(server: Server) -> None:
+    """Recover from a GPU reset by rebuilding the renderer and re-pointing
+    every screen and the compositor at it."""
+    lib = server.lib
+    old_renderer, old_allocator = server.renderer, server.allocator
+
+    renderer = lib.wlr_renderer_autocreate(server.backend)
+    if renderer == server.ffi.NULL:
+        raise RuntimeError("failed to recreate renderer after GPU reset")
+    allocator = lib.wlr_allocator_autocreate(server.backend, renderer)
+    if allocator == server.ffi.NULL:
+        lib.wlr_renderer_destroy(renderer)
+        raise RuntimeError("failed to recreate allocator after GPU reset")
+
+    server.renderer_lost.remove()
+    server.renderer_lost = server.listen(
+        lib.welpy_renderer_lost_signal(renderer),
+        lambda _data: renderer_lost(server))
+
+    lib.wlr_compositor_set_renderer(server.compositor, renderer)
+    for monitor in server.monitors:
+        lib.wlr_output_init_render(monitor.output, allocator, renderer)
+
+    lib.wlr_allocator_destroy(old_allocator)
+    lib.wlr_renderer_destroy(old_renderer)
+    server.renderer, server.allocator = renderer, allocator
 
 
 def close_window(server: Server) -> None:

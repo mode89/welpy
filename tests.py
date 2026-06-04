@@ -29,6 +29,7 @@ def make_server(**kwargs):
         "display": "DISPLAY", "event_loop": MagicMock(name="event_loop"),
         "backend": "BACKEND", "session": MagicMock(name="session"),
         "renderer": "RENDERER", "allocator": "ALLOCATOR",
+        "renderer_lost": MagicMock(name="renderer_lost"),
         "compositor": MagicMock(name="compositor"),
         "output_layout": "OUTPUT_LAYOUT",
         # Accessed structurally (scene.tree); leave auto-mocked.
@@ -301,6 +302,45 @@ def test_setup_no_timeline():
         wel.setup()
 
     lib.wlr_linux_drm_syncobj_manager_v1_create.assert_not_called()
+
+
+def test_setup_renderer_lost_listener():
+    """Setup subscribes to the renderer's lost signal so a GPU reset drives
+    recovery."""
+    build = make_bindings()
+    _, lib, *_ = build
+    with patch("wel.bindings.build", return_value=build), \
+         patch("wel.build_keycode_map", return_value=make_keycode_map()), \
+         patch("wel.renderer_lost") as handler:
+        server = wel.setup()
+        trigger(server, lib.welpy_renderer_lost_signal, "LOST")
+
+    handler.assert_called_once_with(server)
+
+
+def test_renderer_lost_recreates():
+    """A GPU reset rebuilds renderer + allocator, re-points the compositor and
+    every screen at them, and destroys the old pair."""
+    monitor = make_monitor()
+    server = make_server(monitors=[monitor])
+    lib = server.lib
+    old_renderer, old_allocator = server.renderer, server.allocator
+    old_handle = server.renderer_lost
+    new_renderer = lib.wlr_renderer_autocreate.return_value
+    new_allocator = lib.wlr_allocator_autocreate.return_value
+
+    wel.renderer_lost(server)
+
+    old_handle.remove.assert_called_once_with()
+    lib.wlr_compositor_set_renderer.assert_called_once_with(
+        server.compositor, new_renderer)
+    lib.wlr_output_init_render.assert_called_once_with(
+        monitor.output, new_allocator, new_renderer)
+    lib.wlr_allocator_destroy.assert_called_once_with(old_allocator)
+    lib.wlr_renderer_destroy.assert_called_once_with(old_renderer)
+    assert server.renderer is new_renderer
+    assert server.allocator is new_allocator
+    assert server.renderer_lost is not old_handle
 
 
 def test_seat_set_selection():
