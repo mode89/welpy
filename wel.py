@@ -230,7 +230,7 @@ def setup() -> Server: # pylint: disable=too-many-locals
     session = ffi.new("struct wlr_session **")
     backend = lib.wlr_backend_autocreate(event_loop, session)
     renderer = lib.wlr_renderer_autocreate(backend)
-    lib.wlr_renderer_init_wl_display(renderer, display)
+    lib.wlr_renderer_init_wl_shm(renderer, display)
     allocator = lib.wlr_allocator_autocreate(backend, renderer)
 
     compositor = lib.wlr_compositor_create(display, 6, renderer)
@@ -248,6 +248,18 @@ def setup() -> Server: # pylint: disable=too-many-locals
     output_layout = lib.wlr_output_layout_create(display)
     scene = lib.wlr_scene_create()
     scene_layout = lib.wlr_scene_attach_output_layout(scene, output_layout)
+
+    # Zero-copy GPU buffer sharing only makes sense on a real DRM device.
+    drm_fd = lib.wlr_renderer_get_drm_fd(renderer)
+    if drm_fd >= 0 and lib.wlr_renderer_get_texture_formats(
+            renderer, lib.WLR_BUFFER_CAP_DMABUF):
+        lib.wlr_drm_create(display, renderer)
+        # Scene integration unlocks direct scan-out and dmabuf feedback.
+        lib.wlr_scene_set_linux_dmabuf_v1(
+            scene,
+            lib.wlr_linux_dmabuf_v1_create_with_renderer(display, 5, renderer))
+    if drm_fd >= 0 and lib.welpy_supports_timeline(renderer, backend):
+        lib.wlr_linux_drm_syncobj_manager_v1_create(display, 1, drm_fd)
 
     # Layer's declaration order is the intended z-order under scene_root.
     scene_root = ffi.addressof(scene.tree)

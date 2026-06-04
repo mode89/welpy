@@ -279,8 +279,12 @@ void wlr_backend_destroy(struct wlr_backend *);
 bool wlr_session_change_vt(struct wlr_session *, unsigned vt);
 
 struct wlr_renderer *wlr_renderer_autocreate(struct wlr_backend *);
-bool wlr_renderer_init_wl_display(struct wlr_renderer *, struct wl_display *);
 bool wlr_renderer_init_wl_shm(struct wlr_renderer *, struct wl_display *);
+int wlr_renderer_get_drm_fd(struct wlr_renderer *);
+struct wlr_drm_format_set;
+#define WLR_BUFFER_CAP_DMABUF ...
+const struct wlr_drm_format_set *wlr_renderer_get_texture_formats(
+        struct wlr_renderer *, uint32_t buffer_caps);
 void wlr_renderer_destroy(struct wlr_renderer *);
 void wlr_compositor_set_renderer(struct wlr_compositor *, struct wlr_renderer *);
 
@@ -288,6 +292,22 @@ struct wlr_allocator *wlr_allocator_autocreate(
         struct wlr_backend *, struct wlr_renderer *);
 void wlr_allocator_destroy(struct wlr_allocator *);
 void wlr_scene_node_destroy(struct wlr_scene_node *);
+
+// GPU buffer-sharing globals: wl_drm (legacy zero-copy), linux-dmabuf-v1
+// (modern zero-copy import; wired into the scene for direct scan-out and
+// presentation feedback), and linux-drm-syncobj-v1 (explicit timeline sync).
+struct wlr_drm;
+struct wlr_drm *wlr_drm_create(struct wl_display *, struct wlr_renderer *);
+struct wlr_linux_dmabuf_v1;
+struct wlr_linux_dmabuf_v1 *wlr_linux_dmabuf_v1_create_with_renderer(
+        struct wl_display *, uint32_t version, struct wlr_renderer *);
+void wlr_scene_set_linux_dmabuf_v1(
+        struct wlr_scene *, struct wlr_linux_dmabuf_v1 *);
+struct wlr_linux_drm_syncobj_manager_v1;
+struct wlr_linux_drm_syncobj_manager_v1 *wlr_linux_drm_syncobj_manager_v1_create(
+        struct wl_display *, uint32_t version, int drm_fd);
+// Explicit sync needs both the renderer and the backend to support timelines.
+bool welpy_supports_timeline(struct wlr_renderer *, struct wlr_backend *);
 
 struct wlr_compositor *wlr_compositor_create(
         struct wl_display *, uint32_t version, struct wlr_renderer *);
@@ -822,6 +842,10 @@ SOURCE = r"""
 #include <wlr/backend/session.h>
 #include <wlr/render/allocator.h>
 #include <wlr/render/wlr_renderer.h>
+#include <wlr/types/wlr_buffer.h>
+#include <wlr/types/wlr_drm.h>
+#include <wlr/types/wlr_linux_dmabuf_v1.h>
+#include <wlr/types/wlr_linux_drm_syncobj_v1.h>
 #include <wlr/types/wlr_compositor.h>
 #include <wlr/types/wlr_data_device.h>
 #include <wlr/types/wlr_data_control_v1.h>
@@ -962,6 +986,9 @@ struct wlr_seat_client *welpy_seat_pointer_focused_client(struct wlr_seat *s) {
 }
 struct wl_signal *welpy_renderer_lost_signal(struct wlr_renderer *r) {
     return &r->events.lost;
+}
+bool welpy_supports_timeline(struct wlr_renderer *r, struct wlr_backend *b) {
+    return r->features.timeline && b->features.timeline;
 }
 struct wlr_keyboard *welpy_keyboard_group_keyboard(struct wlr_keyboard_group *g) {
     return &g->keyboard;

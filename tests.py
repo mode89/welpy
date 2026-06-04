@@ -17,25 +17,15 @@ import wel
 
 def make_server(**kwargs):
     """Build a Server, filling fields the test doesn't care about with mocks."""
-    ffi = kwargs.get("ffi") or MagicMock(name="ffi")
-    lib = kwargs.get("lib") or MagicMock(name="lib")
-    lib.ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_NONE = 0
-    # Concrete press/release flag so keyboard_key's dispatch can compare it.
-    lib.WL_KEYBOARD_KEY_STATE_PRESSED = 1
-    # Setter return values participate in pending_serial bookkeeping; default
-    # to 0 so existing tests stay caught up unless they opt in.
-    lib.wlr_xdg_toplevel_set_size.return_value = 0
-    lib.wlr_xdg_toplevel_set_activated.return_value = 0
-    lib.wlr_xdg_toplevel_set_tiled.return_value = 0
-    lib.wlr_xdg_toplevel_set_fullscreen.return_value = 0
+    ffi, lib, listen, add_timer, add_signal = make_bindings(
+        ffi=kwargs.get("ffi"), lib=kwargs.get("lib"))
     seat = kwargs.get("seat") or MagicMock(name="seat")
     seat.keyboard_state.focused_surface = ffi.NULL
     return wel.Server(**{
         "ffi": ffi, "lib": lib, "seat": seat,
-        # Distinct handle per listen() call so listener counts add up.
-        "listen": MagicMock(side_effect=lambda *_a: MagicMock(name="handle")),
-        "add_signal": MagicMock(name="add_signal"),
-        "add_timer": MagicMock(name="add_timer"),
+        "listen": listen,
+        "add_signal": add_signal,
+        "add_timer": add_timer,
         "display": "DISPLAY", "event_loop": MagicMock(name="event_loop"),
         "backend": "BACKEND", "session": MagicMock(name="session"),
         "renderer": "RENDERER", "allocator": "ALLOCATOR",
@@ -56,6 +46,28 @@ def make_server(**kwargs):
         "keycode": {}, "bindings": {}, "listeners": [],
         **kwargs,
     })
+
+
+def make_bindings(**kwargs):
+    """Mock the bindings.build() tuple (ffi, lib, listen, add_timer,
+    add_signal) with defaults shared by make_server() and setup() tests."""
+    ffi = kwargs.get("ffi") or MagicMock(name="ffi")
+    lib = kwargs.get("lib") or MagicMock(name="lib")
+    lib.ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_NONE = 0
+    # Concrete press/release flag so keyboard_key's dispatch can compare it.
+    lib.WL_KEYBOARD_KEY_STATE_PRESSED = 1
+    # Setter return values participate in pending_serial bookkeeping; default
+    # to 0 so existing tests stay caught up unless they opt in.
+    lib.wlr_xdg_toplevel_set_size.return_value = 0
+    lib.wlr_xdg_toplevel_set_activated.return_value = 0
+    lib.wlr_xdg_toplevel_set_tiled.return_value = 0
+    lib.wlr_xdg_toplevel_set_fullscreen.return_value = 0
+    # No GPU device by default: skip the wlr_drm / dmabuf / syncobj branch.
+    lib.wlr_renderer_get_drm_fd.return_value = -1
+    # Distinct handle per listen() call so listener counts add up.
+    listen = MagicMock(side_effect=lambda *_a: MagicMock(name="handle"))
+    return (ffi, lib, listen,
+            MagicMock(name="add_timer"), MagicMock(name="add_signal"))
 
 
 def make_client(**kwargs):
@@ -151,12 +163,10 @@ def trigger(server, signal_accessor, data):
 def test_setup_seat_caps():
     """Setup advertises pointer + keyboard on the seat so clients bind
     both wl_pointer and wl_keyboard from their first connect."""
-    ffi = MagicMock(name="ffi")
-    lib = MagicMock(name="lib")
+    build = make_bindings()
+    _, lib, *_ = build
     lib.WL_SEAT_CAPABILITY_POINTER = 1
     lib.WL_SEAT_CAPABILITY_KEYBOARD = 2
-    listen = MagicMock(side_effect=lambda *_a: MagicMock())
-    build = (ffi, lib, listen, MagicMock(), MagicMock())
     with patch("wel.bindings.build", return_value=build), \
          patch("wel.build_keycode_map",
                return_value=make_keycode_map()):
@@ -169,10 +179,8 @@ def test_setup_seat_caps():
 def test_setup_keycode():
     """Setup populates server.keycode from the default keymap so bindings
     can reference keys by name."""
-    ffi = MagicMock(name="ffi")
-    lib = MagicMock(name="lib")
-    listen = MagicMock(side_effect=lambda *_a: MagicMock())
-    build = (ffi, lib, listen, MagicMock(), MagicMock())
+    build = make_bindings()
+    ffi, lib, *_ = build
     with patch("wel.bindings.build", return_value=build), \
          patch("wel.build_keycode_map",
                return_value=make_keycode_map()) as bm:
@@ -193,16 +201,14 @@ def test_modkey_super():
 def test_setup_bindings():
     """Setup registers compositor bindings as (mods, code) tuples mapped
     to zero-arg callables."""
-    ffi = MagicMock(name="ffi")
-    lib = MagicMock(name="lib")
+    build = make_bindings()
+    _, lib, *_ = build
     lib.WLR_MODIFIER_LOGO = 0x40
     lib.WLR_MODIFIER_SHIFT = 0x1
     lib.WLR_MODIFIER_CTRL = 0x4
     lib.WLR_MODIFIER_ALT = 0x8
     lib.BTN_LEFT = 0x110
     lib.BTN_RIGHT = 0x111
-    listen = MagicMock(side_effect=lambda *_a: MagicMock())
-    build = (ffi, lib, listen, MagicMock(), MagicMock())
     with patch("wel.bindings.build", return_value=build), \
          patch("wel.build_keycode_map",
                return_value=make_keycode_map()):
@@ -218,10 +224,8 @@ def test_setup_bindings():
 def test_setup_clipboard_managers():
     """Setup creates the clipboard protocol globals so apps and clipboard
     tools can exchange selections."""
-    ffi = MagicMock(name="ffi")
-    lib = MagicMock(name="lib")
-    listen = MagicMock(side_effect=lambda *_a: MagicMock())
-    build = (ffi, lib, listen, MagicMock(), MagicMock())
+    build = make_bindings()
+    _, lib, *_ = build
     with patch("wel.bindings.build", return_value=build), \
          patch("wel.build_keycode_map",
                return_value=make_keycode_map()):
@@ -233,6 +237,70 @@ def test_setup_clipboard_managers():
         server.display)
     lib.wlr_ext_data_control_manager_v1_create.assert_called_once_with(
         server.display, 1)
+
+
+def test_setup_dmabuf_integrated():
+    """On a real GPU, setup creates the wl_drm and linux-dmabuf globals and
+    wires dmabuf into the scene for direct scan-out."""
+    build = make_bindings()
+    _, lib, *_ = build
+    lib.wlr_renderer_get_drm_fd.return_value = 7
+    dmabuf = lib.wlr_linux_dmabuf_v1_create_with_renderer.return_value
+    with patch("wel.bindings.build", return_value=build), \
+         patch("wel.build_keycode_map", return_value=make_keycode_map()):
+        server = wel.setup()
+
+    lib.wlr_drm_create.assert_called_once_with(server.display, server.renderer)
+    lib.wlr_linux_dmabuf_v1_create_with_renderer.assert_called_once_with(
+        server.display, 5, server.renderer)
+    lib.wlr_scene_set_linux_dmabuf_v1.assert_called_once_with(
+        server.scene, dmabuf)
+
+
+def test_setup_no_drm_fd():
+    """Without a GPU device (nested/headless), setup skips wl_drm, dmabuf,
+    and syncobj but still sets up shared memory."""
+    build = make_bindings()
+    _, lib, *_ = build
+    lib.wlr_renderer_get_drm_fd.return_value = -1
+    with patch("wel.bindings.build", return_value=build), \
+         patch("wel.build_keycode_map", return_value=make_keycode_map()):
+        server = wel.setup()
+
+    lib.wlr_renderer_init_wl_shm.assert_called_once_with(
+        server.renderer, server.display)
+    lib.wlr_drm_create.assert_not_called()
+    lib.wlr_linux_dmabuf_v1_create_with_renderer.assert_not_called()
+    lib.wlr_linux_drm_syncobj_manager_v1_create.assert_not_called()
+
+
+def test_setup_syncobj_timeline():
+    """Explicit-sync global is created only when renderer and backend both
+    support timelines."""
+    build = make_bindings()
+    _, lib, *_ = build
+    lib.wlr_renderer_get_drm_fd.return_value = 7
+    lib.welpy_supports_timeline.return_value = True
+    with patch("wel.bindings.build", return_value=build), \
+         patch("wel.build_keycode_map", return_value=make_keycode_map()):
+        server = wel.setup()
+
+    lib.wlr_linux_drm_syncobj_manager_v1_create.assert_called_once_with(
+        server.display, 1, 7)
+
+
+def test_setup_no_timeline():
+    """With a GPU but no timeline support, dmabuf is set up but the
+    explicit-sync global is skipped."""
+    build = make_bindings()
+    _, lib, *_ = build
+    lib.wlr_renderer_get_drm_fd.return_value = 7
+    lib.welpy_supports_timeline.return_value = False
+    with patch("wel.bindings.build", return_value=build), \
+         patch("wel.build_keycode_map", return_value=make_keycode_map()):
+        wel.setup()
+
+    lib.wlr_linux_drm_syncobj_manager_v1_create.assert_not_called()
 
 
 def test_seat_set_selection():
@@ -890,10 +958,8 @@ def _stage_popup(server, *, initial_commit=True, parent_data="PDATA",
 def test_setup_popup_listener():
     """Setup wires the xdg-shell new_popup signal to popup_new so each
     app-created popup hits our handler."""
-    ffi = MagicMock(name="ffi")
-    lib = MagicMock(name="lib")
-    listen = MagicMock(side_effect=lambda *_a: MagicMock())
-    build = (ffi, lib, listen, MagicMock(), MagicMock())
+    build = make_bindings()
+    _, lib, *_ = build
     with patch("wel.bindings.build", return_value=build), \
          patch("wel.build_keycode_map",
                return_value=make_keycode_map()), \
@@ -1041,10 +1107,8 @@ def test_client_cleanup_drops():
 def test_setup_decoration_managers():
     """Setup creates both decoration managers and tells the legacy one to
     default to server-side so apps without xdg-decoration also get SSD."""
-    ffi = MagicMock(name="ffi")
-    lib = MagicMock(name="lib")
-    listen = MagicMock(side_effect=lambda *_a: MagicMock())
-    build = (ffi, lib, listen, MagicMock(), MagicMock())
+    build = make_bindings()
+    _, lib, *_ = build
     with patch("wel.bindings.build", return_value=build), \
          patch("wel.build_keycode_map",
                return_value=make_keycode_map()):
@@ -1060,10 +1124,8 @@ def test_setup_decoration_managers():
 def test_setup_decoration_listener():
     """Setup wires the xdg-decoration manager's new-toplevel-decoration
     signal to decoration_new so each app's request hits our handler."""
-    ffi = MagicMock(name="ffi")
-    lib = MagicMock(name="lib")
-    listen = MagicMock(side_effect=lambda *_a: MagicMock())
-    build = (ffi, lib, listen, MagicMock(), MagicMock())
+    build = make_bindings()
+    _, lib, *_ = build
     with patch("wel.bindings.build", return_value=build), \
          patch("wel.build_keycode_map",
                return_value=make_keycode_map()), \
@@ -2321,14 +2383,12 @@ def test_apply_focus_priority():
 def test_setup_layers_created():
     """Setup creates a scene tree per Layer in declaration order so each
     renders above the previous."""
-    ffi = MagicMock(name="ffi")
-    lib = MagicMock(name="lib")
+    build = make_bindings()
+    ffi, lib, *_ = build
     lib.WL_SEAT_CAPABILITY_POINTER = 1
     lib.WL_SEAT_CAPABILITY_KEYBOARD = 2
     trees = [MagicMock(name=f"tree_{i}") for i in range(len(wel.Layer))]
     lib.wlr_scene_tree_create.side_effect = list(trees)
-    listen = MagicMock(side_effect=lambda *_a: MagicMock())
-    build = (ffi, lib, listen, MagicMock(), MagicMock())
     with patch("wel.bindings.build", return_value=build), \
          patch("wel.build_keycode_map",
                return_value=make_keycode_map()):
@@ -3369,12 +3429,10 @@ def _stage_layer_surface_new(server, *, layer=0, output=None, monitor=None):
 
 def test_setup_layer_shell():
     """Setup creates the layer-shell global so apps can bind it."""
-    ffi = MagicMock(name="ffi")
-    lib = MagicMock(name="lib")
+    build = make_bindings()
+    _, lib, *_ = build
     lib.WL_SEAT_CAPABILITY_POINTER = 1
     lib.WL_SEAT_CAPABILITY_KEYBOARD = 2
-    listen = MagicMock(side_effect=lambda *_a: MagicMock())
-    build = (ffi, lib, listen, MagicMock(), MagicMock())
     with patch("wel.bindings.build", return_value=build), \
          patch("wel.build_keycode_map", return_value=make_keycode_map()):
         server = wel.setup()
@@ -3387,12 +3445,10 @@ def test_setup_layer_shell():
 def test_setup_layer_listener():
     """new_surface on the layer-shell drives layer_surface_new so each
     shell-anchored window hits our handler."""
-    ffi = MagicMock(name="ffi")
-    lib = MagicMock(name="lib")
+    build = make_bindings()
+    _, lib, *_ = build
     lib.WL_SEAT_CAPABILITY_POINTER = 1
     lib.WL_SEAT_CAPABILITY_KEYBOARD = 2
-    listen = MagicMock(side_effect=lambda *_a: MagicMock())
-    build = (ffi, lib, listen, MagicMock(), MagicMock())
     with patch("wel.bindings.build", return_value=build), \
          patch("wel.build_keycode_map", return_value=make_keycode_map()), \
          patch("wel.layer_surface_new") as handler:
@@ -3881,12 +3937,10 @@ def test_monitor_cleanup_removes():
 def test_setup_layout_change_updates():
     """A change in the screen layout (monitor added/removed/repositioned)
     drives update_monitors so windows re-flow onto the new geometry."""
-    ffi = MagicMock(name="ffi")
-    lib = MagicMock(name="lib")
+    build = make_bindings()
+    _, lib, *_ = build
     lib.WL_SEAT_CAPABILITY_POINTER = 1
     lib.WL_SEAT_CAPABILITY_KEYBOARD = 2
-    listen = MagicMock(side_effect=lambda *_a: MagicMock())
-    build = (ffi, lib, listen, MagicMock(), MagicMock())
     with patch("wel.bindings.build", return_value=build), \
          patch("wel.build_keycode_map",
                return_value=make_keycode_map()), \
@@ -4072,10 +4126,7 @@ def test_load_config_sys_path(tmp_path, monkeypatch):
 
 def test_setup_workspaces_orphaned():
     """Setup creates 10 orphaned workspaces named "1".."9", "10"."""
-    ffi = MagicMock(name="ffi")
-    lib = MagicMock(name="lib")
-    listen = MagicMock(side_effect=lambda *_a: MagicMock())
-    build = (ffi, lib, listen, MagicMock(), MagicMock())
+    build = make_bindings()
     with patch("wel.bindings.build", return_value=build), \
          patch("wel.build_keycode_map",
                return_value=make_keycode_map()):
@@ -5002,10 +5053,7 @@ def test_extws_urgent_state():
 
 def test_setup_extws():
     """wel.setup() builds an ext_workspace ext on the server."""
-    ffi = MagicMock(name="ffi")
-    lib = MagicMock(name="lib")
-    listen = MagicMock(side_effect=lambda *_a: MagicMock())
-    build = (ffi, lib, listen, MagicMock(), MagicMock())
+    build = make_bindings()
     with patch("wel.bindings.build", return_value=build), \
          patch("wel.build_keycode_map",
                return_value=make_keycode_map()), \
