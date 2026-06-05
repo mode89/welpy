@@ -10,5 +10,6 @@ pkgs.mkShell {
       gedit
       mate.mate-terminal
       python3Packages.ipython
+      swaybg
     ]);
 }
