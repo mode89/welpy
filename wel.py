@@ -1502,6 +1502,8 @@ def set_border_color(server: Server, client: Client, color) -> None:
 def set_size(
         server: Server, client: Client, width: int, height: int) -> None:
     """Tell this window what size to render at."""
+    if client.inner_size == (width, height):
+        return
     serial = server.lib.wlr_xdg_toplevel_set_size(
         client.toplevel, width, height)
     _track_configure(client, serial)
@@ -1510,9 +1512,7 @@ def set_size(
 def set_activated(server: Server, client: Client, activated: bool) -> None:
     """Tell this window whether it has focus, so the app can render its
     focused state (title-bar styling, cursor blink, etc.)."""
-    serial = server.lib.wlr_xdg_toplevel_set_activated(
-        client.toplevel, activated)
-    _track_configure(client, serial)
+    server.lib.wlr_xdg_toplevel_set_activated(client.toplevel, activated)
 
 
 def set_tiled(server: Server, client: Client, edges: int) -> None:

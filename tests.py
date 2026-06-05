@@ -2445,25 +2445,21 @@ def test_apply_focus_idempotent():
     server.lib.wlr_scene_node_raise_to_top.assert_not_called()
 
 
-def test_apply_focus_tracks():
-    """Activated-state configures emitted by apply_focus feed pending_serial
-    so the screen hold waits for the focused window to ack."""
+def test_apply_focus_no_hold():
+    """Focus changes do not create resize holds."""
     monitor = make_monitor()
     monitor.active_workspace = make_workspace(monitor=monitor)
     a = make_client(focus_order=1, workspace=monitor.active_workspace)
     b = make_client(focus_order=2, workspace=monitor.active_workspace)
-    a.toplevel.base.current.configure_serial = 5
-    b.toplevel.base.current.configure_serial = 0
     server = make_server(
         monitors=[monitor], active_monitor=monitor, clients=[a, b])
     server.seat.keyboard_state.focused_surface = a.toplevel.base.surface # pylint: disable=no-member
-    # deactivate(a)=3 already acked; activate(b)=7 still pending.
     server.lib.wlr_xdg_toplevel_set_activated.side_effect = [3, 7]
 
     wel.apply_focus(server)
 
     assert a.pending_serial is None
-    assert b.pending_serial == 7
+    assert b.pending_serial is None
 
 
 def test_apply_focus_borders():
@@ -3904,8 +3900,8 @@ def test_set_size_tracks():
     assert client.pending_serial == 9
 
 
-def test_set_activated_tracks():
-    """set_activated sends the configure and records the returned serial."""
+def test_set_activated_no_hold():
+    """set_activated sends focus state without recording a resize hold."""
     server = make_server()
     server.lib.wlr_xdg_toplevel_set_activated.return_value = 4
     client = make_client(scene_tree=MagicMock())
@@ -3914,7 +3910,7 @@ def test_set_activated_tracks():
 
     server.lib.wlr_xdg_toplevel_set_activated.assert_called_once_with(
         client.toplevel, True)
-    assert client.pending_serial == 4
+    assert client.pending_serial is None
 
 
 def test_set_tiled_tracks():
