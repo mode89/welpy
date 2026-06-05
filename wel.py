@@ -316,6 +316,8 @@ def setup() -> Server: # pylint: disable=too-many-locals
 
     session_lock_mgr = lib.wlr_session_lock_manager_v1_create(display)
 
+    output_power_mgr = lib.wlr_output_power_manager_v1_create(display)
+
     seat = lib.wlr_seat_create(display, b"seat0")
     lib.wlr_seat_set_capabilities(seat,
         lib.WL_SEAT_CAPABILITY_POINTER | lib.WL_SEAT_CAPABILITY_KEYBOARD)
@@ -383,6 +385,8 @@ def setup() -> Server: # pylint: disable=too-many-locals
             lambda data: client_request_activate(server, data)),
         listen(lib.welpy_session_lock_mgr_new_lock(session_lock_mgr),
             lambda data: lock_new(server, data)),
+        listen(lib.welpy_output_power_mgr_set_mode(output_power_mgr),
+            lambda data: output_power_set_mode(server, data)),
     ])
 
     return server
@@ -566,6 +570,22 @@ def monitor_request_state(server: Server, monitor: Monitor, data) -> None:
     event = ffi.cast("struct wlr_output_event_request_state *", data)
     lib.wlr_output_commit_state(monitor.output, event.state)
     update_monitors(server)
+
+
+def output_power_set_mode(server: Server, data) -> None:
+    """Fires when a client (e.g. an idle daemon) asks to switch a screen on or
+    off for power saving (DPMS). The screen keeps its place in the layout, so
+    windows stay put for when it wakes."""
+    ffi, lib = server.ffi, server.lib
+    event = ffi.cast("struct wlr_output_power_v1_set_mode_event *", data)
+    monitor = next(
+        (m for m in server.monitors if m.output == event.output), None)
+    if monitor is None:
+        return
+    state = lib.welpy_output_state_new()
+    lib.wlr_output_state_set_enabled(state, bool(event.mode))
+    lib.wlr_output_commit_state(monitor.output, state)
+    lib.welpy_output_state_free(state)
 
 
 def monitor_render(server: Server, monitor: Monitor, _data) -> None:

@@ -507,6 +507,50 @@ def test_monitor_request_state_commits():
         "OUT", "REQUESTED_STATE")
 
 
+def test_output_power_off():
+    """A client turning a screen off commits a disabled state on it, leaving
+    the screen in the layout."""
+    server = make_server()
+    server.monitors.append(make_monitor(output="OUT"))
+    event = server.ffi.cast.return_value
+    event.output = "OUT"
+    event.mode = 0
+
+    wel.output_power_set_mode(server, "PWR_DATA")
+
+    server.lib.wlr_output_state_set_enabled.assert_called_once_with(
+        server.lib.welpy_output_state_new.return_value, False)
+    server.lib.wlr_output_commit_state.assert_called_once_with(
+        "OUT", server.lib.welpy_output_state_new.return_value)
+
+
+def test_output_power_on():
+    """A client turning a screen back on commits an enabled state on it."""
+    server = make_server()
+    server.monitors.append(make_monitor(output="OUT"))
+    event = server.ffi.cast.return_value
+    event.output = "OUT"
+    event.mode = 1
+
+    wel.output_power_set_mode(server, "PWR_DATA")
+
+    server.lib.wlr_output_state_set_enabled.assert_called_once_with(
+        server.lib.welpy_output_state_new.return_value, True)
+
+
+def test_output_power_unknown():
+    """A set-mode request for a screen we don't track is ignored."""
+    server = make_server()
+    event = server.ffi.cast.return_value
+    event.output = "GONE"
+    event.mode = 0
+
+    wel.output_power_set_mode(server, "PWR_DATA")
+
+    server.lib.welpy_output_state_new.assert_not_called()
+    server.lib.wlr_output_commit_state.assert_not_called()
+
+
 def test_monitor_new_destroy():
     """The screen's destroy signal triggers monitor_cleanup so an unplug
     self-cleans without leaks."""
@@ -3633,6 +3677,36 @@ def test_setup_lock_listener():
         built = wel.setup()
         trigger(built, lib.welpy_session_lock_mgr_new_lock, "LOCK_DATA")
     handler.assert_called_once_with(built, "LOCK_DATA")
+
+
+def test_setup_output_power():
+    """Setup creates the output-power global so DPMS clients can blank
+    screens."""
+    build = make_bindings()
+    _, lib, *_ = build
+    lib.WL_SEAT_CAPABILITY_POINTER = 1
+    lib.WL_SEAT_CAPABILITY_KEYBOARD = 2
+    with patch("wel.bindings.build", return_value=build), \
+         patch("wel.build_keycode_map", return_value=make_keycode_map()):
+        wel.setup()
+
+    lib.wlr_output_power_manager_v1_create.assert_called_once_with(
+        lib.wl_display_create.return_value)
+
+
+def test_setup_output_power_listener():
+    """set_mode on the output-power manager drives output_power_set_mode so
+    each DPMS request hits our handler."""
+    build = make_bindings()
+    _, lib, *_ = build
+    lib.WL_SEAT_CAPABILITY_POINTER = 1
+    lib.WL_SEAT_CAPABILITY_KEYBOARD = 2
+    with patch("wel.bindings.build", return_value=build), \
+         patch("wel.build_keycode_map", return_value=make_keycode_map()), \
+         patch("wel.output_power_set_mode") as handler:
+        built = wel.setup()
+        trigger(built, lib.welpy_output_power_mgr_set_mode, "PWR_DATA")
+    handler.assert_called_once_with(built, "PWR_DATA")
 
 
 def test_layer_new_no_monitor():
