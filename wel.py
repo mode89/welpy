@@ -10,6 +10,7 @@ import os
 import signal
 import subprocess
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -540,7 +541,10 @@ def monitor_render(server: Server, monitor: Monitor, _data) -> None:
     )
     if not held:
         lib.wlr_scene_output_commit(monitor.scene_output, ffi.NULL)
-    ts = ffi.new("struct timespec *")
+    # Clients pace their next frame off this time (e.g. mpv video sync).
+    now = time.clock_gettime_ns(time.CLOCK_MONOTONIC)
+    ts = ffi.new("struct timespec *",
+        [now // 1_000_000_000, now % 1_000_000_000])
     lib.wlr_scene_output_send_frame_done(monitor.scene_output, ts)
     # No commit = no future refresh events; the timer caps the freeze.
     monitor.frame_timer.update(100 if held else 0)
