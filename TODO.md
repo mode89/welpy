@@ -7,7 +7,7 @@
 7.  [ ] **Focus on hover** — focus the window under the pointer as it moves, so users switch windows by hovering instead of clicking. Toggled by `sloppy_focus`.
 8.  [ ] **Monitor config** — `wlr_output_management_v1`: external tools reconfigure screens (resolution, position, scale, rotation, on/off), so users can set up multi-monitor layouts and switch them per environment (docked, undocked). `kanshi`, `wlr-randr`.
 9.  [ ] **Idle handling** — `wlr_idle_notifier_v1` + `wlr_idle_inhibit_v1`: background daemons act on inactivity (dim, lock, suspend), while apps can hold that off when it matters (video playback, presentations). `idle_inhibit_ignore_visibility` (`config.py`) decides whether a hidden app still inhibits. `swayidle`.
-10. [ ] **Screen lock** — `wlr_session_lock_v1`: a screen-locker takes over every screen and blocks access to running apps until the user authenticates, keeping window contents hidden while locked. `swaylock`, `waylock`.
+10. [x] **Screen lock** — `wlr_session_lock_v1`: a screen-locker takes over every screen and blocks access to running apps until the user authenticates, keeping window contents hidden while locked. `swaylock`, `waylock`.
 11. [ ] **Screen blanking** — `wlr_output_power_management_v1`: blank screens to save power (DPMS), turning displays off when idle and back on when activity resumes. Pairs with idle daemons.
 12. [ ] **Night light** — `wlr_gamma_control_v1`: adjust a screen's color curve to warm it at night (reduce blue light) and to calibrate color. `wlsunset`, `gammastep`.
 13. [ ] **Themed cursors** — `wlr_cursor_shape_v1`: request a themed cursor by name (resize, text, grab) so the pointer matches the user's cursor theme consistently, without each app shipping its own bitmap.

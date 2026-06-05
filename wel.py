@@ -41,6 +41,7 @@ class Layer(enum.Enum):
     TOP = enum.auto()
     FULLSCREEN = enum.auto()
     OVERLAY = enum.auto()
+    LOCK = enum.auto()
 
 
 # Indexed by zwlr_layer_shell_v1 layer values (0..3) to map them to Layer.
@@ -119,6 +120,25 @@ class Client: # pylint: disable=too-many-instance-attributes
 
 
 @dataclass
+class SessionLock:
+    """An active screen lock: a locker app has taken over every screen and
+    holds it until it authenticates the user (or crashes)."""
+    lock: Any                # wlr_session_lock_v1
+    tree: Any                # scene tree holding the lock surfaces, above all
+    surfaces: list           # LockSurface per screen
+    listeners: list[Any]
+
+
+@dataclass
+class LockSurface:
+    """A locker's blanking surface covering one screen while locked."""
+    lock_surface: Any        # wlr_session_lock_surface_v1
+    monitor: Monitor
+    scene_tree: Any
+    listeners: list[Any]
+
+
+@dataclass
 class Cursor:
     """Mouse pointer."""
     cursor: Any              # wlr_cursor: tracks pointer position
@@ -168,6 +188,9 @@ class Server: # pylint: disable=too-many-instance-attributes
     previous_workspace: Any  # name of last-viewed workspace, for toggling back
     ext_workspace: Any       # ext-workspace-v1 protocol state
     layers: dict             # scene tree per Layer; key order = z order
+    lock_background: Any      # black rect on the LOCK layer hiding all windows
+    session_lock: Any        # active SessionLock, or None when unlocked
+    locked: bool             # True while the screen is locked
     keycode: dict            # sym-name -> evdev-keycode
     bindings: dict           # (mods, code) -> action(server)
     listeners: list[Any]
@@ -274,6 +297,7 @@ def setup() -> Server: # pylint: disable=too-many-locals
     # Layer's declaration order is the intended z-order under scene_root.
     scene_root = ffi.addressof(scene.tree)
     layers = {layer: lib.wlr_scene_tree_create(scene_root) for layer in Layer}
+    lock_background = create_lock_background(ffi, lib, layers[Layer.LOCK])
 
     xdg_shell = lib.wlr_xdg_shell_create(display, 3)
     layer_shell = lib.wlr_layer_shell_v1_create(display, 3)
@@ -289,6 +313,8 @@ def setup() -> Server: # pylint: disable=too-many-locals
     lib.wlr_fractional_scale_manager_v1_create(display, 1)
 
     xdg_activation = lib.wlr_xdg_activation_v1_create(display)
+
+    session_lock_mgr = lib.wlr_session_lock_manager_v1_create(display)
 
     seat = lib.wlr_seat_create(display, b"seat0")
     lib.wlr_seat_set_capabilities(seat,
@@ -314,6 +340,7 @@ def setup() -> Server: # pylint: disable=too-many-locals
         previous_workspace=None,
         ext_workspace=None,
         layers=layers,
+        lock_background=lock_background, session_lock=None, locked=False,
         keycode={}, bindings={}, listeners=[],
     )
 
@@ -354,9 +381,20 @@ def setup() -> Server: # pylint: disable=too-many-locals
             lambda data: seat_set_primary_selection(server, data)),
         listen(lib.welpy_xdg_activation_request_activate(xdg_activation),
             lambda data: client_request_activate(server, data)),
+        listen(lib.welpy_session_lock_mgr_new_lock(session_lock_mgr),
+            lambda data: lock_new(server, data)),
     ])
 
     return server
+
+
+def create_lock_background(ffi, lib, tree):
+    """Black rectangle kept on top of every window while the screen is locked;
+    sized to the whole layout by update_lock_background."""
+    black = ffi.new("float[4]", (0.0, 0.0, 0.0, 1.0))
+    rect = lib.wlr_scene_rect_create(tree, 0, 0, black)
+    lib.wlr_scene_node_set_enabled(lib.welpy_scene_rect_node(rect), False)
+    return rect
 
 
 def seat_set_selection(server: Server, data) -> None:
@@ -599,6 +637,8 @@ def update_monitors(server: Server) -> None:
     for m in server.monitors:
         arrange_layers(server, m)
         apply_geometry(server, m)
+    update_lock_background(server)
+    update_lock_surfaces(server)
     apply_focus(server)
     if server.ext_workspace is not None:
         ext_workspace.publish(server)
@@ -1070,6 +1110,137 @@ def layer_surface_cleanup(
     lib.wlr_scene_node_destroy(ffi.addressof(ls.popups_tree.node))
 
 
+def lock_new(server: Server, data) -> None:
+    """A screen-locker app asked to lock the screen. Blank every screen and
+    hand the locker the top of the scene until it authenticates the user."""
+    ffi, lib, listen = server.ffi, server.lib, server.listen
+    lock = ffi.cast("struct wlr_session_lock_v1 *", data)
+    lib.wlr_scene_node_set_enabled(
+        lib.welpy_scene_rect_node(server.lock_background), True)
+    lib.wlr_seat_pointer_clear_focus(server.seat)
+    for client in server.clients:
+        client.grab = None
+    if server.session_lock is not None:
+        # Only one locker at a time; reject the latecomer.
+        lib.wlr_session_lock_v1_destroy(lock)
+        return
+    tree = lib.wlr_scene_tree_create(server.layers[Layer.LOCK])
+    session_lock = SessionLock(
+        lock=lock, tree=tree, surfaces=[], listeners=[])
+    server.session_lock = session_lock
+    server.locked = True
+    session_lock.listeners.extend([
+        listen(lib.welpy_session_lock_new_surface(lock),
+            lambda data: lock_surface_new(server, data)),
+        listen(lib.welpy_session_lock_unlock(lock),
+            lambda _data: lock_unlock(server)),
+        listen(lib.welpy_session_lock_destroy(lock),
+            lambda _data: lock_destroy(server)),
+    ])
+    lib.wlr_session_lock_v1_send_locked(lock)
+    apply_focus(server)
+
+
+def lock_surface_new(server: Server, data) -> None:
+    """The locker created its blanking surface for one screen."""
+    ffi, lib, listen = server.ffi, server.lib, server.listen
+    lock_surface = ffi.cast("struct wlr_session_lock_surface_v1 *", data)
+    monitor = next(
+        (m for m in server.monitors if m.output == lock_surface.output), None)
+    if server.session_lock is None:
+        return
+    if monitor is None:
+        logger.warning("ignoring lock surface for unknown screen")
+        return
+    scene_tree = lib.wlr_scene_subsurface_tree_create(
+        server.session_lock.tree, lock_surface.surface)
+    box = monitor_box(server, monitor)
+    lib.wlr_scene_node_set_position(
+        ffi.addressof(scene_tree.node), box.x, box.y)
+    lib.wlr_session_lock_surface_v1_configure(
+        lock_surface, box.width, box.height)
+    ls = LockSurface(
+        lock_surface=lock_surface, monitor=monitor, scene_tree=scene_tree,
+        listeners=[])
+    server.session_lock.surfaces.append(ls)
+    ls.listeners.append(
+        listen(lib.welpy_session_lock_surface_destroy(lock_surface),
+            lambda _data: lock_surface_destroy(server, ls)))
+    apply_focus(server)
+
+
+def lock_surface_destroy(server: Server, ls: LockSurface) -> None:
+    """A lock surface went away; drop it and move focus to a sibling."""
+    for listener in ls.listeners:
+        listener.remove()
+    ls.listeners.clear()
+    if server.session_lock is not None and ls in server.session_lock.surfaces:
+        server.session_lock.surfaces.remove(ls)
+    apply_focus(server)
+
+
+def lock_unlock(server: Server) -> None:
+    """The locker authenticated the user; reveal the screen again."""
+    destroy_lock(server, unlocked=True)
+
+
+def lock_destroy(server: Server) -> None:
+    """The locker vanished without unlocking (e.g. it crashed). Stay locked
+    with a blank screen so window contents aren't exposed."""
+    destroy_lock(server, unlocked=False)
+
+
+def destroy_lock(server: Server, unlocked: bool) -> None:
+    """Tear down the active lock. `unlocked` reveals the screen; otherwise the
+    blanking rectangle stays up so a crashed locker can't leak contents."""
+    ffi, lib = server.ffi, server.lib
+    session_lock = server.session_lock
+    if session_lock is None:
+        return
+    for ls in session_lock.surfaces:
+        for listener in ls.listeners:
+            listener.remove()
+        ls.listeners.clear()
+    session_lock.surfaces.clear()
+    for listener in session_lock.listeners:
+        listener.remove()
+    session_lock.listeners.clear()
+    lib.wlr_scene_node_destroy(ffi.addressof(session_lock.tree.node))
+    server.session_lock = None
+    if unlocked:
+        server.locked = False
+        lib.wlr_scene_node_set_enabled(
+            lib.welpy_scene_rect_node(server.lock_background), False)
+    apply_focus(server)
+
+
+def update_lock_background(server: Server) -> None:
+    """Size the blanking rectangle to cover the whole screen layout."""
+    ffi, lib = server.ffi, server.lib
+    box = ffi.new("struct wlr_box *")
+    lib.wlr_output_layout_get_box(server.output_layout, ffi.NULL, box)
+    lib.wlr_scene_node_set_position(
+        lib.welpy_scene_rect_node(server.lock_background), box.x, box.y)
+    lib.wlr_scene_rect_set_size(
+        server.lock_background, box.width, box.height)
+
+
+def update_lock_surfaces(server: Server) -> None:
+    """Keep active lock surfaces matched to their current screens."""
+    ffi, lib = server.ffi, server.lib
+    if server.session_lock is None:
+        return
+    for ls in list(server.session_lock.surfaces):
+        if ls.monitor not in server.monitors:
+            lock_surface_destroy(server, ls)
+        else:
+            box = monitor_box(server, ls.monitor)
+            lib.wlr_scene_node_set_position(
+                ffi.addressof(ls.scene_tree.node), box.x, box.y)
+            lib.wlr_session_lock_surface_v1_configure(
+                ls.lock_surface, box.width, box.height)
+
+
 def focus_client(server: Server, client: Client) -> None:
     """Mark `client` as most-recently-focused. The actual focus effects
     are emitted by apply_focus at the handler boundary."""
@@ -1084,6 +1255,11 @@ def apply_focus(server: Server) -> None: # pylint: disable=too-many-branches
     and emits only the effects needed to converge wlroots onto that target."""
     ffi, lib = server.ffi, server.lib
     none = lib.ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_NONE
+
+    if server.locked:
+        # The locker owns the keyboard; windows and shell surfaces can't.
+        focus_lock(server)
+        return
 
     def qualifies(ls):
         return (ls.layer_surface.surface.mapped
@@ -1152,6 +1328,30 @@ def apply_focus(server: Server) -> None: # pylint: disable=too-many-branches
                 server.seat, target_surface,
                 kb_group.keycodes, kb_group.num_keycodes,
                 ffi.addressof(kb_group, "modifiers"))
+
+
+def focus_lock(server: Server) -> None:
+    """While locked, route the keyboard to the lock surface on the active
+    screen so the user can type their password, and nowhere else."""
+    ffi, lib = server.ffi, server.lib
+    surface = None
+    if server.session_lock is not None and server.session_lock.surfaces:
+        ls = next(
+            (s for s in server.session_lock.surfaces
+             if s.monitor is server.active_monitor),
+            server.session_lock.surfaces[0])
+        surface = ls.lock_surface.surface
+    current = server.seat.keyboard_state.focused_surface
+    if current == ffi.NULL:
+        current = None
+    if surface is not current:
+        if surface is None:
+            lib.wlr_seat_keyboard_clear_focus(server.seat)
+        else:
+            kb = lib.welpy_keyboard_group_keyboard(server.keyboard_group.group)
+            lib.wlr_seat_keyboard_notify_enter(
+                server.seat, surface,
+                kb.keycodes, kb.num_keycodes, ffi.addressof(kb, "modifiers"))
 
 
 def grabbed_client(server: Server):
@@ -1707,7 +1907,7 @@ def cursor_button(server: Server, data) -> None:
     ffi, lib = server.ffi, server.lib
     event = ffi.cast("struct wlr_pointer_button_event *", data)
     grabbed = grabbed_client(server)
-    if event.state == lib.WL_POINTER_BUTTON_STATE_PRESSED:
+    if event.state == lib.WL_POINTER_BUTTON_STATE_PRESSED and not server.locked:
         if grabbed is not None:
             return  # drag in progress consumes further presses
         client = client_at(
@@ -1923,8 +2123,9 @@ def keyboard_key(server: Server, data) -> None:
     ffi, lib = server.ffi, server.lib
     event = ffi.cast("struct wlr_keyboard_key_event *", data)
     # Edge-trigger bindings on press; the release still forwards, leaking
-    # a stray key-up to the focused app, which most apps ignore.
-    if event.state == lib.WL_KEYBOARD_KEY_STATE_PRESSED:
+    # a stray key-up to the focused app, which most apps ignore. While
+    # locked, bindings are suppressed so the locker can't be bypassed.
+    if event.state == lib.WL_KEYBOARD_KEY_STATE_PRESSED and not server.locked:
         kb = lib.welpy_keyboard_group_keyboard(server.keyboard_group.group)
         mods = lib.wlr_keyboard_get_modifiers(kb)
         action = server.bindings.get((mods, event.keycode))
@@ -1938,6 +2139,12 @@ def keyboard_key(server: Server, data) -> None:
 def keyboard_modifiers(server: Server, _data) -> None:
     """Fires when any modifier (Shift/Ctrl/...) in the group changes state."""
     ffi, lib = server.ffi, server.lib
+    if server.locked and (server.session_lock is None
+                          or not server.session_lock.surfaces):
+        # A real lock surface needs modifiers; without one, only stale app
+        # focus could receive them.
+        focus_lock(server)
+        return
     kb_group = lib.welpy_keyboard_group_keyboard(server.keyboard_group.group)
     lib.wlr_seat_keyboard_notify_modifiers(
         server.seat, ffi.addressof(kb_group, "modifiers"))

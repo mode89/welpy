@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import functools
+import logging
 import signal
 import sys
 from textwrap import dedent
@@ -45,6 +46,8 @@ def make_server(**kwargs):
         "ext_workspace": MagicMock(name="ext_workspace"),
         "layers": {layer: MagicMock(name=layer.name.lower())
                    for layer in wel.Layer},
+        "lock_background": MagicMock(name="lock_background"),
+        "session_lock": None, "locked": False,
         "keycode": {}, "bindings": {}, "listeners": [],
         **kwargs,
     })
@@ -3603,6 +3606,35 @@ def test_setup_layer_listener():
     handler.assert_called_once_with(built, "LS_DATA")
 
 
+def test_setup_session_lock():
+    """Setup creates the session-lock global so screen lockers can bind it."""
+    build = make_bindings()
+    _, lib, *_ = build
+    lib.WL_SEAT_CAPABILITY_POINTER = 1
+    lib.WL_SEAT_CAPABILITY_KEYBOARD = 2
+    with patch("wel.bindings.build", return_value=build), \
+         patch("wel.build_keycode_map", return_value=make_keycode_map()):
+        wel.setup()
+
+    lib.wlr_session_lock_manager_v1_create.assert_called_once_with(
+        lib.wl_display_create.return_value)
+
+
+def test_setup_lock_listener():
+    """new_lock on the session-lock manager drives lock_new so each lock
+    request hits our handler."""
+    build = make_bindings()
+    _, lib, *_ = build
+    lib.WL_SEAT_CAPABILITY_POINTER = 1
+    lib.WL_SEAT_CAPABILITY_KEYBOARD = 2
+    with patch("wel.bindings.build", return_value=build), \
+         patch("wel.build_keycode_map", return_value=make_keycode_map()), \
+         patch("wel.lock_new") as handler:
+        built = wel.setup()
+        trigger(built, lib.welpy_session_lock_mgr_new_lock, "LOCK_DATA")
+    handler.assert_called_once_with(built, "LOCK_DATA")
+
+
 def test_layer_new_no_monitor():
     """A surface with no requested output and no monitors connected is
     rejected instead of crashing."""
@@ -3792,6 +3824,325 @@ def test_layer_cleanup_trees():
 
     server.lib.wlr_scene_node_destroy.assert_called_once_with(
         ("ADDR", ls.popups_tree.node))
+
+
+# --- session lock ---------------------------------------------------------
+
+
+def _stage_lock_new(server):
+    """Stage lock_new so the cast resolves to a controllable lock object."""
+    lock = MagicMock(name="lock")
+    server.ffi.cast.side_effect = lambda type_str, val: {
+        "struct wlr_session_lock_v1 *": lock,
+    }.get(type_str, ("CAST", type_str, val))
+    return lock
+
+
+def make_session_lock(**kwargs):
+    """Build a SessionLock, filling fields the test doesn't care about."""
+    return wel.SessionLock(**{
+        "lock": MagicMock(name="lock"), "tree": MagicMock(name="tree"),
+        "surfaces": [], "listeners": [],
+        **kwargs,
+    })
+
+
+def test_lock_new_blanks():
+    """A lock request blanks the screen, marks the server locked, and tells
+    the locker the screen is now locked."""
+    server = make_server()
+    lock = _stage_lock_new(server)
+
+    wel.lock_new(server, "DATA")
+
+    assert server.locked is True
+    assert server.session_lock.lock is lock
+    server.lib.wlr_session_lock_v1_send_locked.assert_called_once_with(lock)
+    server.lib.wlr_scene_node_set_enabled.assert_any_call(
+        server.lib.welpy_scene_rect_node.return_value, True)
+
+
+def test_lock_new_rejects():
+    """Only one locker may hold the screen; a second lock is rejected."""
+    existing = make_session_lock()
+    server = make_server(session_lock=existing, locked=True)
+    lock = _stage_lock_new(server)
+
+    wel.lock_new(server, "DATA")
+
+    server.lib.wlr_session_lock_v1_destroy.assert_called_once_with(lock)
+    assert server.session_lock is existing
+
+
+def test_lock_pointer_cleared():
+    """Locking drops pointer focus so clicks don't reach the old window."""
+    server = make_server()
+    _stage_lock_new(server)
+
+    wel.lock_new(server, "DATA")
+
+    server.lib.wlr_seat_pointer_clear_focus.assert_called_once_with(
+        server.seat)
+
+
+def test_lock_grabs_cleared():
+    """Locking cancels active window drags so motion goes to the locker."""
+    client = make_client(grab=wel.Grab("move", 1, 2))
+    server = make_server(clients=[client])
+    _stage_lock_new(server)
+
+    wel.lock_new(server, "DATA")
+
+    assert client.grab is None
+
+
+def test_lock_surface_configures():
+    """A lock surface is placed on its screen and sized to fill it."""
+    monitor = make_monitor()
+    session_lock = make_session_lock()
+    server = make_server(
+        monitors=[monitor], active_monitor=monitor,
+        session_lock=session_lock, locked=True)
+    lock_surface = MagicMock(name="lock_surface")
+    lock_surface.output = monitor.output
+    server.ffi.cast.side_effect = lambda type_str, val: {
+        "struct wlr_session_lock_surface_v1 *": lock_surface,
+    }.get(type_str, ("CAST", type_str, val))
+
+    wel.lock_surface_new(server, "DATA")
+
+    server.lib.wlr_scene_subsurface_tree_create.assert_called_once_with(
+        session_lock.tree, lock_surface.surface)
+    server.lib.wlr_session_lock_surface_v1_configure.assert_called_once()
+    assert len(session_lock.surfaces) == 1
+    assert session_lock.surfaces[0].monitor is monitor
+
+
+def test_lock_surface_orphan():
+    """A lock surface for an unknown screen is ignored, not crashed on."""
+    session_lock = make_session_lock()
+    server = make_server(session_lock=session_lock, locked=True)
+    lock_surface = MagicMock(name="lock_surface")
+    lock_surface.output = "GONE"
+    server.ffi.cast.side_effect = lambda type_str, val: {
+        "struct wlr_session_lock_surface_v1 *": lock_surface,
+    }.get(type_str, ("CAST", type_str, val))
+
+    wel.lock_surface_new(server, "DATA")
+
+    assert not session_lock.surfaces
+    server.lib.wlr_scene_subsurface_tree_create.assert_not_called()
+
+
+def test_lock_surface_orphan_logged(caplog):
+    """An unknown-screen lock surface is visible in logs so locker/output
+    races can be diagnosed."""
+    session_lock = make_session_lock()
+    server = make_server(session_lock=session_lock, locked=True)
+    lock_surface = MagicMock(name="lock_surface")
+    lock_surface.output = "GONE"
+    server.ffi.cast.side_effect = lambda type_str, val: {
+        "struct wlr_session_lock_surface_v1 *": lock_surface,
+    }.get(type_str, ("CAST", type_str, val))
+
+    with caplog.at_level(logging.WARNING, logger="wel"):
+        wel.lock_surface_new(server, "DATA")
+
+    assert "unknown screen" in caplog.text
+
+
+def test_lock_surface_stale_ignored():
+    """A lock-surface signal arriving after lock teardown is ignored instead
+    of crashing on missing lock state."""
+    monitor = make_monitor()
+    server = make_server(monitors=[monitor], session_lock=None, locked=True)
+    lock_surface = MagicMock(name="lock_surface")
+    lock_surface.output = monitor.output
+    server.ffi.cast.side_effect = lambda type_str, val: {
+        "struct wlr_session_lock_surface_v1 *": lock_surface,
+    }.get(type_str, ("CAST", type_str, val))
+
+    wel.lock_surface_new(server, "DATA")
+
+    server.lib.wlr_scene_subsurface_tree_create.assert_not_called()
+
+
+def test_lock_unlock_reveals():
+    """Unlocking clears the lock, un-blanks the screen, and tears down the
+    lock's scene tree."""
+    listener = MagicMock(name="listener")
+    session_lock = make_session_lock(listeners=[listener])
+    server = make_server(session_lock=session_lock, locked=True)
+
+    wel.lock_unlock(server)
+
+    assert server.locked is False
+    assert server.session_lock is None
+    listener.remove.assert_called_once()
+    server.lib.wlr_scene_node_set_enabled.assert_any_call(
+        server.lib.welpy_scene_rect_node.return_value, False)
+    server.lib.wlr_scene_node_destroy.assert_called_once()
+
+
+def test_lock_destroy_locked():
+    """If the locker vanishes without unlocking, the screen stays blank and
+    locked so window contents are never exposed."""
+    session_lock = make_session_lock()
+    server = make_server(session_lock=session_lock, locked=True)
+
+    wel.lock_destroy(server)
+
+    assert server.locked is True
+    assert server.session_lock is None
+    server.lib.wlr_scene_node_set_enabled.assert_not_called()
+
+
+def test_lock_surface_gone():
+    """A destroyed lock surface is dropped and its listeners detached."""
+    listener = MagicMock(name="listener")
+    ls = wel.LockSurface(
+        lock_surface=MagicMock(), monitor=make_monitor(),
+        scene_tree=MagicMock(), listeners=[listener])
+    session_lock = make_session_lock(surfaces=[ls])
+    server = make_server(session_lock=session_lock, locked=True)
+
+    wel.lock_surface_destroy(server, ls)
+
+    assert ls not in session_lock.surfaces
+    listener.remove.assert_called_once()
+
+
+def test_focus_lock_keyboard():
+    """While locked, the keyboard goes to the lock surface on the active
+    screen so the user can type their password."""
+    monitor = make_monitor()
+    lock_surface = MagicMock(name="lock_surface")
+    ls = wel.LockSurface(
+        lock_surface=lock_surface, monitor=monitor,
+        scene_tree=MagicMock(), listeners=[])
+    session_lock = make_session_lock(surfaces=[ls])
+    server = make_server(
+        monitors=[monitor], active_monitor=monitor,
+        session_lock=session_lock, locked=True)
+
+    wel.focus_lock(server)
+
+    server.lib.wlr_seat_keyboard_notify_enter.assert_called_once()
+    assert server.lib.wlr_seat_keyboard_notify_enter.call_args.args[1] is (
+        lock_surface.surface)
+
+
+def test_focus_lock_cleared():
+    """With no lock surface yet, the keyboard focus is cleared so no window
+    keeps receiving keys."""
+    session_lock = make_session_lock(surfaces=[])
+    server = make_server(session_lock=session_lock, locked=True)
+    # A window still held the keyboard when the lock began.
+    server.seat.keyboard_state.focused_surface = MagicMock(name="window")
+
+    wel.focus_lock(server)
+
+    server.lib.wlr_seat_keyboard_clear_focus.assert_called_once_with(
+        server.seat)
+
+
+def test_keyboard_modifiers_locked():
+    """While locked with no locker surface, modifiers are not forwarded to a
+    stale app focus."""
+    session_lock = make_session_lock(surfaces=[])
+    server = make_server(session_lock=session_lock, locked=True)
+    server.seat.keyboard_state.focused_surface = MagicMock(name="window")
+
+    wel.keyboard_modifiers(server, "MOD_DATA")
+
+    server.lib.wlr_seat_keyboard_notify_modifiers.assert_not_called()
+    server.lib.wlr_seat_keyboard_clear_focus.assert_called_once_with(
+        server.seat)
+
+
+def test_keyboard_key_locked():
+    """While locked, compositor keybindings are suppressed so the lock can't
+    be bypassed; the key still forwards to the locker."""
+    action = MagicMock()
+    server = make_server(bindings={(0x40, 28): action}, locked=True)
+    server.lib.wlr_keyboard_get_modifiers.return_value = 0x40
+    event = server.ffi.cast.return_value
+    event.time_msec = 42
+    event.state = 1
+    event.keycode = 28
+
+    wel.keyboard_key(server, "KEY_DATA")
+
+    action.assert_not_called()
+    server.lib.wlr_seat_keyboard_notify_key.assert_called_once_with(
+        server.seat, 42, 28, 1)
+
+
+def test_cursor_button_locked():
+    """While locked, clicking a window neither focuses it nor runs a mouse
+    binding; the click still forwards to the locker."""
+    action = MagicMock()
+    server = make_server(
+        bindings={(0x8, 0x110): action}, locked=True,
+        cursor=make_cursor(xcursor_manager="X"))
+    server.lib.wlr_keyboard_get_modifiers.return_value = 0x8
+    event = server.ffi.cast.return_value
+    event.button = 0x110
+    event.time_msec = 7
+    event.state = server.lib.WL_POINTER_BUTTON_STATE_PRESSED
+
+    with patch("wel.focus_client") as focus, patch("wel.client_at") as at:
+        wel.cursor_button(server, "BUTTON_DATA")
+
+    action.assert_not_called()
+    focus.assert_not_called()
+    at.assert_not_called()
+    server.lib.wlr_seat_pointer_notify_button.assert_called_once()
+
+
+def test_lock_surfaces_reconfigured():
+    """Output layout changes resize and move active lock surfaces."""
+    monitor = make_monitor()
+    lock_surface = MagicMock(name="lock_surface")
+    scene_tree = MagicMock(name="scene_tree")
+    ls = wel.LockSurface(
+        lock_surface=lock_surface, monitor=monitor,
+        scene_tree=scene_tree, listeners=[])
+    server = make_server(
+        monitors=[monitor], active_monitor=monitor, locked=True,
+        session_lock=make_session_lock(surfaces=[ls]))
+    server.ffi.addressof.side_effect = lambda obj, *args: ("ADDR", obj, *args)
+
+    with patch("wel.apply_hierarchy"), patch("wel.apply_visibility"), \
+         patch("wel.apply_tree"), patch("wel.arrange_layers"), \
+         patch("wel.apply_geometry"), patch("wel.apply_focus"), \
+         patch("wel.monitor_box", return_value=wel.Rect(10, 20, 300, 200)):
+        wel.update_monitors(server)
+
+    server.lib.wlr_scene_node_set_position.assert_any_call(
+        ("ADDR", scene_tree.node), 10, 20)
+    server.lib.wlr_session_lock_surface_v1_configure.assert_called_once_with(
+        lock_surface, 300, 200)
+
+
+def test_lock_surfaces_pruned():
+    """A removed screen drops its stale lock surface from lock state."""
+    removed = make_monitor()
+    remaining = make_monitor()
+    ls = wel.LockSurface(
+        lock_surface=MagicMock(), monitor=removed,
+        scene_tree=MagicMock(), listeners=[])
+    session_lock = make_session_lock(surfaces=[ls])
+    server = make_server(
+        monitors=[remaining], active_monitor=remaining, locked=True,
+        session_lock=session_lock)
+
+    with patch("wel.apply_hierarchy"), patch("wel.apply_visibility"), \
+         patch("wel.apply_tree"), patch("wel.arrange_layers"), \
+         patch("wel.apply_geometry"), patch("wel.apply_focus"):
+        wel.update_monitors(server)
+
+    assert ls not in session_lock.surfaces
 
 
 def test_monitor_cleanup_destroys_layers():
