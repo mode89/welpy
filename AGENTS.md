@@ -20,7 +20,7 @@ Name tests `test_<system>_<scenario>`, where `<system>` is 1-2 words for the sub
 
 ## Linting
 
-Run `pylint wel.py bindings.py tests.py` and address what it flags.
+Run `pylint .` and address what it flags.
 
 ## Docstrings
 
