@@ -239,6 +239,11 @@ def setup() -> Server: # pylint: disable=too-many-locals
 
     compositor = lib.wlr_compositor_create(display, 6, renderer)
     lib.wlr_subcompositor_create(display)
+    # Surface effects and frame timing the scene helper drives once these exist.
+    lib.wlr_viewporter_create(display)
+    lib.wlr_alpha_modifier_v1_create(display)
+    lib.wlr_single_pixel_buffer_manager_v1_create(display)
+    lib.wlr_presentation_create(display, backend, 2)
     lib.wlr_data_device_manager_create(display)
     lib.wlr_primary_selection_v1_device_manager_create(display)
     # Privileged clipboard access for managers/tools (wl-clipboard, history

@@ -325,6 +325,19 @@ struct wlr_linux_drm_syncobj_manager_v1 *wlr_linux_drm_syncobj_manager_v1_create
 // Explicit sync needs both the renderer and the backend to support timelines.
 bool welpy_supports_timeline(struct wlr_renderer *, struct wlr_backend *);
 
+// Surface-effect globals the scene helper implements on our behalf:
+// viewporter (scale/crop), alpha-modifier (per-surface transparency), and
+// single-pixel-buffer (cheap solid-color fills).
+struct wlr_viewporter *wlr_viewporter_create(struct wl_display *);
+struct wlr_alpha_modifier_v1 *wlr_alpha_modifier_v1_create(struct wl_display *);
+struct wlr_single_pixel_buffer_manager_v1
+        *wlr_single_pixel_buffer_manager_v1_create(struct wl_display *);
+
+// Tells apps when their frames actually hit the screen; the scene helper
+// sends the per-surface feedback once this global exists.
+struct wlr_presentation *wlr_presentation_create(
+        struct wl_display *, struct wlr_backend *, uint32_t version);
+
 struct wlr_compositor *wlr_compositor_create(
         struct wl_display *, uint32_t version, struct wlr_renderer *);
 struct wlr_subcompositor *wlr_subcompositor_create(struct wl_display *);
@@ -867,6 +880,10 @@ SOURCE = r"""
 #include <wlr/types/wlr_drm.h>
 #include <wlr/types/wlr_linux_dmabuf_v1.h>
 #include <wlr/types/wlr_linux_drm_syncobj_v1.h>
+#include <wlr/types/wlr_viewporter.h>
+#include <wlr/types/wlr_alpha_modifier_v1.h>
+#include <wlr/types/wlr_single_pixel_buffer_v1.h>
+#include <wlr/types/wlr_presentation_time.h>
 #include <wlr/types/wlr_compositor.h>
 #include <wlr/types/wlr_data_device.h>
 #include <wlr/types/wlr_data_control_v1.h>
