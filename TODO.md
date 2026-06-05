@@ -9,7 +9,7 @@
 9.  [ ] **Idle handling** — `wlr_idle_notifier_v1` + `wlr_idle_inhibit_v1`: background daemons act on inactivity (dim, lock, suspend), while apps can hold that off when it matters (video playback, presentations). `idle_inhibit_ignore_visibility` (`config.py`) decides whether a hidden app still inhibits. `swayidle`.
 10. [x] **Screen lock** — `wlr_session_lock_v1`: a screen-locker takes over every screen and blocks access to running apps until the user authenticates, keeping window contents hidden while locked. `swaylock`, `waylock`.
 11. [x] **Screen blanking** — `wlr_output_power_management_v1`: blank screens to save power (DPMS), turning displays off when idle and back on when activity resumes. Pairs with idle daemons.
-12. [ ] **Night light** — `wlr_gamma_control_v1`: adjust a screen's color curve to warm it at night (reduce blue light) and to calibrate color. `wlsunset`, `gammastep`.
+12. [x] **Night light** — `wlr_gamma_control_v1`: adjust a screen's color curve to warm it at night (reduce blue light) and to calibrate color. `wlsunset`, `gammastep`.
 13. [ ] **Themed cursors** — `wlr_cursor_shape_v1`: request a themed cursor by name (resize, text, grab) so the pointer matches the user's cursor theme consistently, without each app shipping its own bitmap.
 14. [x] **HiDPI scaling** — `wlr_fractional_scale_v1`: render crisply at in-between scales (1.25x, 1.5x) on HiDPI screens, instead of being forced to 1x or 2x and looking too small or blurry.
 15. [ ] **Screen capture** — `wlr_screencopy_v1` + `wlr_export_dmabuf_v1`: capture the screen for screenshots, recording, and streaming, the latter sharing GPU buffers directly for low-overhead capture. `grim`, `wf-recorder`, `wayvnc`.

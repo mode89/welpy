@@ -318,6 +318,11 @@ def setup() -> Server: # pylint: disable=too-many-locals
 
     output_power_mgr = lib.wlr_output_power_manager_v1_create(display)
 
+    # Night-light tools set per-screen color curves; the scene applies the
+    # LUTs to each output automatically on commit.
+    lib.wlr_scene_set_gamma_control_manager_v1(
+        scene, lib.wlr_gamma_control_manager_v1_create(display))
+
     seat = lib.wlr_seat_create(display, b"seat0")
     lib.wlr_seat_set_capabilities(seat,
         lib.WL_SEAT_CAPABILITY_POINTER | lib.WL_SEAT_CAPABILITY_KEYBOARD)
