@@ -791,7 +791,8 @@ def client_commit(server: Server, client: Client, _data) -> None:
         acked = client.toplevel.base.current.configure_serial
         if acked >= client.pending_serial:
             client.pending_serial = None
-    if client.inner_size is not None:
+    # Commits can still arrive after unmap, once the clipped tree is gone.
+    if client.scene_tree is not None and client.inner_size is not None:
         # geometry offset can shift between commits (CSD on/off); resync.
         apply_clip(server, client)
 

@@ -849,6 +849,20 @@ def test_client_commit_reclips():
         server.ffi.addressof.return_value, server.ffi.new.return_value)
 
 
+def test_client_commit_postunmap():
+    """A commit arriving after unmap (during teardown) must not reclip: the
+    scene tree -- and the xdg subtree it clips -- has already been destroyed."""
+    server = make_server()
+    toplevel = MagicMock()
+    toplevel.base.initial_commit = False
+    client = make_client(
+        toplevel=toplevel, scene_tree=None, inner_size=(800, 600))
+
+    wel.client_commit(server, client, None)
+
+    server.lib.wlr_scene_subsurface_tree_set_clip.assert_not_called()
+
+
 def test_client_commit_premap():
     """Before the first resize, inner_size is unset and we have no idea what
     to clip to; the initial commit must not touch the clip."""
