@@ -5640,6 +5640,31 @@ def test_extws_monitor_unplug():
     assert all(g.monitor is not m2 for g in manager.groups)
 
 
+def test_extws_unplug_migrate():
+    """Unplugging a monitor whose workspace migrates to a surviving monitor
+    re-homes the handle without dereferencing the just-removed group."""
+    m1, m2 = make_monitor(), make_monitor()
+    ws1 = make_workspace(name="1", monitor=m1)
+    ws2 = make_workspace(name="2", monitor=m2)
+    m1.active_workspace = ws1
+    m2.active_workspace = ws2
+    server = make_extws_server(monitors=[m1, m2], workspaces=[ws1, ws2])
+    ext, externs = make_extws(server)
+    bind_extws_client(ext, externs)
+    manager = ext.managers[0]
+    handle_r = extws_handle(manager, ws1).resource
+    new_group_r = extws_group(manager, m2).resource
+    server.lib.welpy_extws_send_workspace_enter.reset_mock()
+
+    server.monitors.remove(m1)
+    ws1.monitor = m2
+    ext_workspace.publish(server)
+
+    assert extws_handle(manager, ws1).monitor is m2
+    server.lib.welpy_extws_send_workspace_enter.assert_any_call(
+        new_group_r, handle_r)
+
+
 def test_extws_active_change():
     """Swapping the active workspace on a monitor emits a `state` event on
     each affected handle (one going active, one going inactive)."""

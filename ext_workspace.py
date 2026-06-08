@@ -432,9 +432,12 @@ def _publish_manager(server, ext: ExtWorkspace, manager: _Manager) -> None:
     for entry in manager.workspaces:
         ws = entry.workspace
         if entry.monitor is not ws.monitor:
-            lib.welpy_extws_send_workspace_leave(
-                _group_for_monitor(manager, entry.monitor).resource,
-                entry.resource)
+            # The old monitor's group may already be gone (unplugged this
+            # publish), in which case its `removed` covered the leave.
+            old_group = _group_for_monitor(manager, entry.monitor)
+            if old_group is not None:
+                lib.welpy_extws_send_workspace_leave(
+                    old_group.resource, entry.resource)
             lib.welpy_extws_send_workspace_enter(
                 _group_for_monitor(manager, ws.monitor).resource,
                 entry.resource)
