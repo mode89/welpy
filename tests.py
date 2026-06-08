@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import functools
 import logging
+import os
 import signal
 import sys
 from textwrap import dedent
@@ -38,6 +39,7 @@ def make_server(**kwargs):
         "scene": MagicMock(name="scene"), "scene_layout": "SCENE_LAYOUT",
         "xdg_shell": MagicMock(name="xdg_shell"),
         "layer_shell": MagicMock(name="layer_shell"),
+        "xwayland": MagicMock(name="xwayland"),
         "cursor": MagicMock(name="cursor"),
         "keyboard_group": make_keyboard_group(
             group="GROUP", keymap="KEYMAP", xkb_context="XKB"),
@@ -47,7 +49,7 @@ def make_server(**kwargs):
         "layers": {layer: MagicMock(name=layer.name.lower())
                    for layer in wel.Layer},
         "lock_background": MagicMock(name="lock_background"),
-        "session_lock": None, "locked": False,
+        "session_lock": None, "locked": False, "unmanaged_focus": None,
         "keycode": {}, "bindings": {}, "listeners": [],
         **kwargs,
     })
@@ -76,7 +78,7 @@ def make_bindings(**kwargs):
 
 
 def make_client(**kwargs):
-    """Build a Client, filling fields the test doesn't care about."""
+    """Build an XdgClient, filling fields the test doesn't care about."""
     toplevel = kwargs.get("toplevel") or MagicMock()
     # Default to caught-up so pending_serial is a no-op unless the test opts
     # in. Raw-string toplevels skip this since they never hit setter wrappers.
@@ -85,9 +87,9 @@ def make_client(**kwargs):
         toplevel.requested.fullscreen = False
         toplevel.parent = None
     kwargs["toplevel"] = toplevel
-    return wel.Client(**{
+    return wel.XdgClient(**{
         "scene_tree": MagicMock(),
-        "xdg_tree": MagicMock(),
+        "content_tree": MagicMock(),
         "borders": tuple(MagicMock() for _ in range(4)),
         "focus_order": 0, "urgent": False, "grab": None,
         "floating_geom": None,
@@ -95,6 +97,40 @@ def make_client(**kwargs):
         "pending_serial": None,
         "decoration": None, "handle": None,
         "inner_size": None,
+        **kwargs,
+    })
+
+
+def make_x11_client(**kwargs):
+    """Build an X11Client, filling fields the test doesn't care about."""
+    xsurface = kwargs.get("xsurface") or MagicMock()
+    if isinstance(xsurface, MagicMock):
+        xsurface.fullscreen = False
+        xsurface.parent = None
+        xsurface.override_redirect = False
+    kwargs["xsurface"] = xsurface
+    return wel.X11Client(**{
+        "scene_tree": MagicMock(),
+        "content_tree": MagicMock(),
+        "borders": tuple(MagicMock() for _ in range(4)),
+        "focus_order": 0, "urgent": False, "grab": None,
+        "floating_geom": None,
+        "workspace": None, "listeners": [],
+        "decoration": None, "handle": None,
+        "inner_size": None,
+        **kwargs,
+    })
+
+
+def make_unmanaged(**kwargs):
+    """Build an Unmanaged override-redirect surface entity."""
+    xsurface = kwargs.get("xsurface") or MagicMock()
+    if isinstance(xsurface, MagicMock):
+        xsurface.override_redirect = True
+    kwargs["xsurface"] = xsurface
+    return wel.Unmanaged(**{
+        "scene_tree": None,
+        "listeners": [],
         **kwargs,
     })
 
@@ -306,6 +342,19 @@ def test_setup_no_timeline():
         wel.setup()
 
     lib.wlr_linux_drm_syncobj_manager_v1_create.assert_not_called()
+
+
+def test_setup_xwayland_failure():
+    """If XWayland cannot be created, setup fails clearly before wiring
+    listeners that would dereference the NULL server."""
+    build = make_bindings()
+    ffi, lib, *_ = build
+    lib.wlr_xwayland_create.return_value = ffi.NULL
+
+    with patch("wel.bindings.build", return_value=build), \
+         patch("wel.build_keycode_map", return_value=make_keycode_map()), \
+         pytest.raises(RuntimeError, match="XWayland"):
+        wel.setup()
 
 
 def test_setup_renderer_lost_listener():
@@ -5648,3 +5697,486 @@ def test_setup_extws():
     create.assert_called_once_with(
         server, on_activate=ANY, on_assign=ANY)
     assert server.ext_workspace is create.return_value
+
+
+# --- xwayland (X11 clients) ------------------------------------------------
+
+
+def test_xwayland_new_unmanaged():
+    """Override-redirect surfaces (menus, tooltips) take the lighter unmanaged
+    path instead of the managed-window wiring."""
+    server = make_server()
+    xsurface = MagicMock()
+    xsurface.override_redirect = True
+    server.ffi.cast.return_value = xsurface
+
+    with patch("wel.unmanaged_new") as unmanaged:
+        wel.x11_surface_new(server, "DATA")
+
+    unmanaged.assert_called_once_with(server, xsurface)
+
+
+def test_xwayland_new_attaches_listeners():
+    """A managed X11 window gets its lifecycle listeners."""
+    server = make_server()
+    xsurface = MagicMock()
+    xsurface.override_redirect = False
+    server.ffi.cast.return_value = xsurface
+
+    wel.x11_surface_new(server, "DATA")
+
+    server.lib.welpy_xwayland_surface_associate.assert_called_once_with(
+        xsurface)
+    server.lib.welpy_xwayland_surface_destroy.assert_called_once_with(xsurface)
+
+
+def test_xwayland_associate_map():
+    """On associate, the wl_surface's map drives the shared client_map."""
+    server = make_server()
+    xsurface = MagicMock()
+    xsurface.override_redirect = False
+    server.ffi.cast.return_value = xsurface
+    wel.x11_surface_new(server, "DATA")
+
+    with patch("wel.client_map") as mapped:
+        trigger(server, server.lib.welpy_xwayland_surface_associate, None)
+        trigger(server, server.lib.welpy_surface_map, "MAP")
+
+    mapped.assert_called_once_with(server, ANY, "MAP")
+
+
+def test_xwayland_dissociate_detaches():
+    """Dissociate removes the map/unmap/commit listeners wired on associate."""
+    server = make_server()
+    xsurface = MagicMock()
+    xsurface.override_redirect = False
+    server.ffi.cast.return_value = xsurface
+
+    registry = {}
+
+    def fake_listen(sig, cb):
+        handle = MagicMock(name="handle")
+        registry[sig] = (cb, handle)
+        return handle
+    server.listen = MagicMock(side_effect=fake_listen)
+
+    wel.x11_surface_new(server, "DATA")
+    registry[server.lib.welpy_xwayland_surface_associate.return_value][0](None)
+    map_handle = registry[server.lib.welpy_surface_map.return_value][1]
+    registry[server.lib.welpy_xwayland_surface_dissociate.return_value][0](None)
+
+    map_handle.remove.assert_called_once_with()
+
+
+def test_xwayland_client_surface():
+    """client_surface unwraps the X11 surface to its inner wl_surface."""
+    client = make_x11_client()
+    assert wel.client_surface(client) is client.xsurface.surface
+
+
+def test_xwayland_client_geometry():
+    """X11 windows have no CSD offset; geometry is the raw size at (0, 0)."""
+    client = make_x11_client()
+    client.xsurface.width = 640
+    client.xsurface.height = 480
+
+    geom = wel.client_geometry(client)
+
+    assert (geom.x, geom.y, geom.width, geom.height) == (0, 0, 640, 480)
+
+
+def test_xwayland_for_surface():
+    """A mapped X11 window resolves from its inner wl_surface."""
+    server = make_server()
+    client = make_x11_client()
+    server.clients = [client]
+
+    assert wel.client_for_surface(
+        server, client.xsurface.surface) is client
+
+
+def test_xwayland_wants_fullscreen():
+    """client_wants_fullscreen reads the X11 surface's fullscreen flag."""
+    client = make_x11_client()
+    client.xsurface.fullscreen = True
+    assert wel.client_wants_fullscreen(client) is True
+
+
+def test_xwayland_wants_float():
+    """A transient X11 window (one with a parent) opens floating."""
+    client = make_x11_client()
+    client.xsurface.parent = MagicMock()
+    assert wel.client_wants_float(client) is True
+
+
+def test_xwayland_set_size():
+    """X11 sizing couples position and size, so set_size sends an absolute
+    configure derived from the already-placed wrapper plus the border inset."""
+    server = make_server()
+    client = make_x11_client(inner_size=None)
+    client.scene_tree.node.x = 100
+    client.scene_tree.node.y = 50
+
+    wel.set_size(server, client, 200, 150)
+
+    server.lib.wlr_xwayland_surface_configure.assert_called_once_with(
+        client.xsurface,
+        100 + wel.BORDER_WIDTH, 50 + wel.BORDER_WIDTH, 200, 150)
+
+
+def test_xwayland_position_only():
+    """An X11 move with unchanged size still sends ConfigureNotify because
+    X11 couples the window position and size in one configure."""
+    server = make_server()
+    client = make_x11_client(inner_size=(200, 150))
+    client.scene_tree.node.x = 300
+    client.scene_tree.node.y = 400
+
+    wel.set_size(server, client, 200, 150)
+
+    server.lib.wlr_xwayland_surface_configure.assert_called_once_with(
+        client.xsurface,
+        300 + wel.BORDER_WIDTH, 400 + wel.BORDER_WIDTH, 200, 150)
+
+
+def test_xwayland_drag_move():
+    """Dragging an X11 window sends a position-only configure so the X
+    server's window coordinates follow the scene node."""
+    server = make_server(cursor=make_cursor(xcursor_manager="X"))
+    client = make_x11_client(
+        grab=wel.Grab("move", 10, 20),
+        floating_geom=wel.Rect(0, 0, 204, 154),
+        inner_size=(200, 150),
+    )
+    server.cursor.cursor.x = 200.0
+    server.cursor.cursor.y = 300.0
+
+    def record_position(_node, x, y):
+        client.scene_tree.node.x = x
+        client.scene_tree.node.y = y
+    server.lib.wlr_scene_node_set_position.side_effect = record_position
+
+    wel.drag_client(server, client)
+
+    server.lib.wlr_xwayland_surface_configure.assert_called_once_with(
+        client.xsurface,
+        190 + wel.BORDER_WIDTH, 280 + wel.BORDER_WIDTH, 200, 150)
+
+
+def test_xwayland_set_activated():
+    """set_activated routes to the X11 activate call."""
+    server = make_server()
+    client = make_x11_client()
+    wel.set_activated(server, client, True)
+    server.lib.wlr_xwayland_surface_activate.assert_called_once_with(
+        client.xsurface, True)
+
+
+def test_xwayland_set_tiled():
+    """X11 has no tiled-edge state, so set_tiled does nothing."""
+    server = make_server()
+    client = make_x11_client()
+    wel.set_tiled(server, client, 15)
+    server.lib.wlr_xdg_toplevel_set_tiled.assert_not_called()
+
+
+def test_xwayland_set_fullscreen():
+    """set_fullscreen routes to the X11 fullscreen call."""
+    server = make_server()
+    ws = make_workspace()
+    client = make_x11_client(workspace=ws)
+    wel.set_fullscreen(server, ws, client)
+    server.lib.wlr_xwayland_surface_set_fullscreen.assert_called_once_with(
+        client.xsurface, True)
+
+
+def test_xwayland_close():
+    """Closing the focused X11 window routes to the X11 close call."""
+    server = make_server()
+    client = make_x11_client()
+    with patch("wel.top_client", return_value=client):
+        wel.close_window(server)
+    server.lib.wlr_xwayland_surface_close.assert_called_once_with(
+        client.xsurface)
+
+
+def test_xwayland_holds_paint():
+    """X11 windows have no configure-ack, so they never hold the paint."""
+    client = make_x11_client(workspace=make_workspace())
+    assert wel.client_holds_paint(client) is False
+
+
+def test_xwayland_map_front():
+    """A mapped X11 window goes to the front of server.clients, like a
+    Wayland one."""
+    old = make_client()
+    server = make_server(clients=[old])
+    fresh = make_x11_client(scene_tree=None)
+
+    with patch("wel.focus_client"):
+        wel.client_map(server, fresh, None)
+
+    assert server.clients[0] is fresh
+
+
+def test_xwayland_map_scene():
+    """An X11 window's content goes into a subsurface tree, not an xdg one."""
+    server = make_server()
+    client = make_x11_client(scene_tree=None)
+
+    with patch("wel.focus_client"):
+        wel.client_map(server, client, None)
+
+    server.lib.wlr_scene_subsurface_tree_create.assert_called_once_with(
+        server.lib.wlr_scene_tree_create.return_value, client.xsurface.surface)
+    server.lib.wlr_scene_xdg_surface_create.assert_not_called()
+
+
+def test_xwayland_configure_premap():
+    """Before map, honor the X11 app's requested geometry verbatim."""
+    server = make_server()
+    client = make_x11_client(scene_tree=None)
+    event = MagicMock(x=5, y=10, width=300, height=200)
+    server.ffi.cast.return_value = event
+
+    wel.x11_request_configure(server, client, "DATA")
+
+    server.lib.wlr_xwayland_surface_configure.assert_called_once_with(
+        client.xsurface, 5, 10, 300, 200)
+
+
+def test_xwayland_activate_urgent():
+    """An X11 activate request shows an urgent border instead of stealing
+    focus."""
+    server = make_server()
+    client = make_x11_client()
+    with patch("wel.mark_urgent") as mark:
+        wel.x11_request_activate(server, client)
+    mark.assert_called_once_with(server, client)
+
+
+def test_xwayland_ready_seat():
+    """When the X server comes up we point it at our seat and set its cursor."""
+    server = make_server()
+
+    wel.x11_ready(server)
+
+    server.lib.wlr_xwayland_set_seat.assert_called_once_with(
+        server.xwayland, server.seat)
+    server.lib.welpy_xwayland_set_default_cursor.assert_called_once_with(
+        server.xwayland, server.cursor.xcursor_manager)
+
+
+
+def test_main_display_before_autostart(monkeypatch):
+    """main() exports DISPLAY before running autostart, so apps launched at
+    startup reach our Xwayland and not the parent compositor's X server."""
+    server = make_server()
+    server.lib.wlr_backend_start.return_value = True
+    # ffi.string().decode() is called for WAYLAND_DISPLAY then DISPLAY.
+    server.ffi.string.return_value.decode.side_effect = ["wayland-9", ":4"]
+    monkeypatch.setenv("DISPLAY", "")
+
+    seen = {}
+    def record(_server):
+        seen["display"] = os.environ["DISPLAY"]
+    with patch("wel.setup", return_value=server), \
+         patch("wel.load_config"), \
+         patch("wel.install_signals"), \
+         patch("wel.teardown"), \
+         patch("wel.autostart", side_effect=record):
+        wel.main()
+
+    assert seen["display"] == ":4"
+
+
+def test_close_window_xdg():
+    """Closing a focused Wayland window still routes to xdg send_close."""
+    server = make_server()
+    client = make_client()
+    with patch("wel.top_client", return_value=client):
+        wel.close_window(server)
+    server.lib.wlr_xdg_toplevel_send_close.assert_called_once_with(
+        client.toplevel)
+
+
+def test_unmanaged_new_listeners():
+    """An unmanaged surface wires associate/destroy/configure, but none of the
+    managed-window-only signals."""
+    server = make_server()
+    xsurface = MagicMock()
+
+    wel.unmanaged_new(server, xsurface)
+
+    server.lib.welpy_xwayland_surface_associate.assert_called_once_with(
+        xsurface)
+    server.lib.welpy_xwayland_surface_request_configure.assert_called_once_with(
+        xsurface)
+    server.lib.welpy_xwayland_surface_request_fullscreen.assert_not_called()
+
+
+def test_unmanaged_associate_map():
+    """On associate, the wl_surface's map drives unmanaged_map."""
+    server = make_server()
+    xsurface = MagicMock()
+    wel.unmanaged_new(server, xsurface)
+
+    with patch("wel.unmanaged_map") as mapped:
+        trigger(server, server.lib.welpy_xwayland_surface_associate, None)
+        trigger(server, server.lib.welpy_surface_map, "MAP")
+
+    mapped.assert_called_once_with(server, ANY, "MAP")
+
+
+def test_unmanaged_map_position():
+    """Mapping places the surface in the OVERLAY layer at the app's coords and,
+    without a focus request, leaves the keyboard alone."""
+    server = make_server()
+    um = make_unmanaged()
+    um.xsurface.x = 30
+    um.xsurface.y = 40
+    server.lib.wlr_xwayland_surface_override_redirect_wants_focus \
+        .return_value = False
+
+    wel.unmanaged_map(server, um, None)
+
+    server.lib.wlr_scene_subsurface_tree_create.assert_called_once_with(
+        server.layers[wel.Layer.OVERLAY], um.xsurface.surface)
+    server.lib.wlr_scene_node_set_position.assert_called_once_with(ANY, 30, 40)
+    assert server.unmanaged_focus is None
+
+
+def test_unmanaged_map_focus():
+    """A focus-wanting unmanaged surface becomes the keyboard owner on map."""
+    server = make_server()
+    um = make_unmanaged()
+    server.lib.wlr_xwayland_surface_override_redirect_wants_focus \
+        .return_value = True
+
+    with patch("wel.apply_focus") as focus:
+        wel.unmanaged_map(server, um, None)
+
+    assert server.unmanaged_focus is um
+    focus.assert_called_once_with(server)
+
+
+def test_unmanaged_configure_position():
+    """A configure request repositions the scene node to the requested spot."""
+    server = make_server()
+    um = make_unmanaged(scene_tree=MagicMock())
+    server.ffi.cast.return_value = MagicMock(x=5, y=6, width=100, height=200)
+
+    wel.unmanaged_configure(server, um, "DATA")
+
+    server.lib.wlr_xwayland_surface_configure.assert_called_once_with(
+        um.xsurface, 5, 6, 100, 200)
+    server.lib.wlr_scene_node_set_position.assert_called_once_with(ANY, 5, 6)
+
+
+def test_unmanaged_configure_premap():
+    """Before map there's no scene node to move, only the X surface to ack."""
+    server = make_server()
+    um = make_unmanaged()
+    server.ffi.cast.return_value = MagicMock(x=5, y=6, width=100, height=200)
+
+    wel.unmanaged_configure(server, um, "DATA")
+
+    server.lib.wlr_xwayland_surface_configure.assert_called_once()
+    server.lib.wlr_scene_node_set_position.assert_not_called()
+
+
+def test_unmanaged_unmap_restores():
+    """Unmapping tears down the scene node and returns the keyboard."""
+    server = make_server()
+    um = make_unmanaged(scene_tree=MagicMock())
+    server.unmanaged_focus = um
+
+    with patch("wel.apply_focus") as focus:
+        wel.unmanaged_unmap(server, um, None)
+
+    server.lib.wlr_scene_node_destroy.assert_called_once()
+    assert um.scene_tree is None
+    assert server.unmanaged_focus is None
+    focus.assert_called_once_with(server)
+
+
+def test_unmanaged_unmap_unfocused():
+    """Unmapping a surface that never held focus leaves focus untouched."""
+    server = make_server()
+    other = make_unmanaged()
+    server.unmanaged_focus = other
+    um = make_unmanaged(scene_tree=MagicMock())
+
+    with patch("wel.apply_focus") as focus:
+        wel.unmanaged_unmap(server, um, None)
+
+    focus.assert_not_called()
+    assert server.unmanaged_focus is other
+
+
+def test_unmanaged_cleanup_detaches():
+    """Destroy detaches listeners and drops the focus slot if it held it."""
+    server = make_server()
+    listener = MagicMock()
+    um = make_unmanaged()
+    um.listeners = [listener]
+    server.unmanaged_focus = um
+
+    wel.unmanaged_cleanup(server, um, None)
+
+    listener.remove.assert_called_once_with()
+    assert not um.listeners
+    assert server.unmanaged_focus is None
+
+
+def test_unmanaged_focus_defers():
+    """apply_focus keeps the keyboard on a focus-holding unmanaged surface and
+    skips the normal window-focus path."""
+    server = make_server()
+    um = make_unmanaged()
+    server.unmanaged_focus = um
+
+    with patch("wel.top_client") as top:
+        wel.apply_focus(server)
+
+    top.assert_not_called()
+    server.lib.wlr_seat_keyboard_notify_enter.assert_called_once()
+    assert (server.lib.wlr_seat_keyboard_notify_enter.call_args.args[1]
+            is um.xsurface.surface)
+
+
+def test_xwayland_hints_urgent():
+    """An urgent ICCCM hint on a mapped window shows an urgent border."""
+    server = make_server()
+    client = make_x11_client()
+    server.lib.welpy_xwayland_surface_is_urgent.return_value = True
+
+    with patch("wel.mark_urgent") as mark:
+        wel.x11_set_hints(server, client)
+
+    mark.assert_called_once_with(server, client)
+
+
+def test_xwayland_hints_premap():
+    """Hints before the window maps don't raise urgency."""
+    server = make_server()
+    client = make_x11_client(scene_tree=None)
+    server.lib.welpy_xwayland_surface_is_urgent.return_value = True
+
+    with patch("wel.mark_urgent") as mark:
+        wel.x11_set_hints(server, client)
+
+    mark.assert_not_called()
+
+
+def test_xwayland_hints_wired():
+    """A managed X11 window listens for ICCCM hint changes."""
+    server = make_server()
+    xsurface = MagicMock()
+    xsurface.override_redirect = False
+    server.ffi.cast.return_value = xsurface
+
+    wel.x11_surface_new(server, "DATA")
+
+    server.lib.welpy_xwayland_surface_set_hints.assert_called_once_with(
+        xsurface)

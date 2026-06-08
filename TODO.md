@@ -18,4 +18,4 @@
 18. [x] **Frame timing** — `wlr_presentation_time`: tell apps exactly when their frames appeared on screen, so video players and games can pace rendering smoothly and keep audio in sync with the picture.
 19. [ ] **Pointer lock** — `wlr_pointer_constraints_v1` + `wlr_relative_pointer_v1`: capture the pointer (lock it in place or confine it to a region) and read raw, unaccelerated motion, so first-person games and 3D tools get smooth look/rotate. FPS games, Blender.
 20. [ ] **Input injection** — `wlr_virtual_keyboard_v1` + `wlr_virtual_pointer_v1`: inject keyboard and pointer input for automation, accessibility, and remote desktop, as if from a real device. `wtype`, `wayvnc`, `ydotool`.
-21. [ ] **X11 apps** — XWayland: run legacy X11 apps (older toolkits, some games) that don't speak Wayland, by embedding an X server. Also a second source of urgency hints.
+21. [x] **X11 apps** — XWayland: run legacy X11 apps (older toolkits, some games) that don't speak Wayland, by embedding an X server. Also a second source of urgency hints.

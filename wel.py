@@ -100,12 +100,12 @@ class LayerSurface:
     listeners: list[Any]
 
 
-@dataclass
+@dataclass(kw_only=True)
 class Client: # pylint: disable=too-many-instance-attributes
-    """Application window."""
-    toplevel: Any            # the window (xdg_toplevel role on a wl_surface)
-    scene_tree: Any          # wrapper tree: xdg subtree + the four border rects
-    xdg_tree: Any            # xdg subtree; inset within the wrapper by border
+    """Application window. Base shared by xdg-shell and X11/XWayland windows;
+    per-kind fields live on the subclasses below."""
+    scene_tree: Any          # wrapper tree: content subtree + four border rects
+    content_tree: Any        # content subtree; inset within the wrapper
     borders: tuple           # (top, bottom, left, right) wlr_scene_rect handles
     focus_order: int         # bumped on each focus; higher = more recent
     urgent: bool             # app asked for attention while unfocused
@@ -113,10 +113,32 @@ class Client: # pylint: disable=too-many-instance-attributes
     floating_geom: Rect | None  # the float's rect; None means tiled
     workspace: Any           # Workspace this window belongs to; None pre-map
     listeners: list[Any]
-    pending_serial: int | None   # configure serial; None when client caught up
-    decoration: Any          # wlr_xdg_toplevel_decoration_v1, if any
-    handle: Any              # ffi.new_handle: backs toplevel.base.data
+    decoration: Any          # wlr_xdg_toplevel_decoration_v1, if any; X11: None
+    handle: Any              # ffi.new_handle: backs the surface's back-pointer
     inner_size: tuple[int, int] | None  # inner (w, h) configured; None pre-map
+
+
+@dataclass(kw_only=True)
+class XdgClient(Client):
+    """A Wayland-native window speaking the xdg-shell protocol."""
+    toplevel: Any            # the window (xdg_toplevel role on a wl_surface)
+    pending_serial: int | None   # configure serial; None when client caught up
+
+
+@dataclass(kw_only=True)
+class X11Client(Client):
+    """A legacy X11 window bridged through the embedded XWayland server."""
+    xsurface: Any            # wlr_xwayland_surface
+
+
+@dataclass(kw_only=True)
+class Unmanaged:
+    """An override-redirect X11 surface (menu, tooltip, dropdown, drag icon):
+    the app positions and stacks it itself, so we just place it above the
+    windows and hand it the keyboard when it asks."""
+    xsurface: Any            # wlr_xwayland_surface
+    scene_tree: Any          # subsurface tree in OVERLAY layer; None pre-map
+    listeners: list[Any]
 
 
 @dataclass
@@ -178,6 +200,7 @@ class Server: # pylint: disable=too-many-instance-attributes
     scene_layout: Any        # bridges scene_outputs with output_layout
     xdg_shell: Any
     layer_shell: Any
+    xwayland: Any            # embedded X server for legacy X11 apps
     seat: Any
     cursor: Cursor
     keyboard_group: KeyboardGroup
@@ -191,6 +214,7 @@ class Server: # pylint: disable=too-many-instance-attributes
     lock_background: Any      # black rect on the LOCK layer hiding all windows
     session_lock: Any        # active SessionLock, or None when unlocked
     locked: bool             # True while the screen is locked
+    unmanaged_focus: Any     # focus-holding override-redirect surface, or None
     keycode: dict            # sym-name -> evdev-keycode
     bindings: dict           # (mods, code) -> action(server)
     listeners: list[Any]
@@ -211,6 +235,7 @@ def main():
 
     socket = ffi.string(lib.wl_display_add_socket_auto(server.display)).decode()
     os.environ["WAYLAND_DISPLAY"] = socket
+    os.environ["DISPLAY"] = ffi.string(server.xwayland.display_name).decode()
 
     if not lib.wlr_backend_start(server.backend):
         lib.wlr_backend_destroy(server.backend)
@@ -247,7 +272,7 @@ def load_config(path=None) -> None:
     spec.loader.exec_module(module)
 
 
-def setup() -> Server: # pylint: disable=too-many-locals
+def setup() -> Server: # pylint: disable=too-many-locals,too-many-statements
     """Build everything wlroots needs to render and expose Wayland: backend +
     renderer, the scene graph, the protocol globals apps look for (compositor,
     xdg-shell, data device, ...), and the input seat."""
@@ -301,6 +326,10 @@ def setup() -> Server: # pylint: disable=too-many-locals
 
     xdg_shell = lib.wlr_xdg_shell_create(display, 3)
     layer_shell = lib.wlr_layer_shell_v1_create(display, 3)
+    # lazy=False starts Xwayland now so DISPLAY is usable immediately.
+    xwayland = lib.wlr_xwayland_create(display, compositor, False)
+    if xwayland == ffi.NULL:
+        raise RuntimeError("failed to create XWayland server")
     # Negotiate server-side decorations so we own the chrome (border, sizing)
     # and apps don't draw their own title bar/shadow on top of ours.
     lib.wlr_server_decoration_manager_set_default_mode(
@@ -337,7 +366,8 @@ def setup() -> Server: # pylint: disable=too-many-locals
         compositor=compositor,
         output_layout=output_layout,
         scene=scene, scene_layout=scene_layout,
-        xdg_shell=xdg_shell, layer_shell=layer_shell, seat=seat,
+        xdg_shell=xdg_shell, layer_shell=layer_shell, xwayland=xwayland,
+        seat=seat,
         cursor=None, keyboard_group=None,
         monitors=[], active_monitor=None, clients=[],
         workspaces=[
@@ -348,6 +378,7 @@ def setup() -> Server: # pylint: disable=too-many-locals
         ext_workspace=None,
         layers=layers,
         lock_background=lock_background, session_lock=None, locked=False,
+        unmanaged_focus=None,
         keycode={}, bindings={}, listeners=[],
     )
 
@@ -392,6 +423,10 @@ def setup() -> Server: # pylint: disable=too-many-locals
             lambda data: lock_new(server, data)),
         listen(lib.welpy_output_power_mgr_set_mode(output_power_mgr),
             lambda data: output_power_set_mode(server, data)),
+        listen(lib.welpy_xwayland_new_surface(xwayland),
+            lambda data: x11_surface_new(server, data)),
+        listen(lib.welpy_xwayland_ready(xwayland),
+            lambda _data: x11_ready(server)),
     ])
 
     return server
@@ -468,6 +503,7 @@ def teardown(server: Server) -> None:
     server.listeners.clear()
     server.renderer_lost.remove()
     ext_workspace.destroy(server.ext_workspace)
+    lib.wlr_xwayland_destroy(server.xwayland)
     destroy_keyboard_group(lib, server.keyboard_group)
     destroy_cursor(lib, server.cursor)
     lib.wl_display_destroy_clients(server.display)
@@ -511,7 +547,11 @@ def renderer_lost(server: Server) -> None:
 def close_window(server: Server) -> None:
     """Ask the focused app to close its window."""
     client = top_client(server, server.active_monitor)
-    if client is not None:
+    if client is None:
+        return
+    if isinstance(client, X11Client):
+        server.lib.wlr_xwayland_surface_close(client.xsurface)
+    else:
         server.lib.wlr_xdg_toplevel_send_close(client.toplevel)
 
 
@@ -623,7 +663,8 @@ def client_holds_paint(client: Client) -> bool:
     # screen" -- the precise check is whether the surface entered an output
     # (see dwl's client_is_rendered_on_mon).
     return (
-        client.pending_serial is not None
+        isinstance(client, XdgClient)
+        and client.pending_serial is not None
         and client_layer(client) == Layer.TILE
         and workspace is not None
         and workspace.fullscreen is None
@@ -757,8 +798,8 @@ def client_new(server: Server, data) -> None:
     time so creation lands in a single frame."""
     ffi, lib, listen = server.ffi, server.lib, server.listen
     toplevel = ffi.cast("struct wlr_xdg_toplevel *", data)
-    client = Client(
-        toplevel=toplevel, scene_tree=None, xdg_tree=None, borders=(),
+    client = XdgClient(
+        toplevel=toplevel, scene_tree=None, content_tree=None, borders=(),
         focus_order=0, urgent=False, grab=None, floating_geom=None,
         workspace=None, listeners=[], pending_serial=None,
         decoration=None, handle=None, inner_size=None)
@@ -782,15 +823,16 @@ def client_new(server: Server, data) -> None:
 
 def client_commit(server: Server, client: Client, _data) -> None:
     """Fires every time the app commits new state for its window."""
-    if client.toplevel.base.initial_commit:
-        # Empty configure; real tile size is sent from client_map.
-        set_size(server, client, 0, 0)
-        return
-    if client.pending_serial is not None:
-        # Release the screen hold once the client has caught up.
-        acked = client.toplevel.base.current.configure_serial
-        if acked >= client.pending_serial:
-            client.pending_serial = None
+    if isinstance(client, XdgClient):
+        if client.toplevel.base.initial_commit:
+            # Empty configure; real tile size is sent from client_map.
+            set_size(server, client, 0, 0)
+            return
+        if client.pending_serial is not None:
+            # Release the screen hold once the client has caught up.
+            acked = client.toplevel.base.current.configure_serial
+            if acked >= client.pending_serial:
+                client.pending_serial = None
     # Commits can still arrive after unmap, once the clipped tree is gone.
     if client.scene_tree is not None and client.inner_size is not None:
         # geometry offset can shift between commits (CSD on/off); resync.
@@ -802,19 +844,8 @@ def client_map(server: Server, client: Client, _data) -> None:
     window's scene tree, joins the layout, and shifts focus -- all in one
     event so the new window, sibling reflow, and focus highlight land in
     a single frame."""
-    ffi, lib = server.ffi, server.lib
-    # Wrap the xdg subtree alongside four edge rects, inset so they frame it.
-    # The inset is reapplied per-resize so fullscreen can collapse it to 0.
-    client.scene_tree = lib.wlr_scene_tree_create(server.layers[Layer.TILE])
-    client.xdg_tree = lib.wlr_scene_xdg_surface_create(
-        client.scene_tree, client.toplevel.base)
-    # Anchor for popups: wlr_xdg_popup.parent points at this wlr_surface,
-    # and popup_new reads .data to find the parent scene tree.
-    client.toplevel.base.surface.data = ffi.cast("void *", client.scene_tree)
-    color = ffi.new("float[4]", BORDER_COLOR_INACTIVE)
-    client.borders = tuple(
-        lib.wlr_scene_rect_create(client.scene_tree, 0, 0, color)
-        for _ in range(4))
+    lib = server.lib
+    create_window_scene(server, client)
     if server.active_monitor is not None:
         client.workspace = server.active_monitor.active_workspace
     monitor = client_monitor(client)
@@ -825,13 +856,13 @@ def client_map(server: Server, client: Client, _data) -> None:
         set_fullscreen(server, workspace, None)
     # Insert at the front so the newest window becomes the master tile.
     server.clients.insert(0, client)
-    if client.toplevel.parent and monitor is not None:
+    if client_wants_float(client) and monitor is not None:
         client.floating_geom = init_floating_geom(client)
     set_tiled(
         server, client,
         lib.WLR_EDGE_TOP | lib.WLR_EDGE_BOTTOM
         | lib.WLR_EDGE_LEFT | lib.WLR_EDGE_RIGHT)
-    if client.toplevel.requested.fullscreen and workspace is not None:
+    if client_wants_fullscreen(client) and workspace is not None:
         # Honor a pre-map or initial-commit fullscreen request.
         set_fullscreen(server, workspace, client)
     focus_client(server, client)
@@ -854,10 +885,12 @@ def client_unmap(server: Server, client: Client, _data) -> None:
     client.grab = None
     monitor = client_monitor(client)
     server.clients.remove(client)
-    # Wrapper isn't tied to the xdg role's lifetime
+    # Wrapper isn't tied to the content role's lifetime
     lib.wlr_scene_node_destroy(ffi.addressof(client.scene_tree.node))
-    client.toplevel.base.surface.data = ffi.NULL
+    if isinstance(client, XdgClient):
+        client.toplevel.base.surface.data = ffi.NULL
     client.scene_tree = None
+    client.content_tree = None
     client.borders = ()
     client.workspace = None
     apply_hierarchy(server)
@@ -877,7 +910,7 @@ def client_request_fullscreen(
     workspace = client.workspace if client.scene_tree is not None else None
     monitor = client_monitor(client) if client.scene_tree is not None else None
     if workspace is not None and monitor is not None:
-        wants = bool(client.toplevel.requested.fullscreen)
+        wants = client_wants_fullscreen(client)
         if wants and workspace.fullscreen is not client:
             set_fullscreen(server, workspace, client)
         elif not wants and workspace.fullscreen is client:
@@ -893,8 +926,16 @@ def client_request_activate(server: Server, data) -> None:
     event = server.ffi.cast(
         "struct wlr_xdg_activation_v1_request_activate_event *", data)
     client = client_for_surface(server, event.surface)
-    if client is None or client is client_for_surface(
-            server, server.seat.keyboard_state.focused_surface):
+    if client is not None:
+        mark_urgent(server, client)
+
+
+def mark_urgent(server: Server, client: Client) -> None:
+    """Flag a window as wanting attention: it shows an urgent border until the
+    user focuses it. No-op if it already has focus."""
+    focused = client_for_surface(
+        server, server.seat.keyboard_state.focused_surface)
+    if client is focused:
         return
     client.urgent = True
     set_border_color(server, client, BORDER_COLOR_URGENT)
@@ -909,6 +950,197 @@ def client_cleanup(_server: Server, client: Client, _data) -> None:
     for listener in client.listeners:
         listener.remove()
     client.listeners.clear()
+
+
+def create_window_scene(server: Server, client: Client) -> None:
+    """Build the window's wrapper scene tree: the app's content subtree inset
+    within four border rects. The inset is reapplied per-resize so fullscreen
+    can collapse it to 0."""
+    ffi, lib = server.ffi, server.lib
+    client.scene_tree = lib.wlr_scene_tree_create(server.layers[Layer.TILE])
+    if isinstance(client, X11Client):
+        client.content_tree = lib.wlr_scene_subsurface_tree_create(
+            client.scene_tree, client.xsurface.surface)
+    else:
+        client.content_tree = lib.wlr_scene_xdg_surface_create(
+            client.scene_tree, client.toplevel.base)
+        # Anchor for popups: wlr_xdg_popup.parent points at this wlr_surface,
+        # and popup_new reads .data to find the parent scene tree.
+        client.toplevel.base.surface.data = ffi.cast(
+            "void *", client.scene_tree)
+    color = ffi.new("float[4]", BORDER_COLOR_INACTIVE)
+    client.borders = tuple(
+        lib.wlr_scene_rect_create(client.scene_tree, 0, 0, color)
+        for _ in range(4))
+
+
+def x11_surface_new(server: Server, data) -> None:
+    """Fires when an X11 app creates a window. Managed windows get the same
+    lifecycle wiring as Wayland ones; override-redirect surfaces (menus,
+    tooltips, drag icons) take the lighter unmanaged path."""
+    ffi, lib, listen = server.ffi, server.lib, server.listen
+    xsurface = ffi.cast("struct wlr_xwayland_surface *", data)
+    if xsurface.override_redirect:
+        unmanaged_new(server, xsurface)
+        return
+    client = X11Client(
+        xsurface=xsurface, scene_tree=None, content_tree=None, borders=(),
+        focus_order=0, urgent=False, grab=None, floating_geom=None,
+        workspace=None, listeners=[], decoration=None, handle=None,
+        inner_size=None)
+
+    # The wl_surface only exists between associate and dissociate, so its
+    # map/unmap/commit listeners are wired on associate and dropped after.
+    surface_listeners = []
+
+    def on_associate(_data):
+        surface = xsurface.surface
+        surface_listeners.extend([
+            listen(lib.welpy_surface_map(surface),
+                lambda data: client_map(server, client, data)),
+            listen(lib.welpy_surface_unmap(surface),
+                lambda data: client_unmap(server, client, data)),
+            listen(lib.welpy_surface_commit(surface),
+                lambda data: client_commit(server, client, data)),
+        ])
+
+    def on_dissociate(_data):
+        for l in surface_listeners:
+            l.remove()
+        surface_listeners.clear()
+
+    client.listeners.extend([
+        listen(lib.welpy_xwayland_surface_associate(xsurface), on_associate),
+        listen(lib.welpy_xwayland_surface_dissociate(xsurface), on_dissociate),
+        listen(lib.welpy_xwayland_surface_destroy(xsurface),
+            lambda data: client_cleanup(server, client, data)),
+        listen(lib.welpy_xwayland_surface_request_configure(xsurface),
+            lambda data: x11_request_configure(server, client, data)),
+        listen(lib.welpy_xwayland_surface_request_fullscreen(xsurface),
+            lambda data: client_request_fullscreen(server, client, data)),
+        listen(lib.welpy_xwayland_surface_request_activate(xsurface),
+            lambda _data: x11_request_activate(server, client)),
+        listen(lib.welpy_xwayland_surface_set_hints(xsurface),
+            lambda _data: x11_set_hints(server, client)),
+    ])
+
+
+def x11_request_configure(server: Server, client: X11Client, data) -> None:
+    """An X11 app asked for a position/size. Honor it before the window maps
+    (its initial geometry); once mapped the layout owns geometry, so reassert
+    ours."""
+    ffi, lib = server.ffi, server.lib
+    event = ffi.cast("struct wlr_xwayland_surface_configure_event *", data)
+    if client.scene_tree is None:
+        lib.wlr_xwayland_surface_configure(
+            client.xsurface, event.x, event.y, event.width, event.height)
+    elif client.inner_size is not None:
+        _configure_x11(server, client, *client.inner_size)
+
+
+def x11_request_activate(server: Server, client: X11Client) -> None:
+    """An X11 app asked for the foreground; show an urgent border instead of
+    stealing focus."""
+    if client.scene_tree is not None:
+        mark_urgent(server, client)
+
+
+def x11_set_hints(server: Server, client: X11Client) -> None:
+    """An X11 app updated its ICCCM hints; show an urgent border if it set the
+    urgency flag while unfocused."""
+    if (client.scene_tree is not None
+            and server.lib.welpy_xwayland_surface_is_urgent(client.xsurface)):
+        mark_urgent(server, client)
+
+
+def unmanaged_new(server: Server, xsurface) -> None:
+    """Fires for an override-redirect X11 surface (menu, tooltip, dropdown).
+    Wires its map/unmap lifecycle; we don't manage it as a window."""
+    lib, listen = server.lib, server.listen
+    um = Unmanaged(xsurface=xsurface, scene_tree=None, listeners=[])
+
+    # The wl_surface only exists between associate and dissociate.
+    surface_listeners = []
+
+    def on_associate(_data):
+        surface = xsurface.surface
+        surface_listeners.extend([
+            listen(lib.welpy_surface_map(surface),
+                lambda data: unmanaged_map(server, um, data)),
+            listen(lib.welpy_surface_unmap(surface),
+                lambda data: unmanaged_unmap(server, um, data)),
+        ])
+
+    def on_dissociate(_data):
+        for l in surface_listeners:
+            l.remove()
+        surface_listeners.clear()
+
+    um.listeners.extend([
+        listen(lib.welpy_xwayland_surface_associate(xsurface), on_associate),
+        listen(lib.welpy_xwayland_surface_dissociate(xsurface), on_dissociate),
+        listen(lib.welpy_xwayland_surface_destroy(xsurface),
+            lambda data: unmanaged_cleanup(server, um, data)),
+        listen(lib.welpy_xwayland_surface_request_configure(xsurface),
+            lambda data: unmanaged_configure(server, um, data)),
+    ])
+
+
+def unmanaged_map(server: Server, um: Unmanaged, _data) -> None:
+    """Place an override-redirect surface at the coords the app requested,
+    above the windows, and give it the keyboard if it wants it."""
+    ffi, lib = server.ffi, server.lib
+    xsurface = um.xsurface
+    um.scene_tree = lib.wlr_scene_subsurface_tree_create(
+        server.layers[Layer.OVERLAY], xsurface.surface)
+    lib.wlr_scene_node_set_position(
+        ffi.addressof(um.scene_tree.node), xsurface.x, xsurface.y)
+    lib.wlr_scene_node_raise_to_top(ffi.addressof(um.scene_tree.node))
+    if lib.wlr_xwayland_surface_override_redirect_wants_focus(xsurface):
+        server.unmanaged_focus = um
+        apply_focus(server)
+
+
+def unmanaged_configure(server: Server, um: Unmanaged, data) -> None:
+    """An override-redirect surface asked to move/resize itself; honor it and
+    keep its scene node in sync."""
+    ffi, lib = server.ffi, server.lib
+    event = ffi.cast("struct wlr_xwayland_surface_configure_event *", data)
+    lib.wlr_xwayland_surface_configure(
+        um.xsurface, event.x, event.y, event.width, event.height)
+    if um.scene_tree is not None:
+        lib.wlr_scene_node_set_position(
+            ffi.addressof(um.scene_tree.node), event.x, event.y)
+
+
+def unmanaged_unmap(server: Server, um: Unmanaged, _data) -> None:
+    """Tear down an override-redirect surface's scene node and return the
+    keyboard to whoever had it before."""
+    ffi, lib = server.ffi, server.lib
+    if um.scene_tree is not None:
+        lib.wlr_scene_node_destroy(ffi.addressof(um.scene_tree.node))
+        um.scene_tree = None
+    if server.unmanaged_focus is um:
+        server.unmanaged_focus = None
+        apply_focus(server)
+
+
+def unmanaged_cleanup(server: Server, um: Unmanaged, _data) -> None:
+    """Fires when an override-redirect surface is destroyed; drop listeners."""
+    if server.unmanaged_focus is um:
+        server.unmanaged_focus = None
+    for listener in um.listeners:
+        listener.remove()
+    um.listeners.clear()
+
+
+def x11_ready(server: Server) -> None:
+    """Fires once the embedded X server is up. Point it at our seat and give it
+    a default cursor."""
+    lib = server.lib
+    lib.wlr_xwayland_set_seat(server.xwayland, server.seat)
+    lib.welpy_xwayland_set_default_cursor(
+        server.xwayland, server.cursor.xcursor_manager)
 
 
 def decoration_new(server: Server, data) -> None:
@@ -1021,8 +1253,8 @@ def _popup_owner(server: Server, root_surface):
     """The (parent-scene-node, monitor) for the window owning this surface,
     or (None, None) if no window claims it."""
     for c in server.clients:
-        if (c.toplevel.base.surface == root_surface
-                and c.scene_tree is not None):
+        if (c.scene_tree is not None
+                and client_surface(c) == root_surface):
             return c.scene_tree.node, client_monitor(c)
     for m in server.monitors:
         for bucket in m.layers.values():
@@ -1287,6 +1519,10 @@ def apply_focus(server: Server) -> None: # pylint: disable=too-many-branches
         focus_lock(server)
         return
 
+    if server.unmanaged_focus is not None:
+        focus_unmanaged(server)
+        return
+
     def qualifies(ls):
         return (ls.layer_surface.surface.mapped
                 and ls.layer_surface.current.keyboard_interactive != none)
@@ -1314,7 +1550,7 @@ def apply_focus(server: Server) -> None: # pylint: disable=too-many-branches
                      if target_ls is None else None)
     target_surface = (
         target_ls.layer_surface.surface if target_ls is not None
-        else target_client.toplevel.base.surface if target_client is not None
+        else client_surface(target_client) if target_client is not None
         else None)
 
     # ls.focused is a cache of what apply_focus last picked.
@@ -1380,6 +1616,21 @@ def focus_lock(server: Server) -> None:
                 kb.keycodes, kb.num_keycodes, ffi.addressof(kb, "modifiers"))
 
 
+def focus_unmanaged(server: Server) -> None:
+    """While an override-redirect surface holds focus, keep the keyboard on it
+    so a stray reflow can't yank focus away and dismiss the menu."""
+    ffi, lib = server.ffi, server.lib
+    surface = server.unmanaged_focus.xsurface.surface
+    current = server.seat.keyboard_state.focused_surface
+    if current == ffi.NULL:
+        current = None
+    if surface is not current:
+        kb = lib.welpy_keyboard_group_keyboard(server.keyboard_group.group)
+        lib.wlr_seat_keyboard_notify_enter(
+            server.seat, surface,
+            kb.keycodes, kb.num_keycodes, ffi.addressof(kb, "modifiers"))
+
+
 def grabbed_client(server: Server):
     """Return the window currently being mouse-dragged, or None."""
     grabbed = [c for c in server.clients if c.grab is not None]
@@ -1420,7 +1671,7 @@ def client_for_surface(server: Server, surface):
     return next((
         c for c in server.clients
         if c.scene_tree is not None
-        and c.toplevel.base.surface == surface), None)
+        and client_surface(c) == surface), None)
 
 
 def cycle_focus(server: Server, direction: int) -> None:
@@ -1685,7 +1936,7 @@ def resize_client(server: Server, client: Client, rect: Rect) -> None:
     lib.wlr_scene_node_set_position(
         ffi.addressof(client.scene_tree.node), rect.x, rect.y)
     lib.wlr_scene_node_set_position(
-        ffi.addressof(client.xdg_tree.node), bw, bw)
+        ffi.addressof(client.content_tree.node), bw, bw)
     set_size(server, client, inner_w, inner_h)
     top, bottom, left, right = client.borders
     lib.wlr_scene_rect_set_size(top, rect.width, bw)
@@ -1711,11 +1962,11 @@ def apply_clip(server: Server, client: Client) -> None:
     inner_w, inner_h = client.inner_size
     # Anchor at the geometry offset so the CSD shadow margin (baked into the
     # surface buffer by GTK/libadwaita) is clipped away.
-    geom = client.toplevel.base.geometry
+    geom = client_geometry(client)
     clip = ffi.new("struct wlr_box *",
         [geom.x, geom.y, inner_w, inner_h])
     lib.wlr_scene_subsurface_tree_set_clip(
-        ffi.addressof(client.xdg_tree.node), clip)
+        ffi.addressof(client.content_tree.node), clip)
 
 
 def set_border_color(server: Server, client: Client, color) -> None:
@@ -1728,6 +1979,9 @@ def set_border_color(server: Server, client: Client, color) -> None:
 def set_size(
         server: Server, client: Client, width: int, height: int) -> None:
     """Tell this window what size to render at."""
+    if isinstance(client, X11Client):
+        _configure_x11(server, client, width, height)
+        return
     if client.inner_size == (width, height):
         return
     serial = server.lib.wlr_xdg_toplevel_set_size(
@@ -1735,15 +1989,30 @@ def set_size(
     _track_configure(client, serial)
 
 
+def _configure_x11(
+        server: Server, client: X11Client, width: int, height: int) -> None:
+    """Configure an X11 window. X11 couples position and size in one request,
+    so derive the absolute content origin from the already-placed wrapper."""
+    bw = 0 if client_layer(client) == Layer.FULLSCREEN else BORDER_WIDTH
+    node = client.scene_tree.node
+    server.lib.wlr_xwayland_surface_configure(
+        client.xsurface, node.x + bw, node.y + bw, width, height)
+
+
 def set_activated(server: Server, client: Client, activated: bool) -> None:
     """Tell this window whether it has focus, so the app can render its
     focused state (title-bar styling, cursor blink, etc.)."""
+    if isinstance(client, X11Client):
+        server.lib.wlr_xwayland_surface_activate(client.xsurface, activated)
+        return
     server.lib.wlr_xdg_toplevel_set_activated(client.toplevel, activated)
 
 
 def set_tiled(server: Server, client: Client, edges: int) -> None:
     """Tell this window which of its edges are flush against neighbors or
     screen borders, so the app can suppress decorations on those edges."""
+    if isinstance(client, X11Client):
+        return  # X11 has no tiled-edge state.
     serial = server.lib.wlr_xdg_toplevel_set_tiled(client.toplevel, edges)
     _track_configure(client, serial)
 
@@ -1751,18 +2020,23 @@ def set_tiled(server: Server, client: Client, edges: int) -> None:
 def set_fullscreen(
         server: Server, workspace, client: Client | None) -> None:
     """Set this workspace's fullscreen window (None to clear), notifying the
-    affected apps so their xdg-toplevel state matches."""
+    affected apps so their window state matches."""
+    def _fullscreen(target: Client, fullscreen: bool) -> None:
+        if isinstance(target, X11Client):
+            server.lib.wlr_xwayland_surface_set_fullscreen(
+                target.xsurface, fullscreen)
+            return
+        serial = server.lib.wlr_xdg_toplevel_set_fullscreen(
+            target.toplevel, fullscreen)
+        _track_configure(target, serial)
+
     prev = workspace.fullscreen
     if prev is not client:
         workspace.fullscreen = client
         if prev is not None:
-            serial = server.lib.wlr_xdg_toplevel_set_fullscreen(
-                prev.toplevel, False)
-            _track_configure(prev, serial)
+            _fullscreen(prev, False)
         if client is not None:
-            serial = server.lib.wlr_xdg_toplevel_set_fullscreen(
-                client.toplevel, True)
-            _track_configure(client, serial)
+            _fullscreen(client, True)
 
 
 def _track_configure(client: Client, serial: int) -> None:
@@ -1777,6 +2051,38 @@ def _track_configure(client: Client, serial: int) -> None:
         client.pending_serial = None
     else:
         client.pending_serial = serial
+
+
+def client_surface(client: Client):
+    """The wl_surface backing this window's content."""
+    if isinstance(client, X11Client):
+        return client.xsurface.surface
+    return client.toplevel.base.surface
+
+
+def client_geometry(client: Client) -> Rect:
+    """The window's content extent: offset plus size. For Wayland windows this
+    is the xdg geometry box (whose offset trims the CSD shadow margin); X11
+    windows have no such offset, so it's the raw surface size at (0, 0)."""
+    if isinstance(client, X11Client):
+        return Rect(0, 0, client.xsurface.width, client.xsurface.height)
+    geom = client.toplevel.base.geometry
+    return Rect(geom.x, geom.y, geom.width, geom.height)
+
+
+def client_wants_fullscreen(client: Client) -> bool:
+    """Whether the app is asking to be fullscreen."""
+    if isinstance(client, X11Client):
+        return bool(client.xsurface.fullscreen)
+    return bool(client.toplevel.requested.fullscreen)
+
+
+def client_wants_float(client: Client) -> bool:
+    """Whether this window should open floating (it's a transient child of
+    another window)."""
+    if isinstance(client, X11Client):
+        return bool(client.xsurface.parent)
+    return bool(client.toplevel.parent)
 
 
 def client_layer(client: Client) -> Layer:
@@ -1794,7 +2100,7 @@ def client_layer(client: Client) -> Layer:
 def client_outer_rect(client: Client) -> Rect:
     """This window's current outer rectangle (the area it draws into,
     borders included) in layout coordinates."""
-    geom = client.toplevel.base.geometry
+    geom = client_geometry(client)
     return Rect(
         client.scene_tree.node.x, client.scene_tree.node.y,
         geom.width + 2 * BORDER_WIDTH, geom.height + 2 * BORDER_WIDTH)
@@ -1804,7 +2110,7 @@ def init_floating_geom(client: Client) -> Rect:
     """Center a freshly-floated window in its screen's usable area at the
     size the app asked for (or a default if it didn't)."""
     area = client_monitor(client).window_area
-    geom = client.toplevel.base.geometry
+    geom = client_geometry(client)
     inner_w = geom.width or 250
     inner_h = geom.height or 200
     outer_w = inner_w + 2 * BORDER_WIDTH
@@ -2030,6 +2336,8 @@ def drag_client(server: Server, grabbed: Client) -> None:
             ffi.addressof(grabbed.scene_tree.node), nx, ny)
         fg = grabbed.floating_geom
         grabbed.floating_geom = Rect(nx, ny, fg.width, fg.height)
+        if isinstance(grabbed, X11Client) and grabbed.inner_size is not None:
+            _configure_x11(server, grabbed, *grabbed.inner_size)
     elif grab.kind == "resize":
         node = grabbed.scene_tree.node
         w = max(1, int(cur.x) - grab.x)

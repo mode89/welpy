@@ -12,4 +12,7 @@ pkgs: with pkgs; [
   libxkbcommon
   pixman
   libinput
+  xwayland
+  xorg.libxcb
+  xorg.xcbutilwm
 ]

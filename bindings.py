@@ -112,7 +112,8 @@ class Builder:  # pylint: disable=too-many-instance-attributes
         return self.ffi.compile(tmpdir=self.build_dir)
 
 
-_PKGS = ("wlroots-0.19", "wayland-server", "xkbcommon", "pixman-1")
+_PKGS = ("wlroots-0.19", "wayland-server", "xkbcommon", "pixman-1",
+         "xcb", "xcb-icccm", "xcb-ewmh")
 _MODULE = "_welpy_cffi"
 
 
@@ -120,6 +121,8 @@ CDEF = r"""
 typedef _Bool bool;
 typedef unsigned int uint32_t;
 typedef int int32_t;
+typedef short int16_t;
+typedef unsigned short uint16_t;
 
 struct wl_list { struct wl_list *prev; struct wl_list *next; };
 struct timespec { long tv_sec; long tv_nsec; };
@@ -236,6 +239,26 @@ struct wlr_xdg_toplevel {
 struct wlr_xdg_popup {
     struct wlr_xdg_surface *base;
     struct wlr_surface *parent;
+    ...;
+};
+struct wlr_xwayland {
+    const char *display_name;
+    ...;
+};
+struct wlr_xwayland_surface {
+    struct wlr_surface *surface;
+    int16_t x, y;
+    uint16_t width, height;
+    bool override_redirect;
+    bool fullscreen;
+    struct wlr_xwayland_surface *parent;
+    void *data;
+    ...;
+};
+struct wlr_xwayland_surface_configure_event {
+    struct wlr_xwayland_surface *surface;
+    int16_t x, y;
+    uint16_t width, height;
     ...;
 };
 struct wlr_data_source;
@@ -417,6 +440,43 @@ uint32_t wlr_xdg_toplevel_set_tiled(struct wlr_xdg_toplevel *, uint32_t edges);
 void wlr_xdg_toplevel_set_bounds(struct wlr_xdg_toplevel *, int32_t w, int32_t h);
 void wlr_xdg_toplevel_set_wm_capabilities(struct wlr_xdg_toplevel *, uint32_t caps);
 void wlr_xdg_toplevel_send_close(struct wlr_xdg_toplevel *);
+
+// xwayland: embedded X server for legacy X11 apps
+struct wlr_xwayland *wlr_xwayland_create(
+        struct wl_display *, struct wlr_compositor *, bool lazy);
+void wlr_xwayland_destroy(struct wlr_xwayland *);
+void wlr_xwayland_set_seat(struct wlr_xwayland *, struct wlr_seat *);
+void wlr_xwayland_surface_activate(
+        struct wlr_xwayland_surface *, bool activated);
+void wlr_xwayland_surface_configure(struct wlr_xwayland_surface *,
+        int16_t x, int16_t y, uint16_t width, uint16_t height);
+void wlr_xwayland_surface_close(struct wlr_xwayland_surface *);
+void wlr_xwayland_surface_set_fullscreen(
+        struct wlr_xwayland_surface *, bool fullscreen);
+bool wlr_xwayland_surface_override_redirect_wants_focus(
+        const struct wlr_xwayland_surface *);
+struct wlr_xwayland_surface *wlr_xwayland_surface_try_from_wlr_surface(
+        struct wlr_surface *);
+struct wlr_xcursor_manager;
+void welpy_xwayland_set_default_cursor(
+        struct wlr_xwayland *, struct wlr_xcursor_manager *);
+struct wl_signal *welpy_xwayland_ready(struct wlr_xwayland *);
+struct wl_signal *welpy_xwayland_new_surface(struct wlr_xwayland *);
+struct wl_signal *welpy_xwayland_surface_associate(
+        struct wlr_xwayland_surface *);
+struct wl_signal *welpy_xwayland_surface_dissociate(
+        struct wlr_xwayland_surface *);
+struct wl_signal *welpy_xwayland_surface_destroy(
+        struct wlr_xwayland_surface *);
+struct wl_signal *welpy_xwayland_surface_request_configure(
+        struct wlr_xwayland_surface *);
+struct wl_signal *welpy_xwayland_surface_request_fullscreen(
+        struct wlr_xwayland_surface *);
+struct wl_signal *welpy_xwayland_surface_request_activate(
+        struct wlr_xwayland_surface *);
+struct wl_signal *welpy_xwayland_surface_set_hints(
+        struct wlr_xwayland_surface *);
+bool welpy_xwayland_surface_is_urgent(struct wlr_xwayland_surface *);
 struct wlr_xdg_surface *wlr_xdg_surface_try_from_wlr_surface(struct wlr_surface *);
 struct wlr_xdg_toplevel *wlr_xdg_toplevel_try_from_wlr_surface(
         struct wlr_surface *);
@@ -912,6 +972,7 @@ SOURCE = r"""
 #include <wlr/types/wlr_idle_inhibit_v1.h>
 #include <wlr/types/wlr_server_decoration.h>
 #include <wlr/types/wlr_xdg_shell.h>
+#include <wlr/xwayland.h>
 #include <wlr/util/box.h>
 #include <wlr/util/log.h>
 #include <xkbcommon/xkbcommon.h>
@@ -1110,6 +1171,53 @@ struct wl_signal *welpy_idle_inhibitor_destroy(
 struct wlr_idle_inhibitor_v1 *welpy_idle_inhibitor_from_link(struct wl_list *l) {
     struct wlr_idle_inhibitor_v1 *inhibitor;
     return wl_container_of(l, inhibitor, link);
+}
+void welpy_xwayland_set_default_cursor(struct wlr_xwayland *xwayland,
+        struct wlr_xcursor_manager *mgr) {
+    struct wlr_xcursor *xcursor =
+        wlr_xcursor_manager_get_xcursor(mgr, "default", 1);
+    if (xcursor) {
+        struct wlr_xcursor_image *image = xcursor->images[0];
+        wlr_xwayland_set_cursor(xwayland, image->buffer, image->width * 4,
+            image->width, image->height, image->hotspot_x, image->hotspot_y);
+    }
+}
+struct wl_signal *welpy_xwayland_ready(struct wlr_xwayland *x) {
+    return &x->events.ready;
+}
+struct wl_signal *welpy_xwayland_new_surface(struct wlr_xwayland *x) {
+    return &x->events.new_surface;
+}
+struct wl_signal *welpy_xwayland_surface_associate(
+        struct wlr_xwayland_surface *s) {
+    return &s->events.associate;
+}
+struct wl_signal *welpy_xwayland_surface_dissociate(
+        struct wlr_xwayland_surface *s) {
+    return &s->events.dissociate;
+}
+struct wl_signal *welpy_xwayland_surface_destroy(
+        struct wlr_xwayland_surface *s) {
+    return &s->events.destroy;
+}
+struct wl_signal *welpy_xwayland_surface_request_configure(
+        struct wlr_xwayland_surface *s) {
+    return &s->events.request_configure;
+}
+struct wl_signal *welpy_xwayland_surface_request_fullscreen(
+        struct wlr_xwayland_surface *s) {
+    return &s->events.request_fullscreen;
+}
+struct wl_signal *welpy_xwayland_surface_request_activate(
+        struct wlr_xwayland_surface *s) {
+    return &s->events.request_activate;
+}
+struct wl_signal *welpy_xwayland_surface_set_hints(
+        struct wlr_xwayland_surface *s) {
+    return &s->events.set_hints;
+}
+bool welpy_xwayland_surface_is_urgent(struct wlr_xwayland_surface *s) {
+    return s->hints && xcb_icccm_wm_hints_get_urgency(s->hints);
 }
 """
 
