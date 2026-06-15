@@ -417,6 +417,8 @@ def setup() -> Server: # pylint: disable=too-many-locals,too-many-statements
             lambda data: seat_set_selection(server, data)),
         listen(lib.welpy_seat_request_set_primary_selection(seat),
             lambda data: seat_set_primary_selection(server, data)),
+        listen(lib.welpy_seat_request_set_cursor(seat),
+            lambda data: seat_set_cursor(server, data)),
         listen(lib.welpy_xdg_activation_request_activate(xdg_activation),
             lambda data: client_request_activate(server, data)),
         listen(lib.welpy_session_lock_mgr_new_lock(session_lock_mgr),
@@ -455,6 +457,22 @@ def seat_set_primary_selection(server: Server, data) -> None:
         "struct wlr_seat_request_set_primary_selection_event *", data)
     lib.wlr_seat_set_primary_selection(
         server.seat, event.source, event.serial)
+
+
+def seat_set_cursor(server: Server, data) -> None:
+    """Honor an app's request to set its own cursor image (I-beam, resize
+    arrow) or hide it (NULL surface)."""
+    ffi, lib = server.ffi, server.lib
+    event = ffi.cast(
+        "struct wlr_seat_pointer_request_set_cursor_event *", data)
+    # Reject background apps (any client can ask) and keep our own image while
+    # a mouse drag owns the cursor.
+    focused = lib.welpy_seat_pointer_focused_client(server.seat)
+    if grabbed_client(server) is not None or event.seat_client != focused:
+        return
+    lib.wlr_cursor_set_surface(
+        server.cursor.cursor, event.surface,
+        event.hotspot_x, event.hotspot_y)
 
 
 def install_signals(server: Server) -> None:
@@ -2233,6 +2251,10 @@ def forward_pointer_motion(server: Server, time_msec: int) -> None:
     cur = server.cursor.cursor
     surface, sx, sy = surface_at(server, cur.x, cur.y)
     if surface is None:
+        # Restore the default image so a cursor a client set earlier doesn't
+        # linger once the pointer leaves it for the background.
+        lib.wlr_cursor_set_xcursor(
+            cur, server.cursor.xcursor_manager, b"default")
         lib.wlr_seat_pointer_clear_focus(server.seat)
     else:
         lib.wlr_seat_pointer_notify_enter(server.seat, surface, sx, sy)

@@ -424,6 +424,62 @@ def test_seat_set_primary_selection():
         server.seat, "PSOURCE", 7)
 
 
+def test_seat_set_cursor_focused():
+    """A set-cursor request from the app under the pointer swaps the cursor
+    image to the surface it supplied, at its hotspot (I-beam, resize arrow,
+    or a NULL surface to hide it)."""
+    cur = MagicMock(name="cur")
+    server = make_server(
+        cursor=make_cursor(cursor=cur, xcursor_manager="XMGR"))
+    client = MagicMock(name="seat_client")
+    server.lib.welpy_seat_pointer_focused_client.return_value = client
+    event = server.ffi.cast.return_value
+    event.seat_client = client
+    event.surface = "CURSOR_SURFACE"
+    event.hotspot_x = 4
+    event.hotspot_y = 7
+
+    wel.seat_set_cursor(server, "SC_DATA")
+
+    server.lib.wlr_cursor_set_surface.assert_called_once_with(
+        cur, "CURSOR_SURFACE", 4, 7)
+
+
+def test_seat_set_cursor_unfocused():
+    """A set-cursor request from an app that doesn't hold pointer focus is
+    ignored, so a background app can't hijack the cursor image."""
+    server = make_server(
+        cursor=make_cursor(cursor=MagicMock(), xcursor_manager="XMGR"))
+    server.lib.welpy_seat_pointer_focused_client.return_value = MagicMock(
+        name="focused")
+    event = server.ffi.cast.return_value
+    event.seat_client = MagicMock(name="other_client")
+    event.surface = "CURSOR_SURFACE"
+
+    wel.seat_set_cursor(server, "SC_DATA")
+
+    server.lib.wlr_cursor_set_surface.assert_not_called()
+
+
+def test_seat_set_cursor_grab():
+    """While a window is being mouse-dragged the compositor owns the cursor
+    image, so set-cursor requests are ignored until the drag ends."""
+    client = MagicMock(name="seat_client")
+    grabbing = make_client(
+        grab=wel.Grab("move", 0, 0), floating_geom=wel.Rect(0, 0, 100, 100))
+    server = make_server(
+        clients=[grabbing],
+        cursor=make_cursor(cursor=MagicMock(), xcursor_manager="XMGR"))
+    server.lib.welpy_seat_pointer_focused_client.return_value = client
+    event = server.ffi.cast.return_value
+    event.seat_client = client
+    event.surface = "CURSOR_SURFACE"
+
+    wel.seat_set_cursor(server, "SC_DATA")
+
+    server.lib.wlr_cursor_set_surface.assert_not_called()
+
+
 # --- teardown --------------------------------------------------------------
 
 
@@ -1897,6 +1953,32 @@ def test_cursor_motion_grab_skips():
 
     server.lib.wlr_seat_pointer_notify_enter.assert_not_called()
     server.lib.wlr_seat_pointer_clear_focus.assert_not_called()
+
+
+def test_pointer_motion_resets_default():
+    """Moving onto the background restores the default cursor image, so a
+    cursor a client set earlier doesn't linger over empty space."""
+    cur = MagicMock(name="cur")
+    server = make_server(
+        cursor=make_cursor(cursor=cur, xcursor_manager="XMGR"))
+    with patch("wel.surface_at", return_value=(None, 0.0, 0.0)):
+        wel.forward_pointer_motion(server, 123)
+
+    server.lib.wlr_cursor_set_xcursor.assert_called_once_with(
+        cur, "XMGR", b"default")
+    server.lib.wlr_seat_pointer_clear_focus.assert_called_once_with(
+        server.seat)
+
+
+def test_pointer_motion_keeps_cursor():
+    """Over a client surface the compositor leaves the cursor image alone so
+    the app's own set-cursor request stands."""
+    server = make_server(cursor=make_cursor(xcursor_manager="XMGR"))
+    with patch("wel.surface_at", return_value=("SURF", 1.0, 2.0)):
+        wel.forward_pointer_motion(server, 5)
+
+    server.lib.wlr_cursor_set_xcursor.assert_not_called()
+    server.lib.wlr_seat_pointer_notify_enter.assert_called_once()
 
 
 def test_cursor_axis_forwards():
@@ -3798,6 +3880,21 @@ def test_setup_lock_listener():
         built = wel.setup()
         trigger(built, lib.welpy_session_lock_mgr_new_lock, "LOCK_DATA")
     handler.assert_called_once_with(built, "LOCK_DATA")
+
+
+def test_setup_set_cursor_listener():
+    """request_set_cursor on the seat drives seat_set_cursor so apps can set
+    their own cursor image or hide it."""
+    build = make_bindings()
+    _, lib, *_ = build
+    lib.WL_SEAT_CAPABILITY_POINTER = 1
+    lib.WL_SEAT_CAPABILITY_KEYBOARD = 2
+    with patch("wel.bindings.build", return_value=build), \
+         patch("wel.build_keycode_map", return_value=make_keycode_map()), \
+         patch("wel.seat_set_cursor") as handler:
+        built = wel.setup()
+        trigger(built, lib.welpy_seat_request_set_cursor, "SC_DATA")
+    handler.assert_called_once_with(built, "SC_DATA")
 
 
 def test_setup_output_power():
