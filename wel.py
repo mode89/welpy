@@ -1580,7 +1580,7 @@ def apply_focus(server: Server) -> None: # pylint: disable=too-many-branches
         set_activated(server, target_client, True)
         set_border_color(server, target_client, BORDER_COLOR_ACTIVE)
 
-    if target_surface is not current_surface:
+    if target_surface != current_surface:
         if target_surface is None:
             lib.wlr_seat_keyboard_clear_focus(server.seat)
         else:
@@ -1606,7 +1606,7 @@ def focus_lock(server: Server) -> None:
     current = server.seat.keyboard_state.focused_surface
     if current == ffi.NULL:
         current = None
-    if surface is not current:
+    if surface != current:
         if surface is None:
             lib.wlr_seat_keyboard_clear_focus(server.seat)
         else:
@@ -1624,7 +1624,7 @@ def focus_unmanaged(server: Server) -> None:
     current = server.seat.keyboard_state.focused_surface
     if current == ffi.NULL:
         current = None
-    if surface is not current:
+    if surface != current:
         kb = lib.welpy_keyboard_group_keyboard(server.keyboard_group.group)
         lib.wlr_seat_keyboard_notify_enter(
             server.seat, surface,
