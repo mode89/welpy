@@ -1058,6 +1058,18 @@ def test_client_new_request_fullscreen():
     handler.assert_called_once_with(server, ANY, "REQ_DATA")
 
 
+def test_client_new_request_maximize():
+    """The window's request_maximize signal drives client_request_maximize
+    so the client gets the configure xdg-shell requires in reply."""
+    server = make_server()
+    with patch("wel.client_request_maximize") as handler:
+        wel.client_new(server, "TOPLEVEL_DATA")
+        trigger(
+            server, server.lib.welpy_xdg_toplevel_request_maximize,
+            "REQ_DATA")
+    handler.assert_called_once_with(server, ANY, "REQ_DATA")
+
+
 def test_client_unmap_refocuses():
     """Unmapping a window hands focus to the next-most-recently-focused
     window so closing a terminal leaves the user typing into another one."""
@@ -3727,6 +3739,18 @@ def test_request_fullscreen_noop():
         wel.client_request_fullscreen(server, client, None)
 
     server.lib.wlr_xdg_toplevel_set_fullscreen.assert_not_called()
+
+
+def test_request_maximize_configures():
+    """We don't maximize, but xdg-shell still requires a configure in reply,
+    so the request schedules an (empty) one to keep clients from stalling."""
+    server = make_server()
+    client = make_client(toplevel=MagicMock())
+
+    wel.client_request_maximize(server, client, None)
+
+    server.lib.wlr_xdg_surface_schedule_configure.assert_called_once_with(
+        client.toplevel.base)
 
 
 def test_cycle_focus_fullscreen():

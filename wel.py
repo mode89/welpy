@@ -836,6 +836,8 @@ def client_new(server: Server, data) -> None:
             lambda data: client_cleanup(server, client, data)),
         listen(lib.welpy_xdg_toplevel_request_fullscreen(toplevel),
             lambda data: client_request_fullscreen(server, client, data)),
+        listen(lib.welpy_xdg_toplevel_request_maximize(toplevel),
+            lambda data: client_request_maximize(server, client, data)),
     ])
 
 
@@ -936,6 +938,12 @@ def client_request_fullscreen(
         apply_tree(server)
         apply_geometry(server, monitor)
         apply_focus(server)
+
+
+def client_request_maximize(server: Server, client: Client, _data) -> None:
+    """An app asked to (un)maximize. We don't maximize, but xdg-shell still
+    requires a configure in reply, so ack the request with an empty one."""
+    server.lib.wlr_xdg_surface_schedule_configure(client.toplevel.base)
 
 
 def client_request_activate(server: Server, data) -> None:
