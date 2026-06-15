@@ -2,7 +2,6 @@ pkgs: with pkgs; [
   python3
   python3Packages.cffi
   python3Packages.setuptools
-  python3Packages.pytest
   pkg-config
   wlroots_0_19
   wayland
@@ -13,6 +12,6 @@ pkgs: with pkgs; [
   pixman
   libinput
   xwayland
-  xorg.libxcb
-  xorg.xcbutilwm
+  libxcb
+  libxcb-wm
 ]
