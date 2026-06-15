@@ -2019,6 +2019,22 @@ def test_cursor_button_release_ends():
     assert client.grab is None
 
 
+def test_cursor_button_release_pointer():
+    """Ending a drag re-points the pointer at whatever is now under the
+    cursor, since focus was frozen on the grabbed window during the drag."""
+    client = make_client(grab=wel.Grab("move", 0, 0))
+    server = make_server(
+        clients=[client], cursor=make_cursor(xcursor_manager="X"))
+    event = server.ffi.cast.return_value
+    event.state = "RELEASED"  # any sentinel != PRESSED
+    event.time_msec = 42
+
+    with patch("wel.forward_pointer_motion") as fwd:
+        wel.cursor_button(server, "BUTTON_DATA")
+
+    fwd.assert_called_once_with(server, 42)
+
+
 def test_begin_dragging_offset():
     """begin_dragging_client captures the cursor->window-origin offset as
     ints, which drag_client then subtracts from cursor position to
@@ -2631,6 +2647,48 @@ def test_apply_focus_priority():
     assert not top.focused
     enter_args = server.lib.wlr_seat_keyboard_notify_enter.call_args.args
     assert enter_args[1] is overlay.layer_surface.surface
+
+
+def test_apply_focus_pointer():
+    """apply_focus re-points the pointer at the surface under the cursor, so a
+    scene change doesn't leave a scroll/click landing on a hidden window."""
+    server = make_server()
+
+    with patch("wel.forward_pointer_motion") as fwd:
+        wel.apply_focus(server)
+
+    fwd.assert_called_once_with(server, 0)
+
+
+def test_apply_focus_pointer_grab():
+    """A drag in progress suppresses the pointer reconcile apply_focus
+    otherwise performs, so the grab keeps its captured surface."""
+    idle = make_server()
+    dragging = make_server(
+        clients=[make_client(grab=wel.Grab("move", 0, 0))])
+
+    with patch("wel.forward_pointer_motion") as fwd_idle:
+        wel.apply_focus(idle)
+    with patch("wel.forward_pointer_motion") as fwd_drag:
+        wel.apply_focus(dragging)
+
+    assert fwd_idle.called
+    assert not fwd_drag.called
+
+
+def test_apply_focus_pointer_locked():
+    """While locked, apply_focus routes only the keyboard to the locker and
+    skips the pointer reconcile it otherwise performs."""
+    unlocked = make_server()
+    locked = make_server(locked=True)
+
+    with patch("wel.forward_pointer_motion") as fwd_unlocked:
+        wel.apply_focus(unlocked)
+    with patch("wel.forward_pointer_motion") as fwd_locked:
+        wel.apply_focus(locked)
+
+    assert fwd_unlocked.called
+    assert not fwd_locked.called
 
 
 # --- layers / tiling -----------------------------------------------------

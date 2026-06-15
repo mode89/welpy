@@ -1591,6 +1591,11 @@ def apply_focus(server: Server) -> None: # pylint: disable=too-many-branches
                 kb_group.keycodes, kb_group.num_keycodes,
                 ffi.addressof(kb_group, "modifiers"))
 
+    # Re-point pointer focus after the scene changed without mouse motion,
+    # so events don't hit a now-hidden window; a drag keeps its own focus.
+    if grabbed_client(server) is None:
+        forward_pointer_motion(server, 0)
+
 
 def focus_lock(server: Server) -> None:
     """While locked, route the keyboard to the lock surface on the active
@@ -2257,6 +2262,7 @@ def cursor_button(server: Server, data) -> None:
             return  # action self-reconciles
     elif grabbed is not None:
         grabbed.grab = None
+        forward_pointer_motion(server, event.time_msec)
         return  # release ended the drag, not the app's click
     lib.wlr_seat_pointer_notify_button(
         server.seat, event.time_msec, event.button, event.state)
