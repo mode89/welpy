@@ -6,7 +6,7 @@ Compiled at import time via `cffi.FFI.set_source` + `compile()` into a
 tempdir and loaded as `_welpy_cffi`. Re-exports `ffi`, `lib`, and the
 `listen` helper.
 
-Only the symbols required by main.py are exposed. Struct field access is
+Only the symbols required by wel.py are exposed. Struct field access is
 avoided by writing tiny C accessor helpers, so we do not depend on wlroots
 struct layout — just on its public function ABI.
 """

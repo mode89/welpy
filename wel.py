@@ -1878,8 +1878,8 @@ def move_active_workspace_to_monitor(
 
 
 def arrange_layers(server: Server, monitor: Monitor) -> None:
-    """Configure layer-shell surfaces on `monitor`, recompute its usable
-    window area, and re-flow client windows if anchored bars changed it."""
+    """Configure layer-shell surfaces on `monitor` and recompute its usable
+    window area from the space anchored bars reserve."""
     ffi, lib = server.ffi, server.lib
     full = monitor_box(server, monitor)
     full_box = ffi.new("struct wlr_box *",
@@ -1893,9 +1893,7 @@ def arrange_layers(server: Server, monitor: Monitor) -> None:
                     and ls.layer_surface.current.exclusive_zone > 0):
                 lib.wlr_scene_layer_surface_v1_configure(
                     ls.scene_layer, full_box, usable)
-    new_area = Rect(usable.x, usable.y, usable.width, usable.height)
-    if new_area != monitor.window_area:
-        monitor.window_area = new_area
+    monitor.window_area = Rect(usable.x, usable.y, usable.width, usable.height)
     # Non-exclusive surfaces overlay the remaining area without shrinking it.
     for layer in reversed(SHELL_LAYERS):
         for ls in monitor.layers[layer]:
@@ -1919,7 +1917,7 @@ def apply_geometry(server: Server, monitor: Monitor) -> None:
     full_box = monitor_box(server, monitor)
     workspace = monitor.active_workspace
     fullscreen = workspace.fullscreen if workspace is not None else None
-    if fullscreen is not None and fullscreen.scene_tree:
+    if fullscreen is not None and fullscreen.scene_tree is not None:
         resize_client(server, fullscreen, full_box)
     for c, rect in zip(
             tiled, master_stack(monitor.window_area, len(tiled))):
