@@ -6019,6 +6019,23 @@ def test_xwayland_position_only():
         300 + wel.BORDER_WIDTH, 400 + wel.BORDER_WIDTH, 200, 150)
 
 
+def test_xwayland_size_unchanged_skips():
+    """Re-applying the geometry an X11 window already has sends no configure,
+    so repeated layouts don't spam the client with redundant ConfigureNotify."""
+    server = make_server()
+    client = make_x11_client(inner_size=(200, 150))
+    client.scene_tree.node.x = 100
+    client.scene_tree.node.y = 50
+    client.xsurface.x = 100 + wel.BORDER_WIDTH
+    client.xsurface.y = 50 + wel.BORDER_WIDTH
+    client.xsurface.width = 200
+    client.xsurface.height = 150
+
+    wel.set_size(server, client, 200, 150)
+
+    server.lib.wlr_xwayland_surface_configure.assert_not_called()
+
+
 def test_xwayland_drag_move():
     """Dragging an X11 window sends a position-only configure so the X
     server's window coordinates follow the scene node."""

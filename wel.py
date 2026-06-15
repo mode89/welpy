@@ -2018,8 +2018,11 @@ def _configure_x11(
     so derive the absolute content origin from the already-placed wrapper."""
     bw = 0 if client_layer(client) == Layer.FULLSCREEN else BORDER_WIDTH
     node = client.scene_tree.node
-    server.lib.wlr_xwayland_surface_configure(
-        client.xsurface, node.x + bw, node.y + bw, width, height)
+    x, y = node.x + bw, node.y + bw
+    xs = client.xsurface
+    # wlroots re-sends a ConfigureNotify even when the geometry is unchanged.
+    if (xs.x, xs.y, xs.width, xs.height) != (x, y, width, height):
+        server.lib.wlr_xwayland_surface_configure(xs, x, y, width, height)
 
 
 def set_activated(server: Server, client: Client, activated: bool) -> None:
