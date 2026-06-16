@@ -1,5 +1,7 @@
 Wayland compositor written in Python on top of wlroots.
 
+> **Memory**: `MEMORY.md` holds reference context — observed facts about this project. Read it now.
+
 ## Files
 
 - `wel.py`: entry point.
