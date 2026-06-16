@@ -3,7 +3,7 @@ pkgs: with pkgs; [
   python3Packages.cffi
   python3Packages.setuptools
   pkg-config
-  wlroots_0_19
+  wlroots_0_20
   wayland
   wayland-protocols
   wlr-protocols

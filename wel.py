@@ -325,8 +325,8 @@ def setup() -> Server: # pylint: disable=too-many-locals,too-many-statements
     layers = {layer: lib.wlr_scene_tree_create(scene_root) for layer in Layer}
     lock_background = create_lock_background(ffi, lib, layers[Layer.LOCK])
 
-    xdg_shell = lib.wlr_xdg_shell_create(display, 3)
-    layer_shell = lib.wlr_layer_shell_v1_create(display, 3)
+    xdg_shell = lib.wlr_xdg_shell_create(display, 7)
+    layer_shell = lib.wlr_layer_shell_v1_create(display, 5)
     # lazy=False starts Xwayland now so DISPLAY is usable immediately.
     xwayland = lib.wlr_xwayland_create(display, compositor, False)
     if xwayland == ffi.NULL:

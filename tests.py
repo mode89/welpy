@@ -3882,7 +3882,7 @@ def test_setup_layer_shell():
         server = wel.setup()
 
     lib.wlr_layer_shell_v1_create.assert_called_once_with(
-        lib.wl_display_create.return_value, 3)
+        lib.wl_display_create.return_value, 5)
     assert server.layer_shell is lib.wlr_layer_shell_v1_create.return_value
 
 

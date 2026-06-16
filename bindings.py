@@ -1,6 +1,6 @@
 # pylint: disable=too-many-lines
 
-"""Inline cffi bindings to wlroots 0.19 / libwayland-server / xkbcommon.
+"""Inline cffi bindings to wlroots 0.20 / libwayland-server / xkbcommon.
 
 Compiled at import time via `cffi.FFI.set_source` + `compile()` into a
 tempdir and loaded as `_welpy_cffi`. Re-exports `ffi`, `lib`, and the
@@ -96,6 +96,22 @@ class Builder:  # pylint: disable=too-many-instance-attributes
             ["wayland-scanner", "private-code", xml, csrc])
         return header, csrc
 
+    def enum_header(self, pkg: str, rel_xml: str, stem: str) -> str:
+        """Generate `wayland-protocols/<stem>-enum.h` from `<pkg>'s
+        pkgdatadir/<rel_xml>` into `build_dir`. wlroots 0.20 headers include
+        these enum-only headers via `<wayland-protocols/...>`, so they must
+        sit under that subdir on the include path."""
+        protocols_dir = subprocess.check_output(
+            ["pkg-config", "--variable=pkgdatadir", pkg]
+        ).decode().strip()
+        xml = os.path.join(protocols_dir, rel_xml)
+        out_dir = os.path.join(self.build_dir, "wayland-protocols")
+        os.makedirs(out_dir, exist_ok=True)
+        header = os.path.join(out_dir, f"{stem}-enum.h")
+        subprocess.check_call(
+            ["wayland-scanner", "enum-header", xml, header])
+        return header
+
     def compile(self, module_name: str) -> str:
         """Apply accumulated cdef/source and produce a compiled .so.
         `build_dir` is added to `include_dirs` so scanner outputs are
@@ -112,7 +128,7 @@ class Builder:  # pylint: disable=too-many-instance-attributes
         return self.ffi.compile(tmpdir=self.build_dir)
 
 
-_PKGS = ("wlroots-0.19", "wayland-server", "xkbcommon", "pixman-1",
+_PKGS = ("wlroots-0.20", "wayland-server", "xkbcommon", "pixman-1",
          "xcb", "xcb-icccm", "xcb-ewmh")
 _MODULE = "_welpy_cffi"
 
@@ -1178,8 +1194,8 @@ void welpy_xwayland_set_default_cursor(struct wlr_xwayland *xwayland,
         wlr_xcursor_manager_get_xcursor(mgr, "default", 1);
     if (xcursor) {
         struct wlr_xcursor_image *image = xcursor->images[0];
-        wlr_xwayland_set_cursor(xwayland, image->buffer, image->width * 4,
-            image->width, image->height, image->hotspot_x, image->hotspot_y);
+        wlr_xwayland_set_cursor(xwayland, wlr_xcursor_image_get_buffer(image),
+            image->hotspot_x, image->hotspot_y);
     }
 }
 struct wl_signal *welpy_xwayland_ready(struct wlr_xwayland *x) {
@@ -1235,6 +1251,9 @@ def _build():
     builder.scanner(
         "wayland-protocols", "stable/xdg-shell/xdg-shell.xml",
         "xdg-shell", private_code=False)
+    # wlroots 0.20's wlr_xdg_shell.h pulls in the generated enum-only header.
+    builder.enum_header(
+        "wayland-protocols", "stable/xdg-shell/xdg-shell.xml", "xdg-shell")
     builder.scanner(
         "wlr-protocols", "unstable/wlr-layer-shell-unstable-v1.xml",
         "wlr-layer-shell-unstable-v1", private_code=False)
