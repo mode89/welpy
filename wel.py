@@ -2293,6 +2293,27 @@ def forward_pointer_motion(server: Server, time_msec: int) -> None:
         lib.wlr_seat_pointer_notify_motion(server.seat, time_msec, sx, sy)
 
 
+def rebase_pointer(server: Server, time_msec: int) -> None:
+    """Re-point pointer focus at the surface now under the cursor before a
+    click or scroll is dispatched, so the event reaches the right window when
+    the scene changed under a still cursor (e.g. a window grew into
+    fullscreen). A no-op when focus already matches, so a scroll in place
+    doesn't emit a spurious motion."""
+    ffi, lib = server.ffi, server.lib
+    cur = server.cursor.cursor
+    surface, sx, sy = surface_at(server, cur.x, cur.y)
+    focused = server.seat.pointer_state.focused_surface
+    if focused == ffi.NULL:
+        focused = None
+    if surface == focused:
+        return
+    if surface is None:
+        lib.wlr_seat_pointer_clear_focus(server.seat)
+    else:
+        lib.wlr_seat_pointer_notify_enter(server.seat, surface, sx, sy)
+        lib.wlr_seat_pointer_notify_motion(server.seat, time_msec, sx, sy)
+
+
 def cursor_button(server: Server, data) -> None:
     """Fires on mouse-button press/release."""
     ffi, lib = server.ffi, server.lib
@@ -2318,6 +2339,9 @@ def cursor_button(server: Server, data) -> None:
         grabbed.grab = None
         forward_pointer_motion(server, event.time_msec)
         return  # release ended the drag, not the app's click
+    # Land the button on whatever is under the cursor now, not on a surface
+    # left focused before the scene last changed.
+    rebase_pointer(server, event.time_msec)
     lib.wlr_seat_pointer_notify_button(
         server.seat, event.time_msec, event.button, event.state)
     apply_focus(server)
@@ -2328,6 +2352,8 @@ def cursor_axis(server: Server, data) -> None:
     scroll."""
     ffi, lib = server.ffi, server.lib
     event = ffi.cast("struct wlr_pointer_axis_event *", data)
+    if grabbed_client(server) is None:
+        rebase_pointer(server, event.time_msec)
     lib.wlr_seat_pointer_notify_axis(
         server.seat, event.time_msec, event.orientation, event.delta,
         event.delta_discrete, event.source, event.relative_direction)

@@ -2016,6 +2016,57 @@ def test_pointer_motion_keeps_cursor():
     server.lib.wlr_seat_pointer_notify_enter.assert_called_once()
 
 
+def test_pointer_rebase_repoints():
+    """When the surface under the cursor differs from the focused one (e.g. a
+    window grew into fullscreen under a still cursor), rebase enters it so the
+    next click/scroll lands there."""
+    server = make_server(cursor=make_cursor(xcursor_manager="X"))
+    server.seat.pointer_state.focused_surface = "OLD"
+    with patch("wel.surface_at", return_value=("NEW", 3.0, 4.0)):
+        wel.rebase_pointer(server, 7)
+
+    server.lib.wlr_seat_pointer_notify_enter.assert_called_once_with(
+        server.seat, "NEW", 3.0, 4.0)
+    server.lib.wlr_seat_pointer_notify_motion.assert_called_once_with(
+        server.seat, 7, 3.0, 4.0)
+
+
+def test_pointer_rebase_matched():
+    """Rebase is a no-op when focus already points at the surface under the
+    cursor, so a scroll in place doesn't emit a redundant motion."""
+    server = make_server(cursor=make_cursor(xcursor_manager="X"))
+    server.seat.pointer_state.focused_surface = "SURF"
+    with patch("wel.surface_at", return_value=("SURF", 1.0, 2.0)):
+        wel.rebase_pointer(server, 5)
+
+    server.lib.wlr_seat_pointer_notify_enter.assert_not_called()
+    server.lib.wlr_seat_pointer_notify_motion.assert_not_called()
+    server.lib.wlr_seat_pointer_clear_focus.assert_not_called()
+
+
+def test_pointer_rebase_clears():
+    """With focus set but nothing under the cursor, rebase clears focus so a
+    click on the background doesn't reach a stale surface."""
+    server = make_server(cursor=make_cursor(xcursor_manager="X"))
+    server.seat.pointer_state.focused_surface = "OLD"
+    with patch("wel.surface_at", return_value=(None, 0.0, 0.0)):
+        wel.rebase_pointer(server, 9)
+
+    server.lib.wlr_seat_pointer_clear_focus.assert_called_once_with(
+        server.seat)
+
+
+def test_pointer_rebase_empty():
+    """No focus and nothing under the cursor: rebase does nothing rather than
+    re-clearing an already-empty focus."""
+    server = make_server(cursor=make_cursor(xcursor_manager="X"))
+    server.seat.pointer_state.focused_surface = server.ffi.NULL
+    with patch("wel.surface_at", return_value=(None, 0.0, 0.0)):
+        wel.rebase_pointer(server, 1)
+
+    server.lib.wlr_seat_pointer_clear_focus.assert_not_called()
+
+
 def test_cursor_axis_forwards():
     """Scroll/wheel events forward to the focused surface so scrolling
     works inside apps."""
@@ -2032,6 +2083,37 @@ def test_cursor_axis_forwards():
 
     server.lib.wlr_seat_pointer_notify_axis.assert_called_once_with(
         server.seat, 17, "V", 1.0, 1, "WHEEL", "NORMAL")
+
+
+def test_cursor_axis_rebases():
+    """A scroll re-points pointer focus before forwarding the event, so it
+    reaches a freshly-fullscreened window without a prior mouse move."""
+    server = make_server(cursor=make_cursor(xcursor_manager="X"))
+    event = server.ffi.cast.return_value
+    event.time_msec = 17
+
+    def rebase_first(*_a):
+        server.lib.wlr_seat_pointer_notify_axis.assert_not_called()
+
+    with patch("wel.rebase_pointer", side_effect=rebase_first) as rebase:
+        wel.cursor_axis(server, "AXIS_DATA")
+
+    rebase.assert_called_once_with(server, 17)
+    server.lib.wlr_seat_pointer_notify_axis.assert_called_once()
+
+
+def test_cursor_axis_grab():
+    """While a window is being dragged, a scroll must not re-point focus off
+    the grabbed window."""
+    client = make_client(grab=wel.Grab("move", 0, 0))
+    server = make_server(
+        clients=[client], cursor=make_cursor(xcursor_manager="X"))
+
+    with patch("wel.rebase_pointer") as rebase:
+        wel.cursor_axis(server, "AXIS_DATA")
+
+    rebase.assert_not_called()
+    server.lib.wlr_seat_pointer_notify_axis.assert_called_once()
 
 
 def test_cursor_frame_forwards():
@@ -2296,6 +2378,50 @@ def test_cursor_button_forwards():
 
     server.lib.wlr_seat_pointer_notify_button.assert_called_once_with(
         server.seat, 42, "BTN", event.state)
+
+
+def test_cursor_button_rebases():
+    """A press re-points pointer focus before the button is delivered, so the
+    first click after a scene change reaches the right surface."""
+    client = make_client()
+    server = make_server(
+        clients=[client], cursor=make_cursor(xcursor_manager="X"))
+    node = MagicMock(name="node")
+    node.parent = client.scene_tree
+    server.lib.wlr_scene_node_at.return_value = node
+    server.lib.wlr_keyboard_get_modifiers.return_value = 0
+    event = server.ffi.cast.return_value
+    event.button = "BTN"
+    event.state = server.lib.WL_POINTER_BUTTON_STATE_PRESSED
+    event.time_msec = 8
+
+    def rebase_first(*_a):
+        server.lib.wlr_seat_pointer_notify_button.assert_not_called()
+
+    with patch("wel.rebase_pointer", side_effect=rebase_first) as rebase:
+        wel.cursor_button(server, "BUTTON_DATA")
+
+    rebase.assert_called_once_with(server, 8)
+    server.lib.wlr_seat_pointer_notify_button.assert_called_once()
+
+
+def test_cursor_button_binding_norebase():
+    """A bound press is consumed before dispatch, so it never re-points
+    pointer focus."""
+    action = MagicMock()
+    server = make_server(
+        bindings={(0x8, 0x110): action},
+        cursor=make_cursor(xcursor_manager="X"))
+    server.lib.wlr_scene_node_at.return_value = server.ffi.NULL
+    server.lib.wlr_keyboard_get_modifiers.return_value = 0x8
+    event = server.ffi.cast.return_value
+    event.button = 0x110
+    event.state = server.lib.WL_POINTER_BUTTON_STATE_PRESSED
+
+    with patch("wel.rebase_pointer") as rebase:
+        wel.cursor_button(server, "BUTTON_DATA")
+
+    rebase.assert_not_called()
 
 
 def test_cursor_button_consumes():
