@@ -521,12 +521,16 @@ def teardown(server: Server) -> None:
         listener.remove()
     server.listeners.clear()
     server.renderer_lost.remove()
-    ext_workspace.destroy(server.ext_workspace)
     lib.wlr_xwayland_destroy(server.xwayland)
-    destroy_keyboard_group(lib, server.keyboard_group)
-    destroy_cursor(lib, server.cursor)
+    # Tearing down clients (surface unmap) and the backend (screen destroy)
+    # both run handlers that reach back into the cursor, keyboard group, and
+    # workspace state via apply_focus -> forward_pointer_motion. Keep those
+    # alive until both are gone, then free them (dwl's cleanup order).
     lib.wl_display_destroy_clients(server.display)
     lib.wlr_backend_destroy(server.backend)
+    ext_workspace.destroy(server.ext_workspace)
+    destroy_keyboard_group(lib, server.keyboard_group)
+    destroy_cursor(lib, server.cursor)
     lib.wl_display_destroy(server.display)
 
 

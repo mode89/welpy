@@ -484,8 +484,9 @@ def test_seat_set_cursor_grab():
 
 
 def test_teardown_order():
-    """Shutdown calls wlroots destructors in the only valid order:
-    clients first, then backend, then display."""
+    """Shutdown calls wlroots destructors in the only valid order: clients
+    and backend first, then the cursor and keyboard they reach into on
+    unmap/screen-destroy, then the display."""
     server = make_server()
 
     wel.teardown(server)
@@ -494,6 +495,8 @@ def test_teardown_order():
     expected = [
         "wl_display_destroy_clients",
         "wlr_backend_destroy",
+        "wlr_keyboard_group_destroy",
+        "wlr_cursor_destroy",
         "wl_display_destroy",
     ]
     positions = [names.index(n) for n in expected]
