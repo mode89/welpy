@@ -1073,6 +1073,26 @@ def test_client_new_request_maximize():
     handler.assert_called_once_with(server, ANY, "REQ_DATA")
 
 
+def test_request_maximize_acks_initialized():
+    """An initialized window gets the empty configure xdg-shell requires."""
+    server = make_server()
+    client = make_client()
+    client.toplevel.base.initialized = True
+    wel.client_request_maximize(server, client, None)
+    server.lib.wlr_xdg_surface_schedule_configure.assert_called_once_with(
+        client.toplevel.base)
+
+
+def test_request_maximize_before_initialized():
+    """A maximize request before the first commit is ignored; scheduling a
+    configure then trips a wlroots assertion (Firefox/Chrome do this)."""
+    server = make_server()
+    client = make_client()
+    client.toplevel.base.initialized = False
+    wel.client_request_maximize(server, client, None)
+    server.lib.wlr_xdg_surface_schedule_configure.assert_not_called()
+
+
 def test_client_unmap_refocuses():
     """Unmapping a window hands focus to the next-most-recently-focused
     window so closing a terminal leaves the user typing into another one."""

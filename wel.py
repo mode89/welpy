@@ -948,7 +948,10 @@ def client_request_fullscreen(
 def client_request_maximize(server: Server, client: Client, _data) -> None:
     """An app asked to (un)maximize. We don't maximize, but xdg-shell still
     requires a configure in reply, so ack the request with an empty one."""
-    server.lib.wlr_xdg_surface_schedule_configure(client.toplevel.base)
+    # Clients may request maximize before their first commit; scheduling a
+    # configure then trips a wlroots assertion. The initial configure covers it.
+    if client.toplevel.base.initialized:
+        server.lib.wlr_xdg_surface_schedule_configure(client.toplevel.base)
 
 
 def client_request_activate(server: Server, data) -> None:
