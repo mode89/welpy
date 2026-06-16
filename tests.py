@@ -3827,6 +3827,7 @@ def make_layer_surface(**kwargs):
         "popups_tree": MagicMock(),
         "monitor": MagicMock(),
         "focused": False,
+        "mapped": False,
         "listeners": [],
         **kwargs,
     })
@@ -4043,6 +4044,23 @@ def test_layer_commit_moves_bucket():
 
     assert ls not in monitor.layers[wel.Layer.BOTTOM]
     assert ls in monitor.layers[wel.Layer.TOP]
+
+
+def test_layer_commit_skips_content():
+    """A plain content commit (no layer-shell state change, mapped unchanged)
+    must not re-arrange: wlroots configures on every arrange and the client
+    acks with a commit, which would otherwise loop at CPU speed."""
+    server = make_server()
+    monitor = make_monitor()
+    ls = make_layer_surface(monitor=monitor, mapped=True)
+    ls.layer_surface.initial_commit = False
+    ls.layer_surface.current.committed = 0
+    ls.layer_surface.surface.mapped = True
+
+    with patch("wel.arrange_layers") as arrange:
+        wel.layer_surface_commit(server, ls, None)
+
+    arrange.assert_not_called()
 
 
 def test_layer_unmap_clears_focus():

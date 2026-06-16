@@ -88,7 +88,7 @@ class Monitor:
 
 
 @dataclass
-class LayerSurface:
+class LayerSurface: # pylint: disable=too-many-instance-attributes
     """Shell-component window (bar, wallpaper, launcher) anchored to a
     screen edge via the layer-shell protocol."""
     layer_surface: Any       # wlr_layer_surface_v1
@@ -97,6 +97,7 @@ class LayerSurface:
     popups_tree: Any         # parent scene tree for popups from this surface
     monitor: Monitor
     focused: bool            # True while this surface holds the keyboard
+    mapped: bool             # last-seen surface.mapped; gates re-arrange
     listeners: list[Any]
 
 
@@ -1317,7 +1318,7 @@ def layer_surface_new(server: Server, data) -> None:
         ls = LayerSurface(
             layer_surface=layer_surface, scene_layer=scene_layer,
             scene_tree=scene_layer.tree, popups_tree=popups_tree,
-            monitor=monitor, focused=False, listeners=[])
+            monitor=monitor, focused=False, mapped=False, listeners=[])
         # popup_new resolves the parent scene tree via surface.data.
         layer_surface.surface.data = ffi.cast("void *", popups_tree)
         monitor.layers[layer].append(ls)
@@ -1348,17 +1349,32 @@ def layer_surface_commit(server: Server, ls: LayerSurface, _data) -> None:
             arrange_layers(server, monitor)
             ffi.memmove(ffi.addressof(layer_surface, "current"), saved, size)
         else:
-            new_layer = SHELL_LAYERS[layer_surface.current.layer]
-            if ls not in monitor.layers[new_layer]:
-                for bucket in monitor.layers.values():
-                    if ls in bucket:
-                        bucket.remove(ls)
-                        break
-                monitor.layers[new_layer].append(ls)
-            arrange_layers(server, monitor)
-            apply_tree(server)
-            apply_geometry(server, monitor)
-            apply_focus(server)
+            # Re-arrange sends a configure the client acks with a commit, so a
+            # plain content commit (clock tick) would loop unless state changed.
+            surface = layer_surface.surface
+            changed = (
+                layer_surface.current.committed != 0
+                or ls.mapped != surface.mapped
+            )
+            if changed:
+                ls.mapped = surface.mapped
+                place_in_layer_bucket(
+                    monitor, ls, SHELL_LAYERS[layer_surface.current.layer])
+                arrange_layers(server, monitor)
+                apply_tree(server)
+                apply_geometry(server, monitor)
+                apply_focus(server)
+
+
+def place_in_layer_bucket(
+        monitor: Monitor, ls: LayerSurface, layer: Layer) -> None:
+    """Move a shell surface into `layer`'s bucket on its screen."""
+    if ls not in monitor.layers[layer]:
+        for bucket in monitor.layers.values():
+            if ls in bucket:
+                bucket.remove(ls)
+                break
+        monitor.layers[layer].append(ls)
 
 
 def layer_surface_unmap(server: Server, ls: LayerSurface, _data) -> None:
