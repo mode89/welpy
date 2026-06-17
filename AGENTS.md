@@ -1,6 +1,6 @@
 Wayland compositor written in Python on top of wlroots.
 
-> **Memory**: `MEMORY.md` holds reference context — observed facts about this project. Read it now.
+> **Memory**: `MEMORY.md` holds reference context — observed facts and standing conventions for this project. Read it now.
 
 ## Files
 

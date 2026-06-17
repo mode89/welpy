@@ -14,6 +14,7 @@ import pytest
 
 import bindings
 import ext_workspace
+import layout
 import libinput
 import wel
 
@@ -154,8 +155,15 @@ def make_workspace(**kwargs):
         "name": "1",
         "monitor": None,
         "fullscreen": None,
+        "root": layout.Container(layout.ContainerLayout.HORIZONTAL, []),
         **kwargs,
     })
+
+
+def flat_tree(*clients):
+    """A one-level HORIZONTAL container holding `clients` as tiled leaves."""
+    return layout.Container(
+        layout.ContainerLayout.HORIZONTAL, list(clients))
 
 
 def make_cursor(**kwargs):
@@ -179,7 +187,8 @@ def make_keyboard_group(**kwargs):
 def make_keycode_map():
     """Stand-in keycode map covering every key referenced by built-in
     bindings, so `setup()` can build `server.bindings` without KeyError."""
-    return {"Return": 28, "q": 16, "j": 36, "k": 37, "f": 33, "z": 44,
+    return {"Return": 28, "q": 16, "j": 36, "k": 37, "f": 33,
+            "v": 47,
             "e": 18, "space": 57, "h": 35, "l": 38, "Tab": 15,
             "1": 2, "2": 3, "3": 4, "4": 5, "5": 6,
             "6": 7, "7": 8, "8": 9, "9": 10, "0": 11,
@@ -996,8 +1005,8 @@ def test_client_new_no_insert():
 
 
 def test_client_map_inserts_front():
-    """A newly mapped window goes to the front of server.clients so it
-    becomes the master tile."""
+    """A newly mapped window goes to the front of server.clients, which is
+    now just a registry; tiling order lives in the workspace tree."""
     old = make_client()
     server = make_server(clients=[old])
     fresh = make_client(scene_tree=None)
@@ -3029,6 +3038,22 @@ def test_client_map_no_parent():
     assert wel.client_layer(client) == wel.Layer.TILE
 
 
+def test_client_map_adds_leaf():
+    """A mapped tiled window joins the workspace tree right after the window
+    that was focused when it appeared."""
+    m = make_monitor(window_area=wel.Rect(0, 0, 800, 600))
+    m.active_workspace = make_workspace(monitor=m)
+    old = make_client(workspace=m.active_workspace, focus_order=1)
+    m.active_workspace.root = flat_tree(old)
+    server = make_server(monitors=[m], active_monitor=m, clients=[old])
+    fresh = make_client(scene_tree=None)
+
+    with patch("wel.focus_client"), patch("wel.apply_geometry"):
+        wel.client_map(server, fresh, None)
+
+    assert m.active_workspace.root.children == [old, fresh]
+
+
 def test_top_client_per_monitor():
     """top_client picks the highest focus_order among clients visible on
     the given monitor, ignoring clients on other monitors."""
@@ -3055,50 +3080,245 @@ def test_top_client_empty():
     assert wel.top_client(server, m) is None
 
 
-def test_cycle_focus_next():
-    """cycle_focus(+1) moves focus to the next visible window in layout
-    order."""
-    m = make_monitor()
+def test_focus_direction_moves():
+    """Directional focus jumps to the nearest tiled window that way: from the
+    left column of a three-column row, RIGHT lands on the middle one."""
+    m = make_monitor(window_area=wel.Rect(0, 0, 900, 600))
     m.active_workspace = make_workspace(monitor=m)
     a = make_client(workspace=m.active_workspace)
     b = make_client(workspace=m.active_workspace)
     c = make_client(workspace=m.active_workspace)
+    m.active_workspace.root = flat_tree(a, b, c)
     server = make_server(monitors=[m], active_monitor=m, clients=[a, b, c])
     wel.focus_client(server, a)
 
-    with patch("wel.focus_client") as focus:
-        wel.cycle_focus(server, +1)
+    with patch("wel.apply_focus"), patch("wel.focus_client") as focus:
+        wel.focus_direction(server, layout.Direction.RIGHT)
 
     focus.assert_called_once_with(server, b)
 
 
-def test_cycle_focus_prev_wraps():
-    """cycle_focus(-1) wraps around past the first window."""
+def test_focus_direction_edge():
+    """Directional focus is a no-op at an edge: nothing lies right of the
+    rightmost window."""
+    m = make_monitor(window_area=wel.Rect(0, 0, 900, 600))
+    m.active_workspace = make_workspace(monitor=m)
+    a = make_client(workspace=m.active_workspace)
+    b = make_client(workspace=m.active_workspace)
+    m.active_workspace.root = flat_tree(a, b)
+    server = make_server(monitors=[m], active_monitor=m, clients=[a, b])
+    wel.focus_client(server, b)
+
+    with patch("wel.apply_focus"), patch("wel.focus_client") as focus:
+        wel.focus_direction(server, layout.Direction.RIGHT)
+
+    focus.assert_not_called()
+
+
+def test_focus_direction_fullscreen():
+    """Directional focus is inert while a fullscreen window owns the screen."""
     m = make_monitor()
     m.active_workspace = make_workspace(monitor=m)
     a = make_client(workspace=m.active_workspace)
     b = make_client(workspace=m.active_workspace)
+    m.active_workspace.root = flat_tree(a, b)
+    m.active_workspace.fullscreen = a
+    server = make_server(monitors=[m], active_monitor=m, clients=[a, b])
+    wel.focus_client(server, a)
+
+    with patch("wel.apply_focus"), patch("wel.focus_client") as focus:
+        wel.focus_direction(server, layout.Direction.RIGHT)
+
+    focus.assert_not_called()
+
+
+def test_focus_direction_floating():
+    """Directional focus is a no-op when the focused window is floating, since
+    floats aren't tiled leaves."""
+    m = make_monitor()
+    m.active_workspace = make_workspace(monitor=m)
+    a = make_client(workspace=m.active_workspace)
+    b = make_client(
+        workspace=m.active_workspace,
+        floating_geom=wel.Rect(0, 0, 100, 100),
+    )
+    m.active_workspace.root = flat_tree(a)
+    server = make_server(monitors=[m], active_monitor=m, clients=[a, b])
+    wel.focus_client(server, b)
+
+    with patch("wel.apply_focus"), patch("wel.focus_client") as focus:
+        wel.focus_direction(server, layout.Direction.LEFT)
+
+    focus.assert_not_called()
+
+
+def test_move_direction_moves():
+    """mod+shift relocates the focused window one slot that way: from the left
+    of a three-column row, RIGHT reorders it past its neighbor."""
+    m = make_monitor(window_area=wel.Rect(0, 0, 900, 600))
+    m.active_workspace = make_workspace(monitor=m)
+    a = make_client(workspace=m.active_workspace)
+    b = make_client(workspace=m.active_workspace)
     c = make_client(workspace=m.active_workspace)
+    m.active_workspace.root = flat_tree(a, b, c)
     server = make_server(monitors=[m], active_monitor=m, clients=[a, b, c])
     wel.focus_client(server, a)
 
-    with patch("wel.focus_client") as focus:
-        wel.cycle_focus(server, -1)
+    with patch("wel.apply_geometry"), patch("wel.apply_focus"):
+        wel.move_direction(server, layout.Direction.RIGHT)
 
-    focus.assert_called_once_with(server, c)
+    assert m.active_workspace.root.children == [b, a, c]
 
 
-def test_cycle_focus_empty():
-    """cycle_focus is a no-op when no windows are visible on the active
-    monitor."""
+def test_move_direction_edge():
+    """Moving toward an edge is a no-op: nothing lies right of the rightmost
+    window, so the tree is unchanged."""
+    m = make_monitor(window_area=wel.Rect(0, 0, 900, 600))
+    m.active_workspace = make_workspace(monitor=m)
+    a = make_client(workspace=m.active_workspace)
+    b = make_client(workspace=m.active_workspace)
+    m.active_workspace.root = flat_tree(a, b)
+    server = make_server(monitors=[m], active_monitor=m, clients=[a, b])
+    wel.focus_client(server, b)
+
+    with patch("wel.apply_geometry"), patch("wel.apply_focus"):
+        wel.move_direction(server, layout.Direction.RIGHT)
+
+    assert m.active_workspace.root.children == [a, b]
+
+
+def test_move_direction_fullscreen():
+    """Moving is inert while a fullscreen window owns the screen."""
     m = make_monitor()
     m.active_workspace = make_workspace(monitor=m)
-    server = make_server(monitors=[m], active_monitor=m)
+    a = make_client(workspace=m.active_workspace)
+    b = make_client(workspace=m.active_workspace)
+    m.active_workspace.root = flat_tree(a, b)
+    m.active_workspace.fullscreen = a
+    server = make_server(monitors=[m], active_monitor=m, clients=[a, b])
+    wel.focus_client(server, a)
 
-    with patch("wel.focus_client") as focus:
-        wel.cycle_focus(server, +1)
+    with patch("wel.apply_geometry"), patch("wel.apply_focus"):
+        wel.move_direction(server, layout.Direction.RIGHT)
 
-    focus.assert_not_called()
+    assert m.active_workspace.root.children == [a, b]
+
+
+def test_move_direction_floating():
+    """Moving is a no-op when the focused window is floating, since floats
+    aren't tiled leaves."""
+    m = make_monitor()
+    m.active_workspace = make_workspace(monitor=m)
+    a = make_client(workspace=m.active_workspace)
+    b = make_client(
+        workspace=m.active_workspace,
+        floating_geom=wel.Rect(0, 0, 100, 100),
+    )
+    m.active_workspace.root = flat_tree(a)
+    server = make_server(monitors=[m], active_monitor=m, clients=[a, b])
+    wel.focus_client(server, b)
+
+    with patch("wel.apply_geometry") as geometry, patch("wel.apply_focus"):
+        wel.move_direction(server, layout.Direction.LEFT)
+
+    geometry.assert_not_called()
+    assert m.active_workspace.root.children == [a]
+
+
+def test_move_direction_vertical():
+    """mod+shift+j relocates the focused window down a column, exercising the
+    vertical move axis."""
+    m = make_monitor(window_area=wel.Rect(0, 0, 600, 900))
+    m.active_workspace = make_workspace(monitor=m)
+    a = make_client(workspace=m.active_workspace)
+    b = make_client(workspace=m.active_workspace)
+    c = make_client(workspace=m.active_workspace)
+    m.active_workspace.root = layout.Container(
+        layout.ContainerLayout.VERTICAL, [a, b, c])
+    server = make_server(monitors=[m], active_monitor=m, clients=[a, b, c])
+    wel.focus_client(server, a)
+
+    with patch("wel.apply_geometry"), patch("wel.apply_focus"):
+        wel.move_direction(server, layout.Direction.DOWN)
+
+    assert m.active_workspace.root.children == [b, a, c]
+
+
+def test_group_window_wraps():
+    """mod+v wraps a window that has a sibling in its own group, split along
+    the window's long side (here VERTICAL)."""
+    m = make_monitor()
+    m.active_workspace = make_workspace(monitor=m)
+    a = make_client(workspace=m.active_workspace, inner_size=(400, 600))
+    b = make_client(workspace=m.active_workspace)
+    m.active_workspace.root = flat_tree(a, b)
+    server = make_server(monitors=[m], active_monitor=m, clients=[a, b])
+    wel.focus_client(server, a)
+
+    with patch("wel.apply_geometry"), patch("wel.apply_focus"):
+        wel.group_window(server)
+
+    root = m.active_workspace.root
+    assert isinstance(root.children[0], layout.Container)
+    assert root.children[0].layout == layout.ContainerLayout.VERTICAL
+    assert root.children[0].children == [a]
+    assert root.children[1] is b
+
+
+def test_group_window_alone():
+    """mod+v is a no-op on a window with no siblings -- there's nothing to
+    split it off from, so the tree is unchanged."""
+    m = make_monitor(window_area=wel.Rect(0, 0, 800, 600))
+    m.active_workspace = make_workspace(monitor=m)
+    a = make_client(workspace=m.active_workspace)
+    m.active_workspace.root = flat_tree(a)
+    server = make_server(monitors=[m], active_monitor=m, clients=[a])
+    wel.focus_client(server, a)
+
+    with patch("wel.apply_geometry"), patch("wel.apply_focus"):
+        wel.group_window(server)
+
+    assert m.active_workspace.root.children == [a]
+
+
+def test_group_window_nested():
+    """mod+v wraps a window nested inside a sub-group too, as long as it has a
+    sibling there; the rest of the tree is untouched."""
+    m = make_monitor()
+    m.active_workspace = make_workspace(monitor=m)
+    a = make_client(workspace=m.active_workspace, inner_size=(400, 300))
+    b = make_client(workspace=m.active_workspace)
+    c = make_client(workspace=m.active_workspace)
+    column = layout.Container(layout.ContainerLayout.VERTICAL, [a, b])
+    m.active_workspace.root = layout.Container(
+        layout.ContainerLayout.HORIZONTAL, [column, c])
+    server = make_server(monitors=[m], active_monitor=m, clients=[a, b, c])
+    wel.focus_client(server, a)
+
+    with patch("wel.apply_geometry"), patch("wel.apply_focus"):
+        wel.group_window(server)
+
+    assert isinstance(column.children[0], layout.Container)
+    assert column.children[0].layout == layout.ContainerLayout.HORIZONTAL
+    assert column.children[0].children == [a]
+    assert column.children[1] is b
+    assert m.active_workspace.root.children[1] is c
+
+
+def test_cycle_layout_flips():
+    """mod+e flips the focused window's container between a row and a column."""
+    m = make_monitor()
+    m.active_workspace = make_workspace(monitor=m)
+    a = make_client(workspace=m.active_workspace)
+    b = make_client(workspace=m.active_workspace)
+    m.active_workspace.root = flat_tree(a, b)
+    server = make_server(monitors=[m], active_monitor=m, clients=[a, b])
+    wel.focus_client(server, a)
+
+    with patch("wel.apply_geometry"), patch("wel.apply_focus"):
+        wel.cycle_layout(server)
+
+    assert m.active_workspace.root.layout == layout.ContainerLayout.VERTICAL
 
 
 def test_client_unmap_unselected():
@@ -3232,11 +3452,295 @@ def test_resize_client_clips():
 # --- apply_geometry ------------------------------------------------------
 
 
+def test_layout_walk_row():
+    """A HORIZONTAL container splits its area into equal columns that sum
+    exactly to the width."""
+    a, b, c = object(), object(), object()
+    root = layout.Container(layout.ContainerLayout.HORIZONTAL, [a, b, c])
+    placed = list(layout.walk(root, layout.Rect(0, 0, 900, 600)))
+
+    assert placed == [
+        (a, layout.Rect(0, 0, 300, 600)),
+        (b, layout.Rect(300, 0, 300, 600)),
+        (c, layout.Rect(600, 0, 300, 600)),
+    ]
+
+
+def test_layout_walk_nested():
+    """A nested container subdivides only its own slice of the parent area."""
+    a, b, c = object(), object(), object()
+    inner = layout.Container(layout.ContainerLayout.VERTICAL, [b, c])
+    root = layout.Container(layout.ContainerLayout.HORIZONTAL, [a, inner])
+    placed = dict((id(k), v) for k, v in layout.walk(
+        root, layout.Rect(0, 0, 800, 600)))
+
+    assert placed[id(a)] == layout.Rect(0, 0, 400, 600)
+    assert placed[id(b)] == layout.Rect(400, 0, 400, 300)
+    assert placed[id(c)] == layout.Rect(400, 300, 400, 300)
+
+
+def test_layout_insert_after():
+    """insert_sibling places the new leaf right after its target."""
+    a, b, c = object(), object(), object()
+    root = layout.Container(layout.ContainerLayout.HORIZONTAL, [a, b])
+    layout.insert_sibling(root, a, c)
+
+    assert root.children == [a, c, b]
+
+
+def test_layout_insert_append():
+    """insert_sibling appends to the root when the target is None or absent."""
+    a, b = object(), object()
+    root = layout.Container(layout.ContainerLayout.HORIZONTAL, [a])
+    layout.insert_sibling(root, None, b)
+
+    assert root.children == [a, b]
+
+
+def test_layout_remove_promotes():
+    """Removing a window that leaves its container with one sibling promotes
+    that sibling, dropping the now-redundant container."""
+    a, b, c = object(), object(), object()
+    inner = layout.Container(layout.ContainerLayout.VERTICAL, [b, c])
+    root = layout.Container(layout.ContainerLayout.HORIZONTAL, [a, inner])
+    layout.remove(root, b)
+
+    assert root.children == [a, c]
+
+
+def test_layout_remove_empty():
+    """Removing the only window of a group drops the emptied container."""
+    a, b = object(), object()
+    root = layout.Container(layout.ContainerLayout.HORIZONTAL, [a, b])
+    layout.wrap(root, a, layout.ContainerLayout.VERTICAL)
+    layout.remove(root, a)
+
+    assert root.children == [b]
+
+
+def test_layout_remove_unrelated():
+    """Collapse touches only the removed window's ancestors, so a one-window
+    group elsewhere survives an unrelated removal."""
+    a, b, c = object(), object(), object()
+    group = layout.Container(layout.ContainerLayout.VERTICAL, [a])
+    root = layout.Container(layout.ContainerLayout.HORIZONTAL, [group, b, c])
+    layout.remove(root, c)
+
+    assert root.children[0] is group and group.children == [a]
+
+
+def test_layout_wrap_unwrap():
+    """wrap nests a leaf one level deeper; unwrap splices the group back."""
+    a, b = object(), object()
+    root = layout.Container(layout.ContainerLayout.HORIZONTAL, [a, b])
+    layout.wrap(root, a, layout.ContainerLayout.VERTICAL)
+    group = root.children[0]
+
+    assert isinstance(group, layout.Container) and group.children == [a]
+
+    layout.unwrap(root, group)
+    assert root.children == [a, b]
+
+
+def test_layout_cycle_flips():
+    """cycle_layout toggles a container between HORIZONTAL and VERTICAL."""
+    root = layout.Container(layout.ContainerLayout.HORIZONTAL, [object()])
+    layout.cycle_layout(root)
+    assert root.layout == layout.ContainerLayout.VERTICAL
+    layout.cycle_layout(root)
+    assert root.layout == layout.ContainerLayout.HORIZONTAL
+
+
+def test_layout_nearest_beyond():
+    """nearest returns the closest window whose center lies past the focused
+    one along the direction; an edge yields None."""
+    a, b, c = object(), object(), object()
+    root = layout.Container(layout.ContainerLayout.HORIZONTAL, [a, b, c])
+    area = layout.Rect(0, 0, 900, 600)
+
+    assert layout.nearest(root, a, layout.Direction.RIGHT, area) is b
+    assert layout.nearest(root, c, layout.Direction.LEFT, area) is b
+    assert layout.nearest(root, a, layout.Direction.UP, area) is None
+
+
+def test_layout_container_parent():
+    """container_of returns the parent and index of a window by identity."""
+    a, b = object(), object()
+    inner = layout.Container(layout.ContainerLayout.VERTICAL, [a, b])
+    root = layout.Container(layout.ContainerLayout.HORIZONTAL, [inner])
+
+    assert layout.container_of(root, b) == (inner, 1)
+    assert layout.container_of(root, object()) is None
+
+
+def test_layout_move_reorder():
+    """Moving a window toward a leaf sibling reorders it past that sibling
+    within the same container."""
+    a, b, c = object(), object(), object()
+    root = layout.Container(layout.ContainerLayout.HORIZONTAL, [a, b, c])
+
+    layout.move(root, a, layout.Direction.RIGHT)
+
+    assert root.children == [b, a, c]
+
+
+def test_layout_move_pops_out():
+    """Moving a window past the edge of its container pops it out beside that
+    container in the parent, collapsing the container it vacated."""
+    a, f, b = object(), object(), object()
+    inner = layout.Container(layout.ContainerLayout.VERTICAL, [a, f])
+    root = layout.Container(
+        layout.ContainerLayout.HORIZONTAL, [inner, b])
+
+    layout.move(root, f, layout.Direction.RIGHT)
+
+    assert root.children == [a, f, b]
+
+
+def test_layout_move_descends():
+    """Moving a window into an adjacent container descends into it, entering a
+    perpendicular container at the front."""
+    f, b, c = object(), object(), object()
+    inner = layout.Container(layout.ContainerLayout.VERTICAL, [b, c])
+    root = layout.Container(
+        layout.ContainerLayout.HORIZONTAL, [f, inner])
+
+    layout.move(root, f, layout.Direction.RIGHT)
+
+    assert root.children == [inner]
+    assert inner.children == [f, b, c]
+
+
+def test_layout_move_perp():
+    """Moving a window out of a perpendicular container pops it into the parent
+    beside that container, which keeps its remaining windows."""
+    a, b, f, c = object(), object(), object(), object()
+    inner = layout.Container(layout.ContainerLayout.VERTICAL, [b, f, c])
+    root = layout.Container(
+        layout.ContainerLayout.HORIZONTAL, [a, inner])
+
+    layout.move(root, f, layout.Direction.LEFT)
+
+    assert root.children == [a, f, inner]
+    assert inner.children == [b, c]
+
+
+def test_layout_move_edge():
+    """Moving a window toward the outer edge of the root is a no-op."""
+    a, f = object(), object()
+    root = layout.Container(layout.ContainerLayout.HORIZONTAL, [a, f])
+
+    layout.move(root, f, layout.Direction.RIGHT)
+
+    assert root.children == [a, f]
+
+
+def test_layout_move_root_perp():
+    """Moving along an axis no ancestor splits on is a no-op."""
+    a, f = object(), object()
+    root = layout.Container(layout.ContainerLayout.VERTICAL, [a, f])
+
+    layout.move(root, f, layout.Direction.RIGHT)
+
+    assert root.children == [a, f]
+
+
+def test_layout_move_reorder_left():
+    """Moving left reorders a window past its left-hand leaf sibling within the
+    same container (negative-step reorder)."""
+    a, b, c = object(), object(), object()
+    root = layout.Container(layout.ContainerLayout.HORIZONTAL, [a, b, c])
+
+    layout.move(root, c, layout.Direction.LEFT)
+
+    assert root.children == [a, c, b]
+
+
+def test_layout_move_vertical_reorder():
+    """Moving DOWN in a column reorders a window past the one below it."""
+    a, b, c = object(), object(), object()
+    root = layout.Container(layout.ContainerLayout.VERTICAL, [a, b, c])
+
+    layout.move(root, a, layout.Direction.DOWN)
+
+    assert root.children == [b, a, c]
+
+
+def test_layout_move_pops_up():
+    """Moving UP pops a window out of its nested row into the column."""
+    x, a, f = object(), object(), object()
+    row = layout.Container(layout.ContainerLayout.HORIZONTAL, [a, f])
+    root = layout.Container(layout.ContainerLayout.VERTICAL, [x, row])
+
+    layout.move(root, f, layout.Direction.UP)
+
+    assert root.children == [x, f, a]
+
+
+def test_layout_move_descend_front():
+    """Descending into a same-axis container from the low side enters it at the
+    front."""
+    f, y, z = object(), object(), object()
+    inner = layout.Container(layout.ContainerLayout.HORIZONTAL, [y, z])
+    root = layout.Container(
+        layout.ContainerLayout.HORIZONTAL, [f, inner])
+
+    layout.move(root, f, layout.Direction.RIGHT)
+
+    assert root.children == [inner]
+    assert inner.children == [f, y, z]
+
+
+def test_layout_move_descend_end():
+    """Descending into a same-axis container from the high side enters it at
+    the back."""
+    y, z, f = object(), object(), object()
+    inner = layout.Container(layout.ContainerLayout.HORIZONTAL, [y, z])
+    root = layout.Container(
+        layout.ContainerLayout.HORIZONTAL, [inner, f])
+
+    layout.move(root, f, layout.Direction.LEFT)
+
+    assert root.children == [inner]
+    assert inner.children == [y, z, f]
+
+
+def test_layout_move_deep_climb():
+    """A window with no room nearby climbs past several ancestors to the first
+    matching-axis one with a neighbor, popping out there and collapsing the
+    chain it left behind."""
+    a, c, f, b = object(), object(), object(), object()
+    inner = layout.Container(layout.ContainerLayout.HORIZONTAL, [c, f])
+    column = layout.Container(layout.ContainerLayout.VERTICAL, [a, inner])
+    root = layout.Container(
+        layout.ContainerLayout.HORIZONTAL, [column, b])
+
+    layout.move(root, f, layout.Direction.RIGHT)
+
+    assert root.children == [column, f, b]
+    assert column.children == [a, c]
+
+
+def test_layout_move_popout_survives():
+    """Popping out of a multi-window container leaves that container in place
+    with its remaining windows."""
+    a, b, f, x = object(), object(), object(), object()
+    inner = layout.Container(layout.ContainerLayout.HORIZONTAL, [a, b, f])
+    root = layout.Container(
+        layout.ContainerLayout.HORIZONTAL, [inner, x])
+
+    layout.move(root, f, layout.Direction.RIGHT)
+
+    assert root.children == [inner, f, x]
+    assert inner.children == [a, b]
+
+
 def test_apply_geometry_single_full():
-    """One tile client fills the whole window area."""
+    """One tiled window fills the whole window area."""
     m = make_monitor(window_area=wel.Rect(0, 0, 800, 600))
     m.active_workspace = make_workspace(monitor=m)
     a = make_client(workspace=m.active_workspace)
+    m.active_workspace.root = flat_tree(a)
     server = make_server(clients=[a])
 
     with patch("wel.resize_client") as resize:
@@ -3245,23 +3749,24 @@ def test_apply_geometry_single_full():
     resize.assert_called_once_with(server, a, wel.Rect(0, 0, 800, 600))
 
 
-def test_apply_geometry_master_stack():
-    """Three tile clients: master on the left half, two stacked on the right
-    half with heights summing exactly to the window area's height."""
+def test_apply_geometry_row():
+    """Three tiled windows in a HORIZONTAL container split the width into three
+    equal columns spanning the full height, summing exactly to the area."""
     m = make_monitor(window_area=wel.Rect(0, 0, 800, 600))
     m.active_workspace = make_workspace(monitor=m)
     a = make_client(workspace=m.active_workspace)
     b = make_client(workspace=m.active_workspace)
     c = make_client(workspace=m.active_workspace)
+    m.active_workspace.root = flat_tree(a, b, c)
     server = make_server(clients=[a, b, c])
 
     with patch("wel.resize_client") as resize:
         wel.apply_geometry(server, m)
 
     assert resize.call_args_list == [
-        call(server, a, wel.Rect(0, 0, 400, 600)),
-        call(server, b, wel.Rect(400, 0, 400, 300)),
-        call(server, c, wel.Rect(400, 300, 400, 300)),
+        call(server, a, wel.Rect(0, 0, 266, 600)),
+        call(server, b, wel.Rect(266, 0, 267, 600)),
+        call(server, c, wel.Rect(533, 0, 267, 600)),
     ]
 
 
@@ -3273,6 +3778,8 @@ def test_apply_geometry_other_monitor():
     m2.active_workspace = make_workspace(monitor=m2)
     a = make_client(workspace=m1.active_workspace)
     b = make_client(workspace=m2.active_workspace)
+    m1.active_workspace.root = flat_tree(a)
+    m2.active_workspace.root = flat_tree(b)
     server = make_server(clients=[a, b])
 
     with patch("wel.resize_client") as resize:
@@ -3282,8 +3789,8 @@ def test_apply_geometry_other_monitor():
 
 
 def test_apply_geometry_skips_floating():
-    """Floating clients don't participate in tiling; apply_geometry
-    leaves the tile path to tiles only."""
+    """Floating windows aren't in the tree; the tile path covers tiles only,
+    then floats get their own rect."""
     m = make_monitor(window_area=wel.Rect(0, 0, 800, 600))
     m.active_workspace = make_workspace(monitor=m)
     a = make_client(
@@ -3291,6 +3798,7 @@ def test_apply_geometry_skips_floating():
         floating_geom=wel.Rect(50, 60, 100, 80),
     )
     b = make_client(workspace=m.active_workspace)
+    m.active_workspace.root = flat_tree(b)
     server = make_server(clients=[a, b])
 
     with patch("wel.resize_client") as resize:
@@ -3304,22 +3812,21 @@ def test_apply_geometry_skips_floating():
 
 
 def test_apply_geometry_sizes_fullscreen():
-    """apply_geometry keeps any fullscreen window matched to the monitor's
-    current box so monitor mode changes propagate. Tiles tile alongside."""
+    """A fullscreen window is sized to the monitor box; the windows hidden
+    behind it are left untouched until fullscreen exits."""
     m = make_monitor(window_area=wel.Rect(0, 0, 800, 600))
     m.active_workspace = make_workspace(monitor=m)
     fs = make_client(workspace=m.active_workspace)
     m.active_workspace.fullscreen = fs
     tile = make_client(workspace=m.active_workspace)
+    m.active_workspace.root = flat_tree(fs, tile)
     server = make_server(clients=[fs, tile])
 
     with patch("wel.monitor_box", return_value=wel.Rect(0, 0, 800, 600)), \
          patch("wel.resize_client") as resize:
         wel.apply_geometry(server, m)
 
-    # Fullscreen gets the full box; the sole tile takes the full box too.
-    resize.assert_any_call(server, fs, wel.Rect(0, 0, 800, 600))
-    resize.assert_any_call(server, tile, wel.Rect(0, 0, 800, 600))
+    resize.assert_called_once_with(server, fs, wel.Rect(0, 0, 800, 600))
 
 
 def test_apply_geometry_empty():
@@ -3632,6 +4139,44 @@ def test_toggle_floating_to_tile():
     assert client.floating_geom is None
 
 
+def test_toggle_floating_drops_leaf():
+    """Floating a tiled window drops its leaf from the workspace tree."""
+    m = make_monitor()
+    m.active_workspace = make_workspace(monitor=m)
+    a = make_client(workspace=m.active_workspace)
+    b = make_client(workspace=m.active_workspace)
+    m.active_workspace.root = flat_tree(a, b)
+    server = make_server(monitors=[m], active_monitor=m, clients=[a, b])
+    wel.focus_client(server, a)
+
+    seed = wel.Rect(0, 0, 100, 100)
+    with patch("wel.client_outer_rect", return_value=seed), \
+         patch("wel.apply_geometry"):
+        wel.toggle_floating(server)
+
+    assert m.active_workspace.root.children == [b]
+
+
+def test_toggle_floating_adds_leaf():
+    """Un-floating a window inserts its leaf next to the most-recent tile."""
+    m = make_monitor()
+    m.active_workspace = make_workspace(monitor=m)
+    tiled = make_client(workspace=m.active_workspace, focus_order=1)
+    floater = make_client(
+        workspace=m.active_workspace,
+        floating_geom=wel.Rect(10, 20, 300, 200),
+        focus_order=2,
+    )
+    m.active_workspace.root = flat_tree(tiled)
+    server = make_server(
+        monitors=[m], active_monitor=m, clients=[tiled, floater])
+
+    with patch("wel.apply_geometry"):
+        wel.toggle_floating(server)
+
+    assert m.active_workspace.root.children == [tiled, floater]
+
+
 def test_toggle_floating_fullscreen_noop():
     """toggle_floating is a no-op while the focused window is fullscreen."""
     m = make_monitor()
@@ -3657,105 +4202,6 @@ def test_toggle_floating_no_focus():
     with patch("wel.apply_geometry") as apply_geom:
         wel.toggle_floating(server)
 
-    apply_geom.assert_not_called()
-
-
-def test_zoom_promotes():
-    """zoom on a non-master tile swaps it with the master and re-arranges.
-    The focused window naturally lands as the new master."""
-    m = make_monitor()
-    m.active_workspace = make_workspace(monitor=m)
-    a = make_client(workspace=m.active_workspace)
-    b = make_client(workspace=m.active_workspace)
-    c = make_client(workspace=m.active_workspace)
-    server = make_server(monitors=[m], active_monitor=m, clients=[a, b, c])
-    wel.focus_client(server, b)  # b becomes most-recent on m
-
-    with patch("wel.apply_geometry") as apply_geom:
-        wel.zoom(server)
-
-    assert server.clients == [b, a, c]
-    assert wel.top_client(server, m) is b
-    apply_geom.assert_called_once_with(server, m)
-
-
-def test_zoom_toggles():
-    """zoom on the master swaps it with the most-recently-focused other
-    tile and follows focus to the new master."""
-    m = make_monitor()
-    m.active_workspace = make_workspace(monitor=m)
-    a = make_client(workspace=m.active_workspace)
-    b = make_client(workspace=m.active_workspace)
-    c = make_client(workspace=m.active_workspace)
-    server = make_server(monitors=[m], active_monitor=m, clients=[a, b, c])
-    # b focused most recently among non-masters; a is master and focused last.
-    wel.focus_client(server, c)
-    wel.focus_client(server, b)
-    wel.focus_client(server, a)
-
-    with patch("wel.apply_geometry") as apply_geom:
-        wel.zoom(server)
-
-    assert server.clients == [b, a, c]
-    assert wel.top_client(server, m) is b
-    apply_geom.assert_called_once_with(server, m)
-
-
-def test_zoom_single_tile():
-    """zoom is a no-op when fewer than two tiled windows are on the monitor."""
-    m = make_monitor()
-    m.active_workspace = make_workspace(monitor=m)
-    a = make_client(workspace=m.active_workspace)
-    server = make_server(monitors=[m], active_monitor=m, clients=[a])
-    wel.focus_client(server, a)
-
-    with patch("wel.apply_geometry") as apply_geom:
-        wel.zoom(server)
-
-    assert server.clients == [a]
-    apply_geom.assert_not_called()
-
-
-def test_zoom_remembers_master():
-    """After promoting a non-master, the next zoom toggles back to the
-    displaced master, not to whatever else has the next-highest focus order."""
-    m = make_monitor()
-    m.active_workspace = make_workspace(monitor=m)
-    a = make_client(workspace=m.active_workspace)
-    b = make_client(workspace=m.active_workspace)
-    c = make_client(workspace=m.active_workspace)
-    server = make_server(monitors=[m], active_monitor=m, clients=[a, b, c])
-    # Focus history: c then b then nothing on a (a is master, never focused).
-    wel.focus_client(server, c)
-    wel.focus_client(server, b)
-
-    with patch("wel.apply_geometry"):
-        wel.zoom(server)  # promote b over a
-    assert server.clients == [b, a, c]
-
-    with patch("wel.apply_geometry"):
-        wel.zoom(server)  # toggle back to a (not c, even though c has history)
-
-    assert server.clients == [a, b, c]
-    assert wel.top_client(server, m) is a
-
-
-def test_zoom_floating_focus():
-    """zoom is a no-op when the focused window isn't on the tile layer."""
-    m = make_monitor()
-    m.active_workspace = make_workspace(monitor=m)
-    a = make_client(workspace=m.active_workspace)
-    b = make_client(
-        workspace=m.active_workspace,
-        floating_geom=wel.Rect(0, 0, 100, 100),
-    )
-    server = make_server(monitors=[m], active_monitor=m, clients=[a, b])
-    wel.focus_client(server, b)
-
-    with patch("wel.apply_geometry") as apply_geom:
-        wel.zoom(server)
-
-    assert server.clients == [a, b]
     apply_geom.assert_not_called()
 
 
@@ -3900,22 +4346,6 @@ def test_request_maximize_configures():
 
     server.lib.wlr_xdg_surface_schedule_configure.assert_called_once_with(
         client.toplevel.base)
-
-
-def test_cycle_focus_fullscreen():
-    """cycle_focus is inert while a fullscreen window owns the monitor so
-    focus stays pinned to it."""
-    m = make_monitor()
-    m.active_workspace = make_workspace(monitor=m)
-    a = make_client(workspace=m.active_workspace)
-    b = make_client(workspace=m.active_workspace)
-    m.active_workspace.fullscreen = a
-    server = make_server(monitors=[m], active_monitor=m, clients=[a, b])
-
-    with patch("wel.focus_client") as focus:
-        wel.cycle_focus(server, +1)
-
-    focus.assert_not_called()
 
 
 def test_client_map_unfullscreens_existing():
@@ -4865,6 +5295,22 @@ def test_client_unmap_destroys_tree():
     assert client not in server.clients
 
 
+def test_client_unmap_drops_leaf():
+    """Unmapping a tiled window drops its leaf from the workspace tree so the
+    siblings reflow."""
+    m = make_monitor()
+    m.active_workspace = make_workspace(monitor=m)
+    a = make_client(workspace=m.active_workspace, focus_order=1)
+    b = make_client(workspace=m.active_workspace, focus_order=2)
+    m.active_workspace.root = flat_tree(a, b)
+    server = make_server(monitors=[m], active_monitor=m, clients=[a, b])
+
+    with patch("wel.focus_client"), patch("wel.apply_geometry"):
+        wel.client_unmap(server, a, None)
+
+    assert m.active_workspace.root.children == [b]
+
+
 def test_client_unmap_orphan():
     """Unmapping an orphaned client doesn't trigger an arrange."""
     client = make_client(workspace=None)
@@ -5513,6 +5959,26 @@ def test_move_client_reassigns():
     wel.move_client_to_workspace(server, "3")
 
     assert client.workspace is ws2
+
+
+def test_move_client_moves_leaf():
+    """Moving a tiled window detaches its leaf from the source tree and
+    attaches it to the target tree."""
+    monitor = make_monitor()
+    ws1 = make_workspace(name="1", monitor=monitor)
+    ws2 = make_workspace(name="2")
+    monitor.active_workspace = ws1
+    client = make_client(workspace=ws1, focus_order=1)
+    ws1.root = flat_tree(client)
+    server = make_server(
+        workspaces=[ws1, ws2], monitors=[monitor], active_monitor=monitor,
+        clients=[client])
+
+    with patch("wel.apply_geometry"), patch("wel.apply_focus"):
+        wel.move_client_to_workspace(server, "2")
+
+    assert ws1.root.children == []
+    assert ws2.root.children == [client]
 
 
 def test_move_client_adopts():
