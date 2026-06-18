@@ -908,11 +908,16 @@ def client_map(server: Server, client: Client, _data) -> None:
 def client_unmap(server: Server, client: Client, _data) -> None:
     """Fires when a window stops showing (close or voluntary hide). Tears
     down the window's scene tree, leaves the layout, reflows siblings,
-    and shifts focus -- in one event so removal lands in a single frame."""
+    and shifts focus to a window beside the closed one -- in one event so
+    removal lands in a single frame."""
     ffi, lib = server.ffi, server.lib
     client.grab = None
     monitor = client_monitor(client)
+    successor = None
     if client.workspace is not None and client.floating_geom is None:
+        # Pick the successor before remove(): _collapse drops the lineage.
+        successor = layout.successor(
+            client.workspace.root, client, lambda c: c.focus_order)
         layout.remove(client.workspace.root, client)
     server.clients.remove(client)
     # Wrapper isn't tied to the content role's lifetime
@@ -925,9 +930,10 @@ def client_unmap(server: Server, client: Client, _data) -> None:
     client.workspace = None
     apply_hierarchy(server)
     apply_visibility(server)
-    candidates = clients_visible(server, monitor) if monitor else []
-    if candidates:
-        focus_client(server, max(candidates, key=lambda c: c.focus_order))
+    if successor is None:
+        successor = top_client(server, monitor)
+    if successor is not None:
+        focus_client(server, successor)
     if monitor is not None and monitor in server.monitors:
         apply_geometry(server, monitor)
     apply_focus(server)

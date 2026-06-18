@@ -1199,6 +1199,44 @@ def test_client_unmap_alone():
     focus.assert_not_called()
 
 
+def test_client_unmap_lineage():
+    """Closing a grouped window hands focus to its groupmate, even when a
+    window outside the group was focused more recently."""
+    m = make_monitor()
+    m.active_workspace = make_workspace(monitor=m)
+    a = make_client(focus_order=3, workspace=m.active_workspace)
+    b = make_client(focus_order=1, workspace=m.active_workspace)
+    c = make_client(focus_order=2, workspace=m.active_workspace)
+    inner = layout.Container(layout.ContainerLayout.VERTICAL, [b, c])
+    m.active_workspace.root = layout.Container(
+        layout.ContainerLayout.HORIZONTAL, [a, inner])
+    server = make_server(monitors=[m], active_monitor=m, clients=[a, b, c])
+
+    with patch("wel.apply_geometry"), patch("wel.focus_client") as focus:
+        wel.client_unmap(server, b, "DATA")
+
+    focus.assert_called_once_with(server, c)
+
+
+def test_client_unmap_float_fallback():
+    """Closing a floating window has no container lineage, so focus falls back
+    to the most-recently-focused window on the screen."""
+    m = make_monitor()
+    m.active_workspace = make_workspace(monitor=m)
+    a = make_client(focus_order=1, workspace=m.active_workspace)
+    b = make_client(focus_order=2, workspace=m.active_workspace)
+    m.active_workspace.root = flat_tree(a, b)
+    f = make_client(
+        focus_order=3, workspace=m.active_workspace,
+        floating_geom=wel.Rect(0, 0, 100, 100))
+    server = make_server(monitors=[m], active_monitor=m, clients=[a, b, f])
+
+    with patch("wel.apply_geometry"), patch("wel.focus_client") as focus:
+        wel.client_unmap(server, f, "DATA")
+
+    focus.assert_called_once_with(server, b)
+
+
 def test_client_map_subtree():
     """A mapped window's wrapper tree hangs off the tile layer so it's
     actually rendered, with the xdg subtree nested inside it."""
@@ -3653,6 +3691,45 @@ def test_layout_adjacent_leaves_group():
         layout.ContainerLayout.HORIZONTAL, [a, inner])
 
     assert layout.adjacent_leaves(root, a, layout.Direction.RIGHT) == [b, c]
+
+
+def test_layout_successor_siblings():
+    """In a flat row the successor is the highest-ranked other window."""
+    a, b, c = object(), object(), object()
+    root = layout.Container(layout.ContainerLayout.HORIZONTAL, [a, b, c])
+    rank = {a: 1, b: 3, c: 2}
+
+    assert layout.successor(root, a, rank.get) is b
+
+
+def test_layout_successor_inner():
+    """The innermost enclosing group wins: a grouped window's successor is a
+    groupmate, even when a higher-ranked window sits outside the group."""
+    a, b, c = object(), object(), object()
+    inner = layout.Container(layout.ContainerLayout.VERTICAL, [b, c])
+    root = layout.Container(layout.ContainerLayout.HORIZONTAL, [a, inner])
+    rank = {a: 9, b: 1, c: 2}
+
+    assert layout.successor(root, b, rank.get) is c
+
+
+def test_layout_successor_climbs():
+    """When the innermost group holds no one else, the climb skips it and
+    picks from the next ancestor."""
+    a, b = object(), object()
+    inner = layout.Container(layout.ContainerLayout.VERTICAL, [b])
+    root = layout.Container(layout.ContainerLayout.HORIZONTAL, [a, inner])
+
+    assert layout.successor(root, b, lambda n: 0) is a
+
+
+def test_layout_successor_alone():
+    """A sole window, or one absent from the tree, has no successor."""
+    a = object()
+    root = layout.Container(layout.ContainerLayout.HORIZONTAL, [a])
+
+    assert layout.successor(root, a, lambda n: 0) is None
+    assert layout.successor(root, object(), lambda n: 0) is None
 
 
 def test_layout_container_parent():

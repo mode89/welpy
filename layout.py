@@ -98,6 +98,21 @@ def adjacent_leaves(root, focused, direction):
     return leaves(neighbor) if isinstance(neighbor, Container) else [neighbor]
 
 
+def successor(root, leaf, select):
+    """The window that should take over from `leaf` when it leaves the tree:
+    climbing from `leaf`'s parent outward, the one maximizing `select` among
+    the windows of the nearest enclosing container that holds another. None
+    when `leaf` stands alone or isn't in the tree."""
+    path = _path(root, leaf)
+    if path is None:
+        return None
+    for ancestor, _ in reversed(path):
+        others = [node for node in leaves(ancestor) if node is not leaf]
+        if others:
+            return max(others, key=select)
+    return None
+
+
 def insert_sibling(root, target, leaf):
     """Insert `leaf` right after `target` in `target`'s container. If `target`
     is None or absent, append `leaf` to `root`."""
