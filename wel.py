@@ -1764,17 +1764,19 @@ def focused_container(server: Server):
 
 
 def focus_direction(server: Server, direction: layout.Direction) -> None:
-    """Shift focus to the nearest tiled window in `direction` on the current
-    screen. No-op at an edge, on a float, or while fullscreen."""
+    """Shift focus to the tiled window structurally adjacent in `direction` on
+    the current screen, landing on a group's most-recently-focused window.
+    No-op at an edge, on a float, or while fullscreen."""
     client = focused_tiled(server)
     if client is None:
         return
     monitor = server.active_monitor
-    neighbor = layout.nearest(
-        monitor.active_workspace.root, client, direction, monitor.window_area)
-    if neighbor is not None:
-        focus_client(server, neighbor)
-        apply_focus(server)
+    candidates = layout.adjacent_leaves(
+        monitor.active_workspace.root, client, direction)
+    if not candidates:
+        return
+    focus_client(server, max(candidates, key=lambda c: c.focus_order))
+    apply_focus(server)
 
 
 def move_direction(server: Server, direction: layout.Direction) -> None:

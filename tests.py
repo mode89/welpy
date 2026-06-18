@@ -3081,8 +3081,8 @@ def test_top_client_empty():
 
 
 def test_focus_direction_moves():
-    """Directional focus jumps to the nearest tiled window that way: from the
-    left column of a three-column row, RIGHT lands on the middle one."""
+    """Directional focus shifts to the structurally adjacent tiled window: from
+    the left column of a three-column row, RIGHT lands on the middle one."""
     m = make_monitor(window_area=wel.Rect(0, 0, 900, 600))
     m.active_workspace = make_workspace(monitor=m)
     a = make_client(workspace=m.active_workspace)
@@ -3150,6 +3150,26 @@ def test_focus_direction_floating():
         wel.focus_direction(server, layout.Direction.LEFT)
 
     focus.assert_not_called()
+
+
+def test_focus_direction_group_mru():
+    """Focusing into a neighboring group lands on its most-recently-focused
+    window, regardless of where that window sits in the group."""
+    m = make_monitor(window_area=wel.Rect(0, 0, 900, 600))
+    m.active_workspace = make_workspace(monitor=m)
+    a = make_client(focus_order=1, workspace=m.active_workspace)
+    b = make_client(focus_order=2, workspace=m.active_workspace)
+    c = make_client(focus_order=3, workspace=m.active_workspace)
+    inner = layout.Container(layout.ContainerLayout.VERTICAL, [b, c])
+    m.active_workspace.root = layout.Container(
+        layout.ContainerLayout.HORIZONTAL, [a, inner])
+    server = make_server(monitors=[m], active_monitor=m, clients=[a, b, c])
+    wel.focus_client(server, a)
+
+    with patch("wel.apply_focus"), patch("wel.focus_client") as focus:
+        wel.focus_direction(server, layout.Direction.RIGHT)
+
+    focus.assert_called_once_with(server, c)
 
 
 def test_move_direction_moves():
@@ -3551,16 +3571,33 @@ def test_layout_cycle_flips():
     assert root.layout == layout.ContainerLayout.HORIZONTAL
 
 
-def test_layout_nearest_beyond():
-    """nearest returns the closest window whose center lies past the focused
-    one along the direction; an edge yields None."""
+def test_layout_adjacent_leaves_sibling():
+    """In a flat row the adjacent set is the single neighboring window."""
     a, b, c = object(), object(), object()
     root = layout.Container(layout.ContainerLayout.HORIZONTAL, [a, b, c])
-    area = layout.Rect(0, 0, 900, 600)
 
-    assert layout.nearest(root, a, layout.Direction.RIGHT, area) is b
-    assert layout.nearest(root, c, layout.Direction.LEFT, area) is b
-    assert layout.nearest(root, a, layout.Direction.UP, area) is None
+    assert layout.adjacent_leaves(root, a, layout.Direction.RIGHT) == [b]
+    assert layout.adjacent_leaves(root, c, layout.Direction.LEFT) == [b]
+
+
+def test_layout_adjacent_leaves_edge():
+    """Nothing lies past an edge or along an axis no ancestor splits on, so the
+    adjacent set is empty."""
+    a, b = object(), object()
+    root = layout.Container(layout.ContainerLayout.HORIZONTAL, [a, b])
+
+    assert not layout.adjacent_leaves(root, b, layout.Direction.RIGHT)
+    assert not layout.adjacent_leaves(root, a, layout.Direction.UP)
+
+
+def test_layout_adjacent_leaves_group():
+    """A neighboring container contributes all its windows as candidates."""
+    a, b, c = object(), object(), object()
+    inner = layout.Container(layout.ContainerLayout.VERTICAL, [b, c])
+    root = layout.Container(
+        layout.ContainerLayout.HORIZONTAL, [a, inner])
+
+    assert layout.adjacent_leaves(root, a, layout.Direction.RIGHT) == [b, c]
 
 
 def test_layout_container_parent():

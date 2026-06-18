@@ -30,7 +30,7 @@ class ContainerLayout(enum.Enum):
 
 
 class Direction(enum.Enum):
-    """A screen direction for geometric focus movement."""
+    """A screen direction for directional focus and window movement."""
     LEFT = enum.auto()
     RIGHT = enum.auto()
     UP = enum.auto()
@@ -76,26 +76,26 @@ def container_of(root, node):
     return path[-1] if path is not None else None
 
 
-def nearest(root, focused, direction, area):
-    """The window nearest `focused` in `direction`: among windows whose center
-    lies beyond `focused`'s center along the axis, the one with the smallest
-    center-to-center distance. None when there's nothing that way."""
-    placed = list(walk(root, area))
-    frect = next((r for leaf, r in placed if leaf is focused), None)
-    if frect is None:
-        return None
-    fx, fy = _center(frect)
-    best, best_d = None, None
-    for leaf, rect in placed:
-        if leaf is focused:
-            continue
-        cx, cy = _center(rect)
-        if not _beyond(direction, fx, fy, cx, cy):
-            continue
-        d = (cx - fx) ** 2 + (cy - fy) ** 2
-        if best_d is None or d < best_d:
-            best, best_d = leaf, d
-    return best
+def adjacent_leaves(root, focused, direction):
+    """The windows in the group structurally next to `focused` one step in
+    `direction`: climb to the nearest ancestor that splits on the move axis
+    with a sibling that way, and return that sibling's windows (a lone window
+    yields just itself). Empty at an edge, where nothing lies that way."""
+    path = _path(root, focused)
+    if path is None:
+        return []
+    axis = (
+        ContainerLayout.HORIZONTAL
+        if direction in (Direction.LEFT, Direction.RIGHT)
+        else ContainerLayout.VERTICAL
+    )
+    step = -1 if direction in (Direction.LEFT, Direction.UP) else 1
+    found = _neighbor(path, axis, step)
+    if found is None:
+        return []
+    ancestor, _, j = found
+    neighbor = ancestor.children[j]
+    return leaves(neighbor) if isinstance(neighbor, Container) else [neighbor]
 
 
 def insert_sibling(root, target, leaf):
@@ -163,23 +163,11 @@ def move(root, leaf, direction):
         else ContainerLayout.VERTICAL
     )
     step = -1 if direction in (Direction.LEFT, Direction.UP) else 1
-    for ancestor, i in reversed(path):
-        if ancestor.layout != axis:
-            continue
-        j = i + step
-        if 0 <= j < len(ancestor.children):
-            break
-    else:
-        # for/else: no matching-axis neighbor anywhere -- escape one level up.
-        if len(path) < 2:
-            return
-        grandparent, iparent = path[-2]
-        parent, ileaf = path[-1]
-        del parent.children[ileaf]
-        grandparent.children.insert(
-            iparent + 1 if step > 0 else iparent, leaf)
-        _collapse(path)
+    found = _neighbor(path, axis, step)
+    if found is None:
+        _escape(path, leaf, step)
         return
+    ancestor, i, j = found
     parent, ileaf = path[-1]
     neighbor = ancestor.children[j]
     if ancestor is parent and not isinstance(neighbor, Container):
@@ -243,16 +231,28 @@ def _collapse(path):
             above.children[j] = node.children[0]
 
 
-def _center(rect):
-    return rect.x + rect.width / 2, rect.y + rect.height / 2
+def _escape(path, leaf, step):
+    """Pop `leaf` out of its immediate parent into the grandparent, on the
+    `step` side -- the edge case where no ancestor along `path` can carry it
+    further. No-op when that parent is the root, with nowhere left to go."""
+    if len(path) < 2:
+        return
+    grandparent, iparent = path[-2]
+    parent, ileaf = path[-1]
+    del parent.children[ileaf]
+    grandparent.children.insert(iparent + 1 if step > 0 else iparent, leaf)
+    _collapse(path)
 
 
-def _beyond(direction, fx, fy, cx, cy):
-    """Whether center `(cx, cy)` lies strictly past `(fx, fy)` that way."""
-    if direction == Direction.LEFT:
-        return cx < fx
-    if direction == Direction.RIGHT:
-        return cx > fx
-    if direction == Direction.UP:
-        return cy < fy
-    return cy > fy
+def _neighbor(path, axis, step):
+    """Climbing from the leaf, the first ancestor in `path` that splits on
+    `axis` and has a sibling slot `step` away: `(ancestor, i, j)` where the
+    leaf descends through `ancestor.children[i]` and the sibling sits at `j`.
+    None when every such ancestor holds the leaf at its facing edge."""
+    for ancestor, i in reversed(path):
+        if ancestor.layout != axis:
+            continue
+        j = i + step
+        if 0 <= j < len(ancestor.children):
+            return ancestor, i, j
+    return None
