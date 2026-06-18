@@ -5357,6 +5357,50 @@ def test_begin_dragging_floats():
     assert client.floating_geom == seed
 
 
+def test_begin_dragging_drops_leaf():
+    """Starting a mouse move on a tiled window drops its leaf from the
+    workspace tree so it floats outside the layout."""
+    m = make_monitor()
+    m.active_workspace = make_workspace(monitor=m)
+    a = make_client(workspace=m.active_workspace)
+    b = make_client(workspace=m.active_workspace)
+    m.active_workspace.root = flat_tree(a, b)
+    server = make_server(
+        monitors=[m], active_monitor=m, clients=[a, b],
+        cursor=make_cursor(xcursor_manager="X"))
+    node = MagicMock(name="node")
+    node.parent = a.scene_tree
+    server.lib.wlr_scene_node_at.return_value = node
+
+    with patch("wel.client_outer_rect", return_value=wel.Rect(0, 0, 100, 80)), \
+         patch("wel.apply_geometry"):
+        wel.begin_dragging_client(server)
+
+    assert m.active_workspace.root.children == [b]
+
+
+def test_begin_resizing_drops_leaf():
+    """Starting a mouse resize on a tiled window drops its leaf from the
+    workspace tree so it floats outside the layout."""
+    m = make_monitor()
+    m.active_workspace = make_workspace(monitor=m)
+    a = make_client(workspace=m.active_workspace)
+    b = make_client(workspace=m.active_workspace)
+    m.active_workspace.root = flat_tree(a, b)
+    server = make_server(
+        monitors=[m], active_monitor=m, clients=[a, b],
+        cursor=make_cursor(xcursor_manager="X"))
+    node = MagicMock(name="node")
+    node.parent = a.scene_tree
+    server.lib.wlr_scene_node_at.return_value = node
+
+    with patch("wel.client_outer_rect", return_value=wel.Rect(0, 0, 100, 80)), \
+         patch("wel.apply_geometry"):
+        wel.begin_resizing_client(server)
+
+    assert m.active_workspace.root.children == [b]
+
+
 def test_client_commit_initial_tiled():
     """A tiled client's initial commit defers tiling to map so siblings
     don't reflow before the new window can appear."""

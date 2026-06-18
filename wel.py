@@ -1855,9 +1855,7 @@ def toggle_floating(server: Server) -> None:
             and monitor.active_workspace.fullscreen is not client):
         workspace = monitor.active_workspace
         if client.floating_geom is None:
-            # Seed the float at the current outer rect so it starts where tiled.
-            client.floating_geom = client_outer_rect(client)
-            layout.remove(workspace.root, client)
+            float_client(client)
         else:
             client.floating_geom = None
             layout.insert_sibling(
@@ -2425,7 +2423,7 @@ def begin_dragging_client(server: Server) -> None:
         if workspace is not None and workspace.fullscreen is client:
             set_fullscreen(server, workspace, None)
         if client.floating_geom is None:
-            client.floating_geom = client_outer_rect(client)
+            float_client(client)
         node = client.scene_tree.node
         client.grab = Grab(
             "move", int(cur.x - node.x), int(cur.y - node.y))
@@ -2446,7 +2444,7 @@ def begin_resizing_client(server: Server) -> None:
         if workspace is not None and workspace.fullscreen is client:
             set_fullscreen(server, workspace, None)
         if client.floating_geom is None:
-            client.floating_geom = client_outer_rect(client)
+            float_client(client)
         rect = client.floating_geom
         client.grab = Grab(
             "resize", int(cur.x) - rect.width, int(cur.y) - rect.height)
@@ -2454,6 +2452,14 @@ def begin_resizing_client(server: Server) -> None:
         if monitor is not None:
             apply_geometry(server, monitor)
         apply_focus(server)
+
+
+def float_client(client: Client) -> None:
+    """Detach a tiled window into a free-floating one in place: seed its rect
+    from where it sits now and drop it from the tiling layout."""
+    client.floating_geom = client_outer_rect(client)
+    if client.workspace is not None:
+        layout.remove(client.workspace.root, client)
 
 
 def drag_client(server: Server, grabbed: Client) -> None:
