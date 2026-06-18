@@ -658,7 +658,7 @@ def monitor_render(server: Server, monitor: Monitor, _data) -> None:
     screen's vsync."""
     ffi, lib = server.ffi, server.lib
     held = any(
-        client_holds_paint(c)
+        client_holds_paint(server, c)
         for c in clients_visible(server, monitor)
     )
     if not held:
@@ -672,22 +672,26 @@ def monitor_render(server: Server, monitor: Monitor, _data) -> None:
     monitor.frame_timer.update(100 if held else 0)
 
 
-def client_holds_paint(client: Client) -> bool:
+def client_holds_paint(server: Server, client: Client) -> bool:
     """Whether an unacked compositor-driven resize on this window should hold
     the screen paint, so its border and content land in the same frame."""
-    workspace = client.workspace
-    # Floats have no border to sync; a tiled window under a fullscreen peer is
-    # occluded, so it gets no frame-done, never acks, and would hold forever.
-    # The fullscreen test is a coarse proxy for "actually presented on a
-    # screen" -- the precise check is whether the surface entered an output
-    # (see dwl's client_is_rendered_on_mon).
     return (
         isinstance(client, XdgClient)
         and client.pending_serial is not None
-        and client_layer(client) == Layer.TILE
-        and workspace is not None
-        and workspace.fullscreen is None
-    )
+        # Floats opt out so interactive resize stays responsive.
+        and client_layer(client) != Layer.FLOAT
+        # On-screen only: an occluded peer never acks and would hold forever.
+        and client_rendered(server, client))
+
+
+def client_rendered(server: Server, client: Client) -> bool:
+    """Whether the window's surface is currently shown on at least one screen
+    (i.e. the scene reports it visible, not fully occluded)."""
+    surface = client_surface(client)
+    head = server.ffi.addressof(surface[0], "current_outputs")
+    return any(
+        bindings.wl_list_for_each(
+            server.ffi, head, "struct wlr_surface_output", "link"))
 
 
 def monitor_force_paint(server: Server, monitor: Monitor) -> None:

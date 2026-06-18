@@ -192,7 +192,13 @@ struct wlr_keyboard_modifiers { ...; };
 struct wlr_output { int width; int height; bool enabled; char *name; ...; };
 struct wlr_cursor { double x; double y; ...; };
 struct wlr_input_device { int type; ...; };
-struct wlr_surface { bool mapped; void *data; ...; };
+struct wlr_surface { bool mapped; void *data; struct wl_list current_outputs; ...; };
+struct wlr_surface_output {
+    struct wlr_surface *surface;
+    struct wlr_output *output;
+    struct wl_list link;
+    ...;
+};
 struct wlr_keyboard {
     struct wlr_keyboard_modifiers modifiers;
     struct xkb_keymap *keymap;
@@ -1371,3 +1377,14 @@ def build():
         return SimpleNamespace(remove=remove, source=source)
 
     return ffi, lib, listen, add_timer, add_signal
+
+
+def wl_list_for_each(ffi, head, ctype, member):
+    """Yield each `ctype *` linked into the intrusive list `head` through its
+    `member` field (the libwayland `wl_list` iteration idiom)."""
+    offset = ffi.offsetof(ctype, member)
+    node = head.next
+    while node != head:
+        # container_of: step back from the embedded link to its owning struct.
+        yield ffi.cast(ctype + " *", ffi.cast("char *", node) - offset)
+        node = node.next

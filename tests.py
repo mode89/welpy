@@ -10,6 +10,7 @@ import sys
 from textwrap import dedent
 from unittest.mock import ANY, MagicMock, call, patch
 
+import cffi
 import pytest
 
 import bindings
@@ -745,16 +746,17 @@ def test_monitor_render_holds():
     b = make_client(workspace=monitor.active_workspace)
     server = make_server(clients=[a, b])
 
-    wel.monitor_render(server, monitor, None)
+    with patch("wel.client_rendered", return_value=True):
+        wel.monitor_render(server, monitor, None)
 
     server.lib.wlr_scene_output_commit.assert_not_called()
     server.lib.wlr_scene_output_send_frame_done.assert_called_once()
 
 
-def test_monitor_render_fullscreen():
-    """A fullscreen window suppresses the hold: the occluded tiled window
-    behind it never gets frame-done to ack, so its pending configure must
-    not freeze the screen."""
+def test_monitor_render_occluded():
+    """A window with a pending configure that isn't shown on any screen (e.g.
+    occluded behind a fullscreen peer) must not hold the paint: it gets no
+    frame-done, never acks, and would otherwise freeze the screen."""
     monitor = make_monitor(output="OUT", scene_output="SO_X")
     monitor.active_workspace = make_workspace(monitor=monitor)
     full = make_client(workspace=monitor.active_workspace)
@@ -765,9 +767,25 @@ def test_monitor_render_fullscreen():
     )
     server = make_server(clients=[full, hidden])
 
-    wel.monitor_render(server, monitor, None)
+    with patch("wel.client_rendered", return_value=False):
+        wel.monitor_render(server, monitor, None)
 
     server.lib.wlr_scene_output_commit.assert_called_once()
+
+
+def test_monitor_render_fullscreen_holds():
+    """Entering fullscreen holds the paint until the window renders at full
+    size, so the switch lands in one frame instead of flashing the old size."""
+    monitor = make_monitor(output="OUT", scene_output="SO_X")
+    monitor.active_workspace = make_workspace(monitor=monitor)
+    full = make_client(workspace=monitor.active_workspace, pending_serial=5)
+    monitor.active_workspace.fullscreen = full
+    server = make_server(clients=[full])
+
+    with patch("wel.client_rendered", return_value=True):
+        wel.monitor_render(server, monitor, None)
+
+    server.lib.wlr_scene_output_commit.assert_not_called()
 
 
 def test_monitor_render_floating():
@@ -850,7 +868,8 @@ def test_monitor_render_arms_timer():
     )
     server = make_server(clients=[client])
 
-    wel.monitor_render(server, monitor, None)
+    with patch("wel.client_rendered", return_value=True):
+        wel.monitor_render(server, monitor, None)
 
     monitor.frame_timer.update.assert_called_once_with(100)
 
@@ -863,6 +882,42 @@ def test_monitor_render_disarms_timer():
     wel.monitor_render(server, monitor, None)
 
     monitor.frame_timer.update.assert_called_once_with(0)
+
+
+def test_wl_list_for_each_yields_containers():
+    """The wl_list iterator walks an intrusive list and recovers each owning
+    struct from its embedded link, in order."""
+    ffi = cffi.FFI()
+    ffi.cdef(
+        "struct wl_list { struct wl_list *prev; struct wl_list *next; };"
+        "struct node { int v; struct wl_list link; };")
+    head = ffi.new("struct wl_list *")
+    nodes = [ffi.new("struct node *") for _ in range(3)]
+    for i, node in enumerate(nodes):
+        node.v = i + 1
+    links = [ffi.addressof(n[0], "link") for n in nodes]
+    chain = [head, *links, head]
+    for i in range(1, len(chain) - 1):
+        chain[i].prev = chain[i - 1]
+        chain[i].next = chain[i + 1]
+    head.next, head.prev = links[0], links[-1]
+
+    got = [
+        c.v for c in bindings.wl_list_for_each(
+            ffi, head, "struct node", "link")]
+
+    assert got == [1, 2, 3]
+
+
+def test_wl_list_for_each_empty():
+    """An empty list -- its sentinel points back at itself -- yields nothing."""
+    ffi = cffi.FFI()
+    ffi.cdef("struct wl_list { struct wl_list *prev; struct wl_list *next; };")
+    head = ffi.new("struct wl_list *")
+    head.next, head.prev = head, head
+
+    assert not list(
+        bindings.wl_list_for_each(ffi, head, "struct wl_list", "prev"))
 
 
 def test_monitor_force_paint_commits():
@@ -6847,7 +6902,7 @@ def test_xwayland_close():
 def test_xwayland_holds_paint():
     """X11 windows have no configure-ack, so they never hold the paint."""
     client = make_x11_client(workspace=make_workspace())
-    assert wel.client_holds_paint(client) is False
+    assert wel.client_holds_paint(make_server(), client) is False
 
 
 def test_xwayland_map_front():
