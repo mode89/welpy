@@ -152,8 +152,8 @@ def cycle_layout(container):
 
 def move(root, leaf, direction):
     """Relocate `leaf` one step in `direction`: reorder past a sibling, descend
-    into an adjacent container, or pop out of its container at an edge. Purely
-    structural; a no-op when `leaf` would leave the root."""
+    into an adjacent container, or pop out at an edge. Purely structural; a
+    no-op only when `leaf` is a direct child of `root`."""
     path = _path(root, leaf)
     if path is None:
         return
@@ -170,6 +170,15 @@ def move(root, leaf, direction):
         if 0 <= j < len(ancestor.children):
             break
     else:
+        # for/else: no matching-axis neighbor anywhere -- escape one level up.
+        if len(path) < 2:
+            return
+        grandparent, iparent = path[-2]
+        parent, ileaf = path[-1]
+        del parent.children[ileaf]
+        grandparent.children.insert(
+            iparent + 1 if step > 0 else iparent, leaf)
+        _collapse(path)
         return
     parent, ileaf = path[-1]
     neighbor = ancestor.children[j]

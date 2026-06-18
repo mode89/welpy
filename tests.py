@@ -3645,6 +3645,59 @@ def test_layout_move_root_perp():
     assert root.children == [a, f]
 
 
+def test_layout_move_escapes_parent():
+    """At the edge of its container, a window escapes its immediate parent one
+    level up, toward the move side; the drained single-child group collapses."""
+    a, b, f = object(), object(), object()
+    inner = layout.Container(layout.ContainerLayout.VERTICAL, [b, f])
+    root = layout.Container(
+        layout.ContainerLayout.HORIZONTAL, [a, inner])
+
+    layout.move(root, f, layout.Direction.DOWN)
+
+    assert root.children == [a, b, f]
+
+
+def test_layout_move_escapes_up():
+    """Escaping toward the up/left side lands the window before its parent."""
+    a, b, f = object(), object(), object()
+    inner = layout.Container(layout.ContainerLayout.VERTICAL, [f, b])
+    root = layout.Container(
+        layout.ContainerLayout.HORIZONTAL, [inner, a])
+
+    layout.move(root, f, layout.Direction.UP)
+
+    assert root.children == [f, b, a]
+
+
+def test_layout_move_escape_keeps_container():
+    """A parent left with more than one child survives the escape."""
+    a, b, c, f = object(), object(), object(), object()
+    inner = layout.Container(layout.ContainerLayout.VERTICAL, [b, c, f])
+    root = layout.Container(
+        layout.ContainerLayout.HORIZONTAL, [a, inner])
+
+    layout.move(root, f, layout.Direction.DOWN)
+
+    assert root.children == [a, inner, f]
+    assert inner.children == [b, c]
+
+
+def test_layout_move_escapes_to_grandparent():
+    """The escape rises only one level: a deeply nested window lands in its
+    grandparent, not the root."""
+    a, x, y, f = object(), object(), object(), object()
+    h2 = layout.Container(layout.ContainerLayout.HORIZONTAL, [y, f])
+    v1 = layout.Container(layout.ContainerLayout.VERTICAL, [x, h2])
+    root = layout.Container(
+        layout.ContainerLayout.HORIZONTAL, [a, v1])
+
+    layout.move(root, f, layout.Direction.DOWN)
+
+    assert root.children == [a, v1]
+    assert v1.children == [x, y, f]
+
+
 def test_layout_move_reorder_left():
     """Moving left reorders a window past its left-hand leaf sibling within the
     same container (negative-step reorder)."""
