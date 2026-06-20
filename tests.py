@@ -52,7 +52,8 @@ def make_server(**kwargs):
                    for layer in wel.Layer},
         "lock_background": MagicMock(name="lock_background"),
         "session_lock": None, "locked": False, "unmanaged_focus": None,
-        "keycode": {}, "bindings": {}, "listeners": [],
+        "keycode": {}, "bindings": {}, "passthrough": False,
+        "listeners": [],
         **kwargs,
     })
 
@@ -189,7 +190,7 @@ def make_keycode_map():
     """Stand-in keycode map covering every key referenced by built-in
     bindings, so `setup()` can build `server.bindings` without KeyError."""
     return {"Return": 28, "q": 16, "j": 36, "k": 37, "f": 33,
-            "v": 47,
+            "p": 25, "v": 47,
             "e": 18, "space": 57, "h": 35, "l": 38, "Tab": 15,
             "1": 2, "2": 3, "3": 4, "4": 5, "5": 6,
             "6": 7, "7": 8, "8": 9, "9": 10, "0": 11,
@@ -247,6 +248,49 @@ def test_modkey_super():
     server.lib.WLR_MODIFIER_LOGO = 0x40
 
     assert wel.modkey(server) == 0x40
+
+
+def test_lookup_binding_hit():
+    """A bound (mods, code) resolves to its action."""
+    action = MagicMock()
+    server = make_server(bindings={(0x40, 28): action})
+
+    assert wel.lookup_binding(server, 0x40, 28) is action
+
+
+def test_lookup_binding_miss():
+    """An unbound (mods, code) resolves to None so the press is forwarded."""
+    server = make_server(bindings={(0x40, 28): MagicMock()})
+
+    assert wel.lookup_binding(server, 0, 28) is None
+
+
+def test_lookup_binding_passthrough():
+    """While passing through, a bound action resolves to None so the press
+    reaches the focused app instead."""
+    server = make_server(
+        bindings={(0x40, 28): MagicMock()}, passthrough=True)
+
+    assert wel.lookup_binding(server, 0x40, 28) is None
+
+
+def test_lookup_binding_passthrough_toggle():
+    """The passthrough toggle still resolves while passing through, so it can
+    be switched back off."""
+    server = make_server(
+        bindings={(0x40, 28): wel.toggle_passthrough}, passthrough=True)
+
+    assert wel.lookup_binding(server, 0x40, 28) is wel.toggle_passthrough
+
+
+def test_toggle_passthrough_flips():
+    """Toggling flips the passthrough flag both ways."""
+    server = make_server(passthrough=False)
+
+    wel.toggle_passthrough(server)
+    assert server.passthrough is True
+    wel.toggle_passthrough(server)
+    assert server.passthrough is False
 
 
 def test_setup_bindings():
@@ -1834,6 +1878,23 @@ def test_keyboard_key_binding():
     wel.keyboard_key(server, "KEY_DATA")
 
     action.assert_called_once_with(server)
+
+
+def test_keyboard_key_lookup_hook():
+    """keyboard_key dispatches the action resolved by lookup_binding, so a
+    config override (e.g. submaps) can reroute presses off the flat table."""
+    action = MagicMock()
+    server = make_server(bindings={})
+    event = server.ffi.cast.return_value
+    event.state = 1
+    event.keycode = 28
+
+    with patch("wel.lookup_binding", return_value=action) as hook:
+        wel.keyboard_key(server, "KEY_DATA")
+
+    hook.assert_called_once()
+    action.assert_called_once_with(server)
+    server.lib.wlr_seat_keyboard_notify_key.assert_not_called()
 
 
 def test_keyboard_key_consumes():

@@ -212,6 +212,7 @@ class Server: # pylint: disable=too-many-instance-attributes
     unmanaged_focus: Any     # focus-holding override-redirect surface, or None
     keycode: dict            # sym-name -> evdev-keycode
     bindings: dict           # (mods, code) -> action(server)
+    passthrough: bool        # True forwards keys to the app, bypassing bindings
     listeners: list[Any]
 
 
@@ -376,7 +377,7 @@ def setup() -> Server: # pylint: disable=too-many-locals,too-many-statements
         layers=layers,
         lock_background=lock_background, session_lock=None, locked=False,
         unmanaged_focus=None,
-        keycode={}, bindings={}, listeners=[],
+        keycode={}, bindings={}, passthrough=False, listeners=[],
     )
 
     # Off server.listeners: re-bound on every GPU reset, torn down on its own.
@@ -2383,7 +2384,7 @@ def cursor_button(server: Server, data) -> None:
             focus_client(server, client)
         kb = lib.welpy_keyboard_group_keyboard(server.keyboard_group.group)
         mods = lib.wlr_keyboard_get_modifiers(kb)
-        action = server.bindings.get((mods, event.button))
+        action = lookup_binding(server, mods, event.button)
         if action is not None:
             action(server)
             return  # action self-reconciles
@@ -2527,6 +2528,8 @@ def key_bindings(server: Server) -> dict:
         (mod | lib.WLR_MODIFIER_SHIFT, server.keycode["l"]):
             lambda s: move_direction(s, layout.Direction.RIGHT),
         (mod, server.keycode["f"]): toggle_fullscreen,
+        (mod | lib.WLR_MODIFIER_SHIFT, server.keycode["p"]):
+            toggle_passthrough,
         (mod | lib.WLR_MODIFIER_SHIFT, server.keycode["space"]):
             toggle_floating,
         (mod, server.keycode["v"]): group_window,
@@ -2623,7 +2626,7 @@ def keyboard_key(server: Server, data) -> None:
     if event.state == lib.WL_KEYBOARD_KEY_STATE_PRESSED and not server.locked:
         kb = lib.welpy_keyboard_group_keyboard(server.keyboard_group.group)
         mods = lib.wlr_keyboard_get_modifiers(kb)
-        action = server.bindings.get((mods, event.keycode))
+        action = lookup_binding(server, mods, event.keycode)
         if action is not None:
             action(server)
             return  # action self-reconciles
@@ -2643,6 +2646,22 @@ def keyboard_modifiers(server: Server, _data) -> None:
     kb_group = lib.welpy_keyboard_group_keyboard(server.keyboard_group.group)
     lib.wlr_seat_keyboard_notify_modifiers(
         server.seat, ffi.addressof(kb_group, "modifiers"))
+
+
+def lookup_binding(server: Server, mods: int, code: int):
+    """Resolve a key/button press to its bound action, or None to forward it
+    to the focused app. Override to layer modal submaps over the flat table."""
+    action = server.bindings.get((mods, code))
+    # Passthrough forwards everything but its own toggle to the focused app.
+    if server.passthrough and action is not toggle_passthrough:
+        return None
+    return action
+
+
+def toggle_passthrough(server: Server) -> None:
+    """Toggle passthrough: send all keys to the focused app instead of firing
+    keybindings. Handy for nested sessions; the toggle key still works."""
+    server.passthrough = not server.passthrough
 
 
 def change_vt(server: Server, n: int) -> None:
