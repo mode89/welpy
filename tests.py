@@ -53,6 +53,9 @@ def make_server(**kwargs):
         "lock_background": MagicMock(name="lock_background"),
         "session_lock": None, "locked": False, "unmanaged_focus": None,
         "keycode": {}, "bindings": {}, "passthrough": False,
+        "pointer_constraints": MagicMock(name="pointer_constraints"),
+        "relative_pointer_mgr": MagicMock(name="relative_pointer_mgr"),
+        "active_constraint": None, "constraints": [],
         "listeners": [],
         **kwargs,
     })
@@ -74,6 +77,9 @@ def make_bindings(**kwargs):
     lib.wlr_xdg_toplevel_set_fullscreen.return_value = 0
     # No GPU device by default: skip the wlr_drm / dmabuf / syncobj branch.
     lib.wlr_renderer_get_drm_fd.return_value = -1
+    # No active pointer constraint by default; resolve to NULL like wlroots.
+    lib.wlr_pointer_constraints_v1_constraint_for_surface.return_value = \
+        ffi.NULL
     # Distinct handle per listen() call so listener counts add up.
     listen = MagicMock(side_effect=lambda *_a: MagicMock(name="handle"))
     return (ffi, lib, listen,
@@ -2096,9 +2102,10 @@ def test_cursor_motion_moves():
         cur, server.ffi.addressof.return_value, 3.0, -2.5)
 
 
-def test_cursor_motion_absolute_warps():
-    """cursor_motion_absolute warps the pointer to the absolute coordinates
-    delivered by touch / tablet / nested-backend devices."""
+def test_cursor_motion_absolute_converts():
+    """cursor_motion_absolute converts an absolute position to a layout delta
+    and moves through the shared path (no warp), so pointer lock/confine apply
+    to touch / tablet / nested-backend devices too."""
     cur = MagicMock(name="cur")
     server = make_server(cursor=make_cursor(cursor=cur, xcursor_manager="XMGR"))
     event = server.ffi.cast.return_value
@@ -2107,8 +2114,9 @@ def test_cursor_motion_absolute_warps():
 
     wel.cursor_motion_absolute(server, "MA_DATA")
 
-    server.lib.wlr_cursor_warp_absolute.assert_called_once_with(
-        cur, server.ffi.addressof.return_value, 0.25, 0.75)
+    server.lib.wlr_cursor_absolute_to_layout_coords.assert_called_once()
+    server.lib.wlr_cursor_move.assert_called_once()
+    server.lib.wlr_cursor_warp_absolute.assert_not_called()
 
 
 def test_cursor_motion_forwards():
@@ -2151,6 +2159,217 @@ def test_cursor_motion_grab_skips():
 
     server.lib.wlr_seat_pointer_notify_enter.assert_not_called()
     server.lib.wlr_seat_pointer_clear_focus.assert_not_called()
+
+
+def test_motion_relative_sent():
+    """Every real pointer move streams the raw, unaccelerated delta to
+    relative-pointer clients -- what games read for look/aim."""
+    server = make_server(cursor=make_cursor(xcursor_manager="X"))
+    event = server.ffi.cast.return_value
+    event.delta_x, event.delta_y = 5.0, -1.0
+    event.unaccel_dx, event.unaccel_dy = 4.0, -2.0
+    event.time_msec = 2
+
+    wel.cursor_motion(server, "D")
+
+    server.lib.wlr_relative_pointer_manager_v1_send_relative_motion.\
+        assert_called_once_with(
+            server.relative_pointer_mgr, server.seat, 2000,
+            5.0, -1.0, 4.0, -2.0)
+
+
+def test_constraint_activates():
+    """A move while the pointer-focused window holds a constraint activates it,
+    so the client learns the pointer is now locked/confined."""
+    server = make_server(cursor=make_cursor(xcursor_manager="X"))
+    server.lib.WLR_POINTER_CONSTRAINT_V1_LOCKED = "LOCKED"
+    server.seat.pointer_state.focused_surface = "SURF"
+    constraint = MagicMock(name="constraint", type="CONFINED")
+    server.constraints = [wel.PointerConstraint(constraint=constraint,
+                                                listeners=[])]
+    server.lib.wlr_pointer_constraints_v1_constraint_for_surface.\
+        return_value = constraint
+
+    wel.cursor_motion(server, "D")
+
+    server.lib.wlr_pointer_constraint_v1_send_activated.\
+        assert_called_once_with(constraint)
+    assert server.active_constraint is constraint
+
+
+def test_constraint_deactivates():
+    """When pointer focus leaves the constrained surface, the constraint is
+    deactivated -- the focus-tied release that doubles as the unlock escape."""
+    server = make_server(cursor=make_cursor(xcursor_manager="X"))
+    old = MagicMock(name="old_constraint")
+    server.active_constraint = old
+    server.constraints = [wel.PointerConstraint(constraint=old, listeners=[])]
+    server.seat.pointer_state.focused_surface = server.ffi.NULL
+
+    wel.cursor_motion(server, "D")
+
+    server.lib.wlr_pointer_constraint_v1_send_deactivated.\
+        assert_called_once_with(old)
+    assert server.active_constraint is None
+
+
+def test_constraint_locked_pins():
+    """A locked pointer is pinned: the cursor doesn't move, though the client
+    still receives the raw delta."""
+    server = make_server(cursor=make_cursor(xcursor_manager="X"))
+    server.lib.WLR_POINTER_CONSTRAINT_V1_LOCKED = "LOCKED"
+    server.seat.pointer_state.focused_surface = "SURF"
+    constraint = MagicMock(name="constraint", type="LOCKED")
+    server.constraints = [wel.PointerConstraint(constraint=constraint,
+                                                listeners=[])]
+    server.lib.wlr_pointer_constraints_v1_constraint_for_surface.\
+        return_value = constraint
+
+    wel.cursor_motion(server, "D")
+
+    server.lib.wlr_cursor_move.assert_not_called()
+    server.lib.wlr_relative_pointer_manager_v1_send_relative_motion.\
+        assert_called_once()
+
+
+def test_constraint_confined_clamps():
+    """A confined pointer moves by the region-confined delta (confined
+    destination minus the current surface-local position), not the raw delta."""
+    real = cffi.FFI()
+    server = make_server(cursor=make_cursor(xcursor_manager="X"))
+    server.ffi.new.side_effect = real.new
+    server.lib.WLR_POINTER_CONSTRAINT_V1_LOCKED = "LOCKED"
+    server.seat.pointer_state.focused_surface = "SURF"
+    constraint = MagicMock(name="constraint", type="CONFINED", surface="SURF")
+    server.constraints = [wel.PointerConstraint(constraint=constraint,
+                                                listeners=[])]
+    server.lib.wlr_pointer_constraints_v1_constraint_for_surface.\
+        return_value = constraint
+
+    def confine(_c, _x1, _y1, _x2, _y2, x_out, y_out):
+        x_out[0], y_out[0] = 6.0, 2.0  # clamp the raw target (11, 2) to x=6
+        return True
+    server.lib.welpy_constraint_confine.side_effect = confine
+    event = server.ffi.cast.return_value
+    event.delta_x, event.delta_y = 10.0, 0.0
+
+    with patch("wel.surface_at", return_value=("SURF", 1.0, 2.0)):
+        wel.cursor_motion(server, "D")
+
+    # confined dest (6, 2) - surface-local start (1, 2) = delta (5, 0)
+    server.lib.wlr_cursor_move.assert_called_once_with(
+        server.cursor.cursor, server.ffi.addressof.return_value, 5.0, 0.0)
+
+
+def test_constraint_grab_skips():
+    """During a move/resize drag, constraints aren't enforced -- the drag owns
+    the pointer."""
+    client = make_client(
+        grab=wel.Grab("move", 0, 0),
+        floating_geom=wel.Rect(0, 0, 100, 100))
+    server = make_server(
+        clients=[client], cursor=make_cursor(xcursor_manager="X"))
+    server.seat.pointer_state.focused_surface = "SURF"
+    constraint = MagicMock(name="constraint", type="LOCKED")
+    server.lib.wlr_pointer_constraints_v1_constraint_for_surface.\
+        return_value = constraint
+
+    wel.cursor_motion(server, "D")
+
+    server.lib.wlr_pointer_constraint_v1_send_activated.assert_not_called()
+    server.lib.wlr_cursor_move.assert_called_once()
+
+
+def test_constraint_new_listens():
+    """A new pointer-constraint request is tracked with a destroy listener so
+    it can be cleaned up when it goes away."""
+    server = make_server()
+    constraint = server.ffi.cast.return_value
+
+    wel.constraint_new(server, "C_DATA")
+
+    assert len(server.constraints) == 1
+    assert server.constraints[0].constraint is constraint
+    assert len(server.constraints[0].listeners) == 1
+
+
+def test_constraint_destroy_clears():
+    """Destroying the active constraint clears it and warps the cursor to the
+    client's hint so the pointer reappears where the app expects."""
+    server = make_server(cursor=make_cursor(xcursor_manager="X"))
+    constraint = MagicMock(name="constraint")
+    record = wel.PointerConstraint(
+        constraint=constraint, listeners=[MagicMock(name="handle")])
+    server.constraints = [record]
+    server.active_constraint = constraint
+
+    with patch("wel.constraint_warp_to_hint") as warp:
+        wel.constraint_destroy(server, record)
+
+    warp.assert_called_once_with(server, constraint)
+    assert server.active_constraint is None
+    assert record not in server.constraints
+
+
+def test_constraint_deactivate_destroys():
+    """When focus switches to another constrained surface and deactivating the
+    old (oneshot) constraint destroys it mid-call, active_constraint still ends
+    on the new one -- no dangling reference, no double-activate."""
+    server = make_server(cursor=make_cursor(xcursor_manager="X"))
+    old = MagicMock(name="old")
+    old_record = wel.PointerConstraint(
+        constraint=old, listeners=[MagicMock(name="handle")])
+    server.constraints = [old_record]
+    server.active_constraint = old
+    new = MagicMock(name="new")
+    server.lib.wlr_pointer_constraint_v1_send_deactivated.side_effect = \
+        lambda _c: wel.constraint_destroy(server, old_record)
+
+    with patch("wel.constraint_warp_to_hint") as warp:
+        wel.set_active_constraint(server, new)
+
+    warp.assert_called_once_with(server, old)
+    assert server.active_constraint is new
+    server.lib.wlr_pointer_constraint_v1_send_activated.\
+        assert_called_once_with(new)
+    assert old_record not in server.constraints
+
+
+def test_constraint_warp_to_hint():
+    """On release the cursor warps to the client's hint, mapped from
+    surface-local coords to layout via the window's content origin."""
+    real = cffi.FFI()
+    server = make_server(cursor=make_cursor(xcursor_manager="X"))
+    server.ffi.new.side_effect = real.new
+    constraint = MagicMock(name="constraint", surface="SURF")
+
+    def hint(_c, x, y):
+        x[0], y[0] = 3.0, 4.0
+        return True
+    server.lib.welpy_constraint_cursor_hint.side_effect = hint
+
+    def coords(_node, ox, oy):
+        ox[0], oy[0] = 100, 200
+        return True
+    server.lib.wlr_scene_node_coords.side_effect = coords
+
+    with patch("wel.client_for_surface", return_value=make_client()):
+        wel.constraint_warp_to_hint(server, constraint)
+
+    # content origin (100, 200) + surface-local hint (3, 4)
+    server.lib.wlr_cursor_warp.assert_called_once_with(
+        server.cursor.cursor, server.ffi.NULL, 103.0, 204.0)
+
+
+def test_constraint_warp_no_hint():
+    """With no hint set, releasing the constraint leaves the cursor where it
+    is rather than warping."""
+    server = make_server(cursor=make_cursor(xcursor_manager="X"))
+    server.lib.welpy_constraint_cursor_hint.return_value = False
+
+    wel.constraint_warp_to_hint(server, MagicMock(name="constraint"))
+
+    server.lib.wlr_cursor_warp.assert_not_called()
 
 
 def test_pointer_motion_resets_default():
@@ -4767,6 +4986,38 @@ def test_setup_lock_listener():
         built = wel.setup()
         trigger(built, lib.welpy_session_lock_mgr_new_lock, "LOCK_DATA")
     handler.assert_called_once_with(built, "LOCK_DATA")
+
+
+def test_setup_pointer_constraints():
+    """Setup creates the pointer-constraints and relative-pointer globals so
+    games can lock the pointer and read raw motion."""
+    build = make_bindings()
+    _, lib, *_ = build
+    lib.WL_SEAT_CAPABILITY_POINTER = 1
+    lib.WL_SEAT_CAPABILITY_KEYBOARD = 2
+    with patch("wel.bindings.build", return_value=build), \
+         patch("wel.build_keycode_map", return_value=make_keycode_map()):
+        wel.setup()
+
+    lib.wlr_pointer_constraints_v1_create.assert_called_once_with(
+        lib.wl_display_create.return_value)
+    lib.wlr_relative_pointer_manager_v1_create.assert_called_once_with(
+        lib.wl_display_create.return_value)
+
+
+def test_setup_constraint_listener():
+    """new_constraint on the pointer-constraints manager drives constraint_new
+    so each lock/confine request hits our handler."""
+    build = make_bindings()
+    _, lib, *_ = build
+    lib.WL_SEAT_CAPABILITY_POINTER = 1
+    lib.WL_SEAT_CAPABILITY_KEYBOARD = 2
+    with patch("wel.bindings.build", return_value=build), \
+         patch("wel.build_keycode_map", return_value=make_keycode_map()), \
+         patch("wel.constraint_new") as handler:
+        built = wel.setup()
+        trigger(built, lib.welpy_pointer_constraints_new_constraint, "C_DATA")
+    handler.assert_called_once_with(built, "C_DATA")
 
 
 def test_setup_set_cursor_listener():

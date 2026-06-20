@@ -16,6 +16,6 @@
 16. [ ] **Drag and drop** — drag content between apps, with a drag icon that follows the cursor to indicate what's being moved.
 17. [x] **Surface effects** — `wlr_viewporter`, `wlr_alpha_modifier_v1`, `wlr_single_pixel_buffer_v1`: common surface optimizations apps rely on: scale/crop a video or buffer to fit, fade a window with per-surface transparency, and fill a solid color cheaply for backgrounds.
 18. [x] **Frame timing** — `wlr_presentation_time`: tell apps exactly when their frames appeared on screen, so video players and games can pace rendering smoothly and keep audio in sync with the picture.
-19. [ ] **Pointer lock** — `wlr_pointer_constraints_v1` + `wlr_relative_pointer_v1`: capture the pointer (lock it in place or confine it to a region) and read raw, unaccelerated motion, so first-person games and 3D tools get smooth look/rotate. FPS games, Blender.
+19. [x] **Pointer lock** — `wlr_pointer_constraints_v1` + `wlr_relative_pointer_v1`: capture the pointer (lock it in place or confine it to a region) and read raw, unaccelerated motion, so first-person games and 3D tools get smooth look/rotate. FPS games, Blender.
 20. [ ] **Input injection** — `wlr_virtual_keyboard_v1` + `wlr_virtual_pointer_v1`: inject keyboard and pointer input for automation, accessibility, and remote desktop, as if from a real device. `wtype`, `wayvnc`, `ydotool`.
 21. [x] **X11 apps** — XWayland: run legacy X11 apps (older toolkits, some games) that don't speak Wayland, by embedding an X server. Also a second source of urgency hints.

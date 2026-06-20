@@ -139,6 +139,7 @@ typedef unsigned int uint32_t;
 typedef int int32_t;
 typedef short int16_t;
 typedef unsigned short uint16_t;
+typedef unsigned long uint64_t;
 
 struct wl_list { struct wl_list *prev; struct wl_list *next; };
 struct timespec { long tv_sec; long tv_nsec; };
@@ -547,6 +548,8 @@ struct wlr_pointer_motion_event {
     uint32_t time_msec;
     double delta_x;
     double delta_y;
+    double unaccel_dx;
+    double unaccel_dy;
     ...;
 };
 struct wlr_pointer_motion_absolute_event {
@@ -582,6 +585,8 @@ void wlr_cursor_attach_input_device(
         struct wlr_cursor *, struct wlr_input_device *);
 void wlr_cursor_move(struct wlr_cursor *, struct wlr_input_device *,
         double delta_x, double delta_y);
+bool wlr_cursor_warp(struct wlr_cursor *, struct wlr_input_device *,
+        double lx, double ly);
 void wlr_cursor_warp_absolute(struct wlr_cursor *, struct wlr_input_device *,
         double x, double y);
 void wlr_cursor_warp_closest(struct wlr_cursor *, struct wlr_input_device *,
@@ -841,6 +846,46 @@ struct wl_signal *welpy_idle_inhibitor_destroy(
         struct wlr_idle_inhibitor_v1 *);
 struct wlr_idle_inhibitor_v1 *welpy_idle_inhibitor_from_link(struct wl_list *);
 
+// pointer-constraints + relative-pointer: lock/confine the pointer and
+// stream raw motion for games and 3D tools.
+enum wlr_pointer_constraint_v1_type {
+    WLR_POINTER_CONSTRAINT_V1_LOCKED,
+    WLR_POINTER_CONSTRAINT_V1_CONFINED,
+};
+struct wlr_pointer_constraints_v1;
+struct wlr_pointer_constraint_v1 {
+    struct wlr_surface *surface;
+    enum wlr_pointer_constraint_v1_type type;
+    ...;
+};
+struct wlr_pointer_constraints_v1 *wlr_pointer_constraints_v1_create(
+        struct wl_display *);
+struct wlr_pointer_constraint_v1 *
+        wlr_pointer_constraints_v1_constraint_for_surface(
+        struct wlr_pointer_constraints_v1 *, struct wlr_surface *,
+        struct wlr_seat *);
+void wlr_pointer_constraint_v1_send_activated(
+        struct wlr_pointer_constraint_v1 *);
+void wlr_pointer_constraint_v1_send_deactivated(
+        struct wlr_pointer_constraint_v1 *);
+struct wl_signal *welpy_pointer_constraints_new_constraint(
+        struct wlr_pointer_constraints_v1 *);
+struct wl_signal *welpy_pointer_constraint_destroy(
+        struct wlr_pointer_constraint_v1 *);
+bool welpy_constraint_confine(struct wlr_pointer_constraint_v1 *,
+        double x1, double y1, double x2, double y2,
+        double *x_out, double *y_out);
+bool welpy_constraint_cursor_hint(struct wlr_pointer_constraint_v1 *,
+        double *x, double *y);
+
+struct wlr_relative_pointer_manager_v1;
+struct wlr_relative_pointer_manager_v1 *
+        wlr_relative_pointer_manager_v1_create(struct wl_display *);
+void wlr_relative_pointer_manager_v1_send_relative_motion(
+        struct wlr_relative_pointer_manager_v1 *, struct wlr_seat *,
+        uint64_t time_usec, double dx, double dy,
+        double dx_unaccel, double dy_unaccel);
+
 bool wlr_scene_node_coords(struct wlr_scene_node *, int *lx, int *ly);
 
 // wl_container_of for the head list: recovers the head from its link node.
@@ -992,6 +1037,9 @@ SOURCE = r"""
 #include <wlr/types/wlr_session_lock_v1.h>
 #include <wlr/types/wlr_idle_notify_v1.h>
 #include <wlr/types/wlr_idle_inhibit_v1.h>
+#include <wlr/types/wlr_pointer_constraints_v1.h>
+#include <wlr/types/wlr_relative_pointer_v1.h>
+#include <wlr/util/region.h>
 #include <wlr/types/wlr_server_decoration.h>
 #include <wlr/types/wlr_xdg_shell.h>
 #include <wlr/xwayland.h>
@@ -1194,6 +1242,27 @@ struct wlr_idle_inhibitor_v1 *welpy_idle_inhibitor_from_link(struct wl_list *l) 
     struct wlr_idle_inhibitor_v1 *inhibitor;
     return wl_container_of(l, inhibitor, link);
 }
+struct wl_signal *welpy_pointer_constraints_new_constraint(
+        struct wlr_pointer_constraints_v1 *c) {
+    return &c->events.new_constraint;
+}
+struct wl_signal *welpy_pointer_constraint_destroy(
+        struct wlr_pointer_constraint_v1 *c) {
+    return &c->events.destroy;
+}
+bool welpy_constraint_confine(struct wlr_pointer_constraint_v1 *c,
+        double x1, double y1, double x2, double y2,
+        double *x_out, double *y_out) {
+    return wlr_region_confine(&c->region, x1, y1, x2, y2, x_out, y_out);
+}
+bool welpy_constraint_cursor_hint(struct wlr_pointer_constraint_v1 *c,
+        double *x, double *y) {
+    if (!c->current.cursor_hint.enabled)
+        return false;
+    *x = c->current.cursor_hint.x;
+    *y = c->current.cursor_hint.y;
+    return true;
+}
 void welpy_xwayland_set_default_cursor(struct wlr_xwayland *xwayland,
         struct wlr_xcursor_manager *mgr) {
     struct wlr_xcursor *xcursor =
@@ -1260,6 +1329,11 @@ def _build():
     # wlroots 0.20's wlr_xdg_shell.h pulls in the generated enum-only header.
     builder.enum_header(
         "wayland-protocols", "stable/xdg-shell/xdg-shell.xml", "xdg-shell")
+    # wlr_pointer_constraints_v1.h pulls in the generated enum-only header.
+    builder.enum_header(
+        "wayland-protocols",
+        "unstable/pointer-constraints/pointer-constraints-unstable-v1.xml",
+        "pointer-constraints-unstable-v1")
     builder.scanner(
         "wlr-protocols", "unstable/wlr-layer-shell-unstable-v1.xml",
         "wlr-layer-shell-unstable-v1", private_code=False)

@@ -164,6 +164,14 @@ class Cursor:
 
 
 @dataclass
+class PointerConstraint:
+    """A client's request to lock or confine the pointer to one of its windows
+    (games, 3D tools). Tracked so its destroy listener can be detached."""
+    constraint: Any          # wlr_pointer_constraint_v1
+    listeners: list[Any]
+
+
+@dataclass
 class KeyboardGroup:
     """Every physical keyboard funneled into one logical keyboard, so apps
     see a single source of key events no matter how many keyboards are
@@ -213,6 +221,10 @@ class Server: # pylint: disable=too-many-instance-attributes
     keycode: dict            # sym-name -> evdev-keycode
     bindings: dict           # (mods, code) -> action(server)
     passthrough: bool        # True forwards keys to the app, bypassing bindings
+    pointer_constraints: Any  # wlr_pointer_constraints_v1: lock/confine manager
+    relative_pointer_mgr: Any  # streams raw motion deltas to games/3D tools
+    active_constraint: Any   # wlr_pointer_constraint_v1 in effect, or None
+    constraints: list        # PointerConstraint records, for listener cleanup
     listeners: list[Any]
 
 
@@ -343,6 +355,9 @@ def setup() -> Server: # pylint: disable=too-many-locals,too-many-statements
 
     output_power_mgr = lib.wlr_output_power_manager_v1_create(display)
 
+    pointer_constraints = lib.wlr_pointer_constraints_v1_create(display)
+    relative_pointer_mgr = lib.wlr_relative_pointer_manager_v1_create(display)
+
     # Night-light tools set per-screen color curves; the scene applies the
     # LUTs to each output automatically on commit.
     lib.wlr_scene_set_gamma_control_manager_v1(
@@ -377,7 +392,11 @@ def setup() -> Server: # pylint: disable=too-many-locals,too-many-statements
         layers=layers,
         lock_background=lock_background, session_lock=None, locked=False,
         unmanaged_focus=None,
-        keycode={}, bindings={}, passthrough=False, listeners=[],
+        keycode={}, bindings={}, passthrough=False,
+        pointer_constraints=pointer_constraints,
+        relative_pointer_mgr=relative_pointer_mgr,
+        active_constraint=None, constraints=[],
+        listeners=[],
     )
 
     # Off server.listeners: re-bound on every GPU reset, torn down on its own.
@@ -421,6 +440,9 @@ def setup() -> Server: # pylint: disable=too-many-locals,too-many-statements
             lambda data: client_request_activate(server, data)),
         listen(lib.welpy_session_lock_mgr_new_lock(session_lock_mgr),
             lambda data: lock_new(server, data)),
+        listen(lib.welpy_pointer_constraints_new_constraint(
+                pointer_constraints),
+            lambda data: constraint_new(server, data)),
         listen(lib.welpy_output_power_mgr_set_mode(output_power_mgr),
             lambda data: output_power_set_mode(server, data)),
         listen(lib.welpy_xwayland_new_surface(xwayland),
@@ -2302,31 +2324,147 @@ def destroy_cursor(lib, cursor: Cursor) -> None:
 
 
 def cursor_motion(server: Server, data) -> None:
-    """Fires on relative mouse movement; slides the pointer by the delta,
-    clamped to the screen layout."""
-    ffi, lib = server.ffi, server.lib
+    """Fires on relative mouse movement; runs the delta through the shared
+    motion path (raw-motion streaming + pointer lock/confine)."""
+    ffi = server.ffi
     event = ffi.cast("struct wlr_pointer_motion_event *", data)
-    lib.wlr_cursor_move(
-        server.cursor.cursor, ffi.addressof(event.pointer.base),
-        event.delta_x, event.delta_y)
-    if grabbed := grabbed_client(server):
-        drag_client(server, grabbed)
-    else:
-        forward_pointer_motion(server, event.time_msec)
+    process_pointer_motion(
+        server, ffi.addressof(event.pointer.base),
+        (event.delta_x, event.delta_y),
+        (event.unaccel_dx, event.unaccel_dy), event.time_msec)
 
 
 def cursor_motion_absolute(server: Server, data) -> None:
     """Fires when a device reports an absolute position (touchscreens, tablets,
-    nested-backend windows); warps the pointer there."""
+    nested-backend windows); converts it to a layout delta so the same motion
+    path (raw-motion streaming + lock/confine) applies to every input source."""
     ffi, lib = server.ffi, server.lib
     event = ffi.cast("struct wlr_pointer_motion_absolute_event *", data)
-    lib.wlr_cursor_warp_absolute(
-        server.cursor.cursor, ffi.addressof(event.pointer.base),
-        event.x, event.y)
+    device = ffi.addressof(event.pointer.base)
+    cur = server.cursor.cursor
+    lx, ly = ffi.new("double *"), ffi.new("double *")
+    lib.wlr_cursor_absolute_to_layout_coords(
+        cur, device, event.x, event.y, lx, ly)
+    delta = (lx[0] - cur.x, ly[0] - cur.y)
+    process_pointer_motion(server, device, delta, delta, event.time_msec)
+
+
+def process_pointer_motion(server: Server, device, delta, unaccel,
+                           time_msec: int) -> None:
+    """Shared pointer-motion path: stream the raw delta to relative-pointer
+    clients, enforce any pointer lock/confine, then move the cursor."""
+    lib = server.lib
+    dx, dy = delta
+    lib.wlr_relative_pointer_manager_v1_send_relative_motion(
+        server.relative_pointer_mgr, server.seat,
+        time_msec * 1000, dx, dy, *unaccel)
     if grabbed := grabbed_client(server):
+        lib.wlr_cursor_move(server.cursor.cursor, device, dx, dy)
         drag_client(server, grabbed)
-    else:
-        forward_pointer_motion(server, event.time_msec)
+        return
+    moved = apply_pointer_constraint(server, dx, dy)
+    if moved is None:
+        return  # locked: client got the raw delta; cursor + focus stay put
+    lib.wlr_cursor_move(server.cursor.cursor, device, *moved)
+    forward_pointer_motion(server, time_msec)
+
+
+def apply_pointer_constraint(server: Server, dx: float, dy: float):
+    """Resolve and enforce the pointer-focused surface's constraint; the
+    override seam for relaxing locking. Returns the (possibly clamped) delta,
+    or None when the pointer is locked and the cursor must stay pinned."""
+    ffi, lib = server.ffi, server.lib
+    if not server.constraints:
+        return dx, dy
+    focused = server.seat.pointer_state.focused_surface
+    if focused == ffi.NULL:
+        focused = None
+    constraint = None
+    if focused is not None:
+        constraint = lib.wlr_pointer_constraints_v1_constraint_for_surface(
+            server.pointer_constraints, focused, server.seat)
+        if constraint == ffi.NULL:
+            constraint = None
+    set_active_constraint(server, constraint)
+    if constraint is None:
+        return dx, dy
+    if constraint.type == lib.WLR_POINTER_CONSTRAINT_V1_LOCKED:
+        return None
+    return confine_delta(server, constraint, dx, dy)
+
+
+def confine_delta(server: Server, constraint, dx: float, dy: float):
+    """Clamp a motion delta so a confined pointer stays inside its region.
+    A no-op unless the cursor is currently over the constrained surface."""
+    ffi, lib = server.ffi, server.lib
+    cur = server.cursor.cursor
+    surface, sx, sy = surface_at(server, cur.x, cur.y)
+    if surface is None or surface != constraint.surface:
+        return dx, dy
+    x_out, y_out = ffi.new("double *"), ffi.new("double *")
+    if not lib.welpy_constraint_confine(
+            constraint, sx, sy, sx + dx, sy + dy, x_out, y_out):
+        return dx, dy
+    return x_out[0] - sx, y_out[0] - sy
+
+
+def set_active_constraint(server: Server, constraint) -> None:
+    """Switch which constraint is in effect, sending deactivate/activate as
+    pointer focus moves between constrained surfaces."""
+    lib = server.lib
+    if constraint == server.active_constraint:
+        return
+    if server.active_constraint is not None:
+        # send_deactivated may destroy the constraint, firing its destroy
+        # handler (which clears active_constraint) before we reassign below.
+        lib.wlr_pointer_constraint_v1_send_deactivated(server.active_constraint)
+    server.active_constraint = constraint
+    if constraint is not None:
+        lib.wlr_pointer_constraint_v1_send_activated(constraint)
+
+
+def constraint_new(server: Server, data) -> None:
+    """A client asked to lock or confine the pointer; track it so we can clean
+    up its listener. Enforcement happens lazily on the next motion."""
+    ffi, lib, listen = server.ffi, server.lib, server.listen
+    constraint = ffi.cast("struct wlr_pointer_constraint_v1 *", data)
+    record = PointerConstraint(constraint=constraint, listeners=[])
+    record.listeners.append(
+        listen(lib.welpy_pointer_constraint_destroy(constraint),
+            lambda _data: constraint_destroy(server, record)))
+    server.constraints.append(record)
+
+
+def constraint_destroy(server: Server, record: PointerConstraint) -> None:
+    """A pointer constraint went away; detach its listener and, if it was in
+    effect, restore the cursor to the client's hint before clearing it."""
+    for listener in record.listeners:
+        listener.remove()
+    record.listeners.clear()
+    if record in server.constraints:
+        server.constraints.remove(record)
+    if server.active_constraint == record.constraint:
+        constraint_warp_to_hint(server, record.constraint)
+        server.active_constraint = None
+
+
+def constraint_warp_to_hint(server: Server, constraint) -> None:
+    """If the released constraint set a cursor hint, move the cursor there so
+    it reappears where the app expects."""
+    ffi, lib = server.ffi, server.lib
+    hx, hy = ffi.new("double *"), ffi.new("double *")
+    if not lib.welpy_constraint_cursor_hint(constraint, hx, hy):
+        return
+    client = client_for_surface(server, constraint.surface)
+    if client is None or client.content_tree is None:
+        return
+    ox, oy = ffi.new("int *"), ffi.new("int *")
+    if not lib.wlr_scene_node_coords(
+            ffi.addressof(client.content_tree.node), ox, oy):
+        return
+    lib.wlr_cursor_warp(
+        server.cursor.cursor, ffi.NULL, ox[0] + hx[0], oy[0] + hy[0])
+    forward_pointer_motion(server, 0)
 
 
 def forward_pointer_motion(server: Server, time_msec: int) -> None:
