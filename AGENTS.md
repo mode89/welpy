@@ -7,6 +7,15 @@ Wayland compositor written in Python on top of wlroots.
 - `tests.py`: unit tests.
 - `TODO.md`: planned features, ordered by priority.
 
+## Customization
+
+Users customize welpy from `~/.config/welpy/config.py`, run at startup before the compositor is built, by monkey-patching its modules. `@wel.override` swaps a module-level function, currying the previous version as its first arg so overrides chain.
+
+- Module-level functions are the extension surface — keep customizable behavior in one so it stays patchable, not inlined or nested in a closure.
+- Spot new customization points: behavior encoding a user preference, policy, or aesthetic (keybindings, launched apps, colors, focus/placement rules, etc.). Expose what you write as a top-level hook; flag existing inlined cases instead of refactoring them. Trigger: a user would plausibly want to change it.
+- A hook's signature is an API contract: reordering or inserting positional params silently breaks configs and chained overrides. Don't churn it.
+- Hooks are genuine customization points, not every function — don't freeze ordinary helpers.
+
 ## Bindings
 
 - `welpy_*` C helpers are plumbing only — static-inline wrappers, alloc/free for opaque-sized structs, accessors for anonymous struct members. For regular named struct fields, declare the struct in the cdef and access from Python directly. Logic stays in Python.
