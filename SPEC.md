@@ -176,9 +176,13 @@ Each box below is one commit. **Gate after every box**: `pytest` green +
 `pylint .` clean + `python -m welpy` imports.
 
 **Per-module recipe** (the `model`…`commands` boxes):
-1. Move the module's functions out.
+1. Move the module's functions out, ordered **top-down** in the new file (callers
+   above callees, high-level first), not in `app.py`'s scattered source order.
+   `extract_defs` emits in the order requested, and reordering module-level `def`s
+   is behavior-preserving (none run at import), so pass the names already sorted.
 2. Sweep `app` (the remainder) — bare calls to moved fns → qualified.
-3. Move the module's tests into its mirror file; re-point its `wel.X` refs (the
+3. Move the module's tests into its mirror file, **mirroring the new module's
+   function order** (top-down by subject); re-point its `wel.X` refs (the
    Phase-1 alias) → `module.X`; switch any `@wel.override` to the target form.
 
 **Mechanical-first per box** (used for Phase 1; reuse where it helps): drive the
