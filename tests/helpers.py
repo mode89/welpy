@@ -191,6 +191,21 @@ def make_keycode_map():
             "F12": 88}
 
 
+def make_layer_surface(**kwargs):
+    """Build a LayerSurface, filling fields the test doesn't care about."""
+    return wel.LayerSurface(**{
+        "layer_surface": MagicMock(),
+        "scene_layer": MagicMock(),
+        "scene_tree": MagicMock(),
+        "popups_tree": MagicMock(),
+        "monitor": MagicMock(),
+        "focused": False,
+        "mapped": False,
+        "listeners": [],
+        **kwargs,
+    })
+
+
 def trigger(server, signal_accessor, data):
     """Invoke the callback registered with `listen` for this wlroots signal,
     simulating wlroots firing the event with `data`."""

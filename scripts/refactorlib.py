@@ -12,10 +12,10 @@ _DEFS = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
 
 
 def extract_defs(src: str, names: list[str]) -> str:
-    """Named top-level def/class blocks in source order; src untouched."""
+    """Named top-level def/class blocks in the requested order; src untouched."""
     nodes = _resolve(src, names)
     lines = src.split("\n")
-    spans = sorted(_span(nodes[name]) for name in names)
+    spans = [_span(nodes[name]) for name in names]
     blocks = ["\n".join(lines[start - 1:end]) for start, end in spans]
     return "\n\n\n".join(blocks) + "\n"  # two blank lines between top-level defs
 
@@ -93,16 +93,16 @@ if __name__ == "__main__":
 '''
 
 
-def test_extract_source_order():
-    """Extraction follows source order and includes decorators."""
+def test_extract_given_order():
+    """Extraction follows the requested name order and includes decorators."""
     expected = (
+        "def beta():\n"
+        "    return 2\n"
+        "\n"
+        "\n"
         "@deco\n"
         "def alpha(x):\n"
         "    return x\n"
-        "\n"
-        "\n"
-        "def beta():\n"
-        "    return 2\n"
     )
     assert extract_defs(_SAMPLE, ["beta", "alpha"]) == expected
 

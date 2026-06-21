@@ -14,11 +14,12 @@ import cffi
 import pytest
 
 import welpy
-from welpy import app as wel, bindings, ext_workspace, layout, libinput
+from welpy import (
+    app as wel, bindings, ext_workspace, geometry, layout, libinput, model)
 from tests.helpers import (
     make_server, make_bindings, make_client, make_x11_client, make_unmanaged,
     make_monitor, make_workspace, flat_tree, make_cursor, make_keyboard_group,
-    make_keycode_map, trigger,
+    make_keycode_map, make_layer_surface, trigger,
 )
 
 
@@ -1025,7 +1026,7 @@ def test_client_unmap_refocuses():
     b = make_client(focus_order=1, workspace=m.active_workspace)
     server = make_server(monitors=[m], active_monitor=m, clients=[a, b])
 
-    with patch("welpy.app.apply_geometry"), \
+    with patch("welpy.geometry.apply_geometry"), \
          patch("welpy.app.focus_client") as focus:
         wel.client_unmap(server, a, "DATA")
 
@@ -1072,7 +1073,7 @@ def test_client_unmap_lineage():
         layout.ContainerLayout.HORIZONTAL, [a, inner])
     server = make_server(monitors=[m], active_monitor=m, clients=[a, b, c])
 
-    with patch("welpy.app.apply_geometry"), \
+    with patch("welpy.geometry.apply_geometry"), \
          patch("welpy.app.focus_client") as focus:
         wel.client_unmap(server, b, "DATA")
 
@@ -1092,7 +1093,7 @@ def test_client_unmap_float_fallback():
         floating_geom=wel.Rect(0, 0, 100, 100))
     server = make_server(monitors=[m], active_monitor=m, clients=[a, b, f])
 
-    with patch("welpy.app.apply_geometry"), \
+    with patch("welpy.geometry.apply_geometry"), \
          patch("welpy.app.focus_client") as focus:
         wel.client_unmap(server, f, "DATA")
 
@@ -1127,7 +1128,7 @@ def test_client_map_orders():
 
     calls = []
     with patch(
-            "welpy.app.apply_geometry",
+            "welpy.geometry.apply_geometry",
             side_effect=lambda *_: calls.append("geometry")), \
          patch("welpy.app.focus_client",
                side_effect=lambda *_a: calls.append("focus")):
@@ -1260,7 +1261,7 @@ def test_popup_new_unconstrain():
     owner.scene_tree.node.y = 50
     server = make_server(monitors=[m], clients=[owner])
     popup, _ = _stage_popup(server, owner=owner)
-    with patch("welpy.app.monitor_box",
+    with patch("welpy.geometry.monitor_box",
                return_value=wel.Rect(10, 20, 800, 600)):
         wel.popup_new(server, "DATA")
         trigger(server, server.lib.welpy_surface_commit, "COMMIT")
@@ -1358,139 +1359,13 @@ def test_setup_decoration_listener():
     with patch("welpy.app.bindings.build", return_value=build), \
          patch("welpy.app.build_keycode_map",
                return_value=make_keycode_map()), \
-         patch("welpy.app.decoration_new") as handler:
+         patch("welpy.geometry.decoration_new") as handler:
         built = wel.setup()
         trigger(built, lib.welpy_xdg_decoration_manager_new, "DECO_DATA")
     handler.assert_called_once_with(built, "DECO_DATA")
 
 
-def _make_deco(server, client, *, initialized=True):
-    """Stage a deco that decoration_new will resolve to `client` via
-    ffi.from_handle (mirroring how the real handle round-trips)."""
-    client.toplevel.base.initialized = initialized
-    deco = MagicMock(name="deco")
-    deco.toplevel = client.toplevel
-    server.ffi.cast.return_value = deco
-    server.ffi.from_handle.return_value = client
-    return deco
-
-
-def test_decoration_new_forces_ssd():
-    """A decoration request from an already-initialized window flips it to
-    server-side immediately."""
-    client = make_client()
-    server = make_server(clients=[client])
-    deco = _make_deco(server, client)
-
-    wel.decoration_new(server, "DECO_DATA")
-
-    assert client.decoration is deco
-    server.lib.wlr_xdg_toplevel_decoration_v1_set_mode.assert_called_once_with(
-        deco,
-        server.lib.WLR_XDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE)
-
-
-def test_decoration_new_before_initialized():
-    """A decoration request that arrives before the initial configure does
-    not set the mode yet -- doing so would be a protocol error."""
-    server = make_server()
-    client = make_client(toplevel=MagicMock(), scene_tree=MagicMock())
-    deco = _make_deco(server, client, initialized=False)
-
-    wel.decoration_new(server, "DECO_DATA")
-
-    assert client.decoration is deco
-    server.lib.wlr_xdg_toplevel_decoration_v1_set_mode.assert_not_called()
-
-
-def test_decoration_new_no_back_pointer():
-    """A decoration whose toplevel was never registered (no back-pointer)
-    is silently ignored; nothing to attach state to."""
-    server = make_server()
-    deco = MagicMock(name="deco")
-    deco.toplevel.base.data = server.ffi.NULL
-    server.ffi.cast.return_value = deco
-
-    wel.decoration_new(server, "DECO_DATA")
-
-    server.ffi.from_handle.assert_not_called()
-    server.lib.wlr_xdg_toplevel_decoration_v1_set_mode.assert_not_called()
-
-
-def test_decoration_request_mode_reasserts():
-    """Re-emitting request_mode after initialization re-forces server-side
-    so apps can't flip themselves back to client-side later."""
-    client = make_client()
-    server = make_server(clients=[client])
-    deco = _make_deco(server, client)
-
-    wel.decoration_new(server, "DECO_DATA")
-    server.lib.wlr_xdg_toplevel_decoration_v1_set_mode.reset_mock()
-    trigger(server, server.lib.welpy_xdg_decoration_request_mode, "REQ_DATA")
-
-    server.lib.wlr_xdg_toplevel_decoration_v1_set_mode.assert_called_once_with(
-        deco,
-        server.lib.WLR_XDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE)
-
-
-def test_decoration_destroy_clears():
-    """When the app destroys its decoration object, our per-decoration
-    listeners are detached and the client forgets it."""
-    server = make_server()
-    client = make_client(toplevel=MagicMock(), scene_tree=MagicMock())
-    _make_deco(server, client)
-
-    wel.decoration_new(server, "DECO_DATA")
-    attached = list(client.listeners)
-    trigger(server, server.lib.welpy_xdg_decoration_destroy, "DESTROY_DATA")
-
-    assert client.decoration is None
-    assert not client.listeners
-    for h in attached:
-        h.remove.assert_called_once()
-
-
 # --- apply_decoration ----------------------------------------------------
-
-
-def test_apply_decoration_forces():
-    """Every initialized window with a decoration is set to server-side."""
-    a = make_client(decoration=MagicMock(name="deco_a"))
-    a.toplevel.base.initialized = True
-    b = make_client(decoration=MagicMock(name="deco_b"))
-    b.toplevel.base.initialized = True
-    server = make_server(clients=[a, b])
-
-    wel.apply_decoration(server)
-
-    ssd = server.lib.WLR_XDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE
-    set_mode = server.lib.wlr_xdg_toplevel_decoration_v1_set_mode
-    assert set_mode.call_count == 2
-    set_mode.assert_any_call(a.decoration, ssd)
-    set_mode.assert_any_call(b.decoration, ssd)
-
-
-def test_apply_decoration_skips_uninitialized():
-    """A decoration on a not-yet-initialized surface is skipped to avoid
-    a protocol error."""
-    client = make_client(decoration=MagicMock())
-    client.toplevel.base.initialized = False
-    server = make_server(clients=[client])
-
-    wel.apply_decoration(server)
-
-    server.lib.wlr_xdg_toplevel_decoration_v1_set_mode.assert_not_called()
-
-
-def test_apply_decoration_skips_no_decoration():
-    """Windows without a decoration object are skipped (most apps)."""
-    client = make_client(decoration=None)
-    client.toplevel.base.initialized = True
-    server = make_server(clients=[client])
-
-    wel.apply_decoration(server)
-
-    server.lib.wlr_xdg_toplevel_decoration_v1_set_mode.assert_not_called()
 
 
 def test_client_map_reasserts_decoration():
@@ -1499,8 +1374,9 @@ def test_client_map_reasserts_decoration():
     server = make_server(monitors=[MagicMock(name="m", fullscreen=None)])
     client = make_client(scene_tree=None)
 
-    with patch("welpy.app.apply_geometry"), patch("welpy.app.focus_client"), \
-         patch("welpy.app.apply_decoration") as ad:
+    with patch("welpy.geometry.apply_geometry"), \
+         patch("welpy.app.focus_client"), \
+         patch("welpy.geometry.apply_decoration") as ad:
         wel.client_map(server, client, None)
 
     ad.assert_called_once_with(server)
@@ -2443,9 +2319,9 @@ def test_begin_dragging_offset():
     node.parent = client.scene_tree
     server.lib.wlr_scene_node_at.return_value = node
 
-    with patch("welpy.app.client_outer_rect",
+    with patch("welpy.geometry.client_outer_rect",
                return_value=wel.Rect(100, 150, 200, 200)), \
-         patch("welpy.app.apply_geometry"):
+         patch("welpy.geometry.apply_geometry"):
         wel.begin_dragging_client(server)
 
     assert client.grab == wel.Grab("move", 20, 50)
@@ -2456,7 +2332,7 @@ def test_begin_dragging_empty():
     server = make_server(cursor=make_cursor(xcursor_manager="X"))
     server.lib.wlr_scene_node_at.return_value = server.ffi.NULL
 
-    with patch("welpy.app.apply_geometry") as apply_geom:
+    with patch("welpy.geometry.apply_geometry") as apply_geom:
         wel.begin_dragging_client(server)
 
     apply_geom.assert_not_called()
@@ -2493,9 +2369,9 @@ def test_begin_resizing_anchor():
     node.parent = client.scene_tree
     server.lib.wlr_scene_node_at.return_value = node
 
-    with patch("welpy.app.client_outer_rect",
+    with patch("welpy.geometry.client_outer_rect",
                return_value=wel.Rect(100, 150, 300, 200)), \
-         patch("welpy.app.apply_geometry"):
+         patch("welpy.geometry.apply_geometry"):
         wel.begin_resizing_client(server)
 
     assert client.grab == wel.Grab("resize", 200, 200)
@@ -2506,7 +2382,7 @@ def test_begin_resizing_empty():
     server = make_server(cursor=make_cursor(xcursor_manager="X"))
     server.lib.wlr_scene_node_at.return_value = server.ffi.NULL
 
-    with patch("welpy.app.apply_geometry") as apply_geom:
+    with patch("welpy.geometry.apply_geometry") as apply_geom:
         wel.begin_resizing_client(server)
 
     apply_geom.assert_not_called()
@@ -2526,7 +2402,7 @@ def test_cursor_motion_resizes():
     server.cursor.cursor.x = 500.0
     server.cursor.cursor.y = 400.0
 
-    with patch("welpy.app.resize_client") as rc:
+    with patch("welpy.geometry.resize_client") as rc:
         wel.cursor_motion(server, "MOTION_DATA")
 
     rc.assert_called_once_with(server, grabbed, wel.Rect(100, 150, 300, 200))
@@ -2547,7 +2423,7 @@ def test_cursor_motion_resize_min():
     server.cursor.cursor.x = 50.0
     server.cursor.cursor.y = 50.0
 
-    with patch("welpy.app.resize_client") as rc:
+    with patch("welpy.geometry.resize_client") as rc:
         wel.cursor_motion(server, "MOTION_DATA")
 
     rc.assert_called_once_with(server, grabbed, wel.Rect(100, 150, 1, 1))
@@ -2803,80 +2679,6 @@ def test_focus_client_order():
     wel.focus_client(server, a)
 
     assert a.focus_order > b.focus_order > 0
-
-
-# --- apply_tree ----------------------------------------------------------
-
-
-def test_apply_tree_clients():
-    """Each client's scene node is reparented to its layer's tree."""
-    a = make_client()
-    b = make_client(floating_geom=wel.Rect(0, 0, 100, 100))
-    server = make_server(clients=[a, b])
-
-    wel.apply_tree(server)
-
-    node = server.ffi.addressof.return_value
-    server.lib.wlr_scene_node_reparent.assert_any_call(
-        node, server.layers[wel.Layer.TILE])
-    server.lib.wlr_scene_node_reparent.assert_any_call(
-        node, server.layers[wel.Layer.FLOAT])
-
-
-def test_apply_tree_skips_unmapped():
-    """A client without a scene_tree is between create and map -- skipped."""
-    client = make_client(scene_tree=None)
-    server = make_server(clients=[client])
-
-    wel.apply_tree(server)
-
-    server.lib.wlr_scene_node_reparent.assert_not_called()
-
-
-def test_apply_tree_idempotent():
-    """When every node is already under the right parent, nothing is
-    reparented."""
-    client = make_client()
-    server = make_server(clients=[client])
-    server.ffi.addressof.return_value.parent = server.layers[wel.Layer.TILE]
-
-    wel.apply_tree(server)
-
-    server.lib.wlr_scene_node_reparent.assert_not_called()
-
-
-def test_apply_tree_layer_surface():
-    """A layer surface in monitor.layers[TOP] is parented under the TOP
-    tree; its popups tree follows."""
-    monitor = MagicMock(name="m", fullscreen=None)
-    monitor.layers = {layer: [] for layer in wel.Layer}
-    ls = MagicMock(name="ls")
-    monitor.layers[wel.Layer.TOP].append(ls)
-    server = make_server(monitors=[monitor])
-
-    wel.apply_tree(server)
-
-    node = server.ffi.addressof.return_value
-    server.lib.wlr_scene_node_reparent.assert_any_call(
-        node, server.layers[wel.Layer.TOP])
-
-
-def test_apply_tree_popups_lifted():
-    """A layer surface in BACKGROUND has its popups tree lifted into TOP
-    so a bar can't bury them."""
-    monitor = MagicMock(name="m", fullscreen=None)
-    monitor.layers = {layer: [] for layer in wel.Layer}
-    ls = MagicMock(name="ls")
-    monitor.layers[wel.Layer.BACKGROUND].append(ls)
-    server = make_server(monitors=[monitor])
-
-    wel.apply_tree(server)
-
-    node = server.ffi.addressof.return_value
-    server.lib.wlr_scene_node_reparent.assert_any_call(
-        node, server.layers[wel.Layer.BACKGROUND])
-    server.lib.wlr_scene_node_reparent.assert_any_call(
-        node, server.layers[wel.Layer.TOP])
 
 
 # --- apply_focus ---------------------------------------------------------
@@ -3175,7 +2977,8 @@ def test_client_map_monitor_selected():
     server = make_server(monitors=[m1, m2], active_monitor=m1)
     client = make_client(scene_tree=None)
 
-    with patch("welpy.app.focus_client"), patch("welpy.app.apply_geometry"):
+    with patch("welpy.app.focus_client"), \
+         patch("welpy.geometry.apply_geometry"):
         wel.client_map(server, client, None)
 
     assert client.workspace is m1.active_workspace
@@ -3204,10 +3007,11 @@ def test_client_map_floats_dialog():
     client = make_client(toplevel=toplevel, scene_tree=None)
     toplevel.parent = MagicMock(name="parent_toplevel")
 
-    with patch("welpy.app.focus_client"), patch("welpy.app.apply_geometry"):
+    with patch("welpy.app.focus_client"), \
+         patch("welpy.geometry.apply_geometry"):
         wel.client_map(server, client, None)
 
-    assert wel.client_layer(client) == wel.Layer.FLOAT
+    assert geometry.client_layer(client) == wel.Layer.FLOAT
 
 
 def test_client_map_no_parent():
@@ -3217,10 +3021,11 @@ def test_client_map_no_parent():
     server = make_server(monitors=[m], active_monitor=m)
     client = make_client(scene_tree=None)
 
-    with patch("welpy.app.focus_client"), patch("welpy.app.apply_geometry"):
+    with patch("welpy.app.focus_client"), \
+         patch("welpy.geometry.apply_geometry"):
         wel.client_map(server, client, None)
 
-    assert wel.client_layer(client) == wel.Layer.TILE
+    assert geometry.client_layer(client) == wel.Layer.TILE
 
 
 def test_client_map_adds_leaf():
@@ -3233,7 +3038,8 @@ def test_client_map_adds_leaf():
     server = make_server(monitors=[m], active_monitor=m, clients=[old])
     fresh = make_client(scene_tree=None)
 
-    with patch("welpy.app.focus_client"), patch("welpy.app.apply_geometry"):
+    with patch("welpy.app.focus_client"), \
+         patch("welpy.geometry.apply_geometry"):
         wel.client_map(server, fresh, None)
 
     assert m.active_workspace.root.children == [old, fresh]
@@ -3268,6 +3074,7 @@ def test_top_client_empty():
 def test_focus_direction_moves():
     """Directional focus shifts to the structurally adjacent tiled window: from
     the left column of a three-column row, RIGHT lands on the middle one."""
+    # pylint: disable=duplicate-code
     m = make_monitor(window_area=wel.Rect(0, 0, 900, 600))
     m.active_workspace = make_workspace(monitor=m)
     a = make_client(workspace=m.active_workspace)
@@ -3365,6 +3172,7 @@ def test_focus_direction_group_mru():
 def test_move_direction_moves():
     """mod+shift relocates the focused window one slot that way: from the left
     of a three-column row, RIGHT reorders it past its neighbor."""
+    # pylint: disable=duplicate-code
     m = make_monitor(window_area=wel.Rect(0, 0, 900, 600))
     m.active_workspace = make_workspace(monitor=m)
     a = make_client(workspace=m.active_workspace)
@@ -3374,7 +3182,7 @@ def test_move_direction_moves():
     server = make_server(monitors=[m], active_monitor=m, clients=[a, b, c])
     wel.focus_client(server, a)
 
-    with patch("welpy.app.apply_geometry"), patch("welpy.app.apply_focus"):
+    with patch("welpy.geometry.apply_geometry"), patch("welpy.app.apply_focus"):
         wel.move_direction(server, layout.Direction.RIGHT)
 
     assert m.active_workspace.root.children == [b, a, c]
@@ -3391,7 +3199,7 @@ def test_move_direction_edge():
     server = make_server(monitors=[m], active_monitor=m, clients=[a, b])
     wel.focus_client(server, b)
 
-    with patch("welpy.app.apply_geometry"), patch("welpy.app.apply_focus"):
+    with patch("welpy.geometry.apply_geometry"), patch("welpy.app.apply_focus"):
         wel.move_direction(server, layout.Direction.RIGHT)
 
     assert m.active_workspace.root.children == [a, b]
@@ -3408,7 +3216,7 @@ def test_move_direction_fullscreen():
     server = make_server(monitors=[m], active_monitor=m, clients=[a, b])
     wel.focus_client(server, a)
 
-    with patch("welpy.app.apply_geometry"), patch("welpy.app.apply_focus"):
+    with patch("welpy.geometry.apply_geometry"), patch("welpy.app.apply_focus"):
         wel.move_direction(server, layout.Direction.RIGHT)
 
     assert m.active_workspace.root.children == [a, b]
@@ -3428,11 +3236,11 @@ def test_move_direction_floating():
     server = make_server(monitors=[m], active_monitor=m, clients=[a, b])
     wel.focus_client(server, b)
 
-    with patch("welpy.app.apply_geometry") as geometry, \
+    with patch("welpy.geometry.apply_geometry") as apply_geom, \
          patch("welpy.app.apply_focus"):
         wel.move_direction(server, layout.Direction.LEFT)
 
-    geometry.assert_not_called()
+    apply_geom.assert_not_called()
     assert m.active_workspace.root.children == [a]
 
 
@@ -3449,7 +3257,7 @@ def test_move_direction_vertical():
     server = make_server(monitors=[m], active_monitor=m, clients=[a, b, c])
     wel.focus_client(server, a)
 
-    with patch("welpy.app.apply_geometry"), patch("welpy.app.apply_focus"):
+    with patch("welpy.geometry.apply_geometry"), patch("welpy.app.apply_focus"):
         wel.move_direction(server, layout.Direction.DOWN)
 
     assert m.active_workspace.root.children == [b, a, c]
@@ -3466,7 +3274,7 @@ def test_group_window_wraps():
     server = make_server(monitors=[m], active_monitor=m, clients=[a, b])
     wel.focus_client(server, a)
 
-    with patch("welpy.app.apply_geometry"), patch("welpy.app.apply_focus"):
+    with patch("welpy.geometry.apply_geometry"), patch("welpy.app.apply_focus"):
         wel.group_window(server)
 
     root = m.active_workspace.root
@@ -3486,7 +3294,7 @@ def test_group_window_alone():
     server = make_server(monitors=[m], active_monitor=m, clients=[a])
     wel.focus_client(server, a)
 
-    with patch("welpy.app.apply_geometry"), patch("welpy.app.apply_focus"):
+    with patch("welpy.geometry.apply_geometry"), patch("welpy.app.apply_focus"):
         wel.group_window(server)
 
     assert m.active_workspace.root.children == [a]
@@ -3506,7 +3314,7 @@ def test_group_window_nested():
     server = make_server(monitors=[m], active_monitor=m, clients=[a, b, c])
     wel.focus_client(server, a)
 
-    with patch("welpy.app.apply_geometry"), patch("welpy.app.apply_focus"):
+    with patch("welpy.geometry.apply_geometry"), patch("welpy.app.apply_focus"):
         wel.group_window(server)
 
     assert isinstance(column.children[0], layout.Container)
@@ -3526,7 +3334,7 @@ def test_cycle_layout_flips():
     server = make_server(monitors=[m], active_monitor=m, clients=[a, b])
     wel.focus_client(server, a)
 
-    with patch("welpy.app.apply_geometry"), patch("welpy.app.apply_focus"):
+    with patch("welpy.geometry.apply_geometry"), patch("welpy.app.apply_focus"):
         wel.cycle_layout(server)
 
     assert m.active_workspace.root.layout == layout.ContainerLayout.VERTICAL
@@ -3548,55 +3356,6 @@ def test_client_unmap_unselected():
     focus.assert_not_called()
 
 
-def test_monitor_box_returns_rect():
-    """monitor_box reads the layout box and returns it as a Rect."""
-    server = make_server()
-    monitor = make_monitor(output="OUT", scene_output="SO")
-    box = server.ffi.new.return_value
-    box.x, box.y, box.width, box.height = 10, 20, 800, 600
-
-    result = wel.monitor_box(server, monitor)
-
-    assert result == wel.Rect(10, 20, 800, 600)
-    server.lib.wlr_output_layout_get_box.assert_called_once_with(
-        server.output_layout, "OUT", box)
-
-
-def test_resize_client_geometry():
-    """resize_client positions the wrapper subtree and configures the inner
-    surface size shrunk by twice the border width, without touching
-    tiled-edge state. The xdg subtree is also inset by the border so the
-    surface doesn't render on top of the border rects."""
-    server = make_server()
-    borders = tuple(MagicMock(name=f"b{i}") for i in range(4))
-    client = make_client(
-        toplevel=MagicMock(), scene_tree=MagicMock(), borders=borders)
-
-    wel.resize_client(server, client, wel.Rect(10, 20, 300, 400))
-
-    server.lib.wlr_scene_node_set_position.assert_any_call(
-        server.ffi.addressof.return_value, 10, 20)
-    bw = wel.BORDER_WIDTH
-    server.lib.wlr_scene_node_set_position.assert_any_call(
-        server.ffi.addressof.return_value, bw, bw)
-    server.lib.wlr_xdg_toplevel_set_size.assert_called_once_with(
-        client.toplevel, 300 - 2 * bw, 400 - 2 * bw)
-    server.lib.wlr_xdg_toplevel_set_tiled.assert_not_called()
-
-
-def test_resize_client_tracks():
-    """resize_client records the configure serial so the screen waits for
-    the client to render at the new size."""
-    server = make_server()
-    server.lib.wlr_xdg_toplevel_set_size.return_value = 42
-    borders = tuple(MagicMock() for _ in range(4))
-    client = make_client(scene_tree=MagicMock(), borders=borders)
-
-    wel.resize_client(server, client, wel.Rect(10, 20, 300, 400))
-
-    assert client.pending_serial == 42
-
-
 def test_borders_present():
     """A new window gets four edge rects under its wrapper tree so it has
     something to color on focus."""
@@ -3613,51 +3372,6 @@ def test_borders_present():
         c.args[0] for c in server.lib.wlr_scene_rect_create.call_args_list
     ]
     assert parents == [wrapper] * 4
-
-
-def test_borders_resize():
-    """resize_client frames the wrapper with edge rects whose sizes match
-    the outer rect on the long axis and the border width on the short one."""
-    server = make_server()
-    top, bottom, left, right = (
-        MagicMock(name="top"), MagicMock(name="bottom"),
-        MagicMock(name="left"), MagicMock(name="right"))
-    client = make_client(
-        toplevel=MagicMock(), scene_tree=MagicMock(),
-        borders=(top, bottom, left, right))
-
-    wel.resize_client(server, client, wel.Rect(10, 20, 300, 400))
-
-    bw = wel.BORDER_WIDTH
-    sizes = server.lib.wlr_scene_rect_set_size.call_args_list
-    assert sizes == [
-        call(top, 300, bw),
-        call(bottom, 300, bw),
-        call(left, bw, 400 - 2 * bw),
-        call(right, bw, 400 - 2 * bw),
-    ]
-
-
-def test_resize_client_clips():
-    """resize_client clips the xdg subtree to the inner area, anchored at
-    the surface's xdg geometry offset so CSD shadow margins are skipped."""
-    server = make_server()
-    toplevel = MagicMock()
-    toplevel.base.geometry.x = 12
-    toplevel.base.geometry.y = 34
-    client = make_client(
-        toplevel=toplevel, scene_tree=MagicMock(),
-        borders=tuple(MagicMock() for _ in range(4)))
-
-    wel.resize_client(server, client, wel.Rect(10, 20, 300, 400))
-
-    bw = wel.BORDER_WIDTH
-    server.ffi.new.assert_any_call(
-        "struct wlr_box *", [12, 34, 300 - 2 * bw, 400 - 2 * bw])
-    server.lib.wlr_scene_subsurface_tree_set_clip.assert_called_once_with(
-        server.ffi.addressof.return_value, server.ffi.new.return_value)
-
-
 
 
 # --- apply_geometry ------------------------------------------------------
@@ -4055,138 +3769,13 @@ def test_layout_move_popout_survives():
     assert inner.children == [a, b]
 
 
-def test_apply_geometry_single_full():
-    """One tiled window fills the whole window area."""
-    m = make_monitor(window_area=wel.Rect(0, 0, 800, 600))
-    m.active_workspace = make_workspace(monitor=m)
-    a = make_client(workspace=m.active_workspace)
-    m.active_workspace.root = flat_tree(a)
-    server = make_server(clients=[a])
-
-    with patch("welpy.app.resize_client") as resize:
-        wel.apply_geometry(server, m)
-
-    resize.assert_called_once_with(server, a, wel.Rect(0, 0, 800, 600))
-
-
-def test_apply_geometry_row():
-    """Three tiled windows in a HORIZONTAL container split the width into three
-    equal columns spanning the full height, summing exactly to the area."""
-    m = make_monitor(window_area=wel.Rect(0, 0, 800, 600))
-    m.active_workspace = make_workspace(monitor=m)
-    a = make_client(workspace=m.active_workspace)
-    b = make_client(workspace=m.active_workspace)
-    c = make_client(workspace=m.active_workspace)
-    m.active_workspace.root = flat_tree(a, b, c)
-    server = make_server(clients=[a, b, c])
-
-    with patch("welpy.app.resize_client") as resize:
-        wel.apply_geometry(server, m)
-
-    assert resize.call_args_list == [
-        call(server, a, wel.Rect(0, 0, 266, 600)),
-        call(server, b, wel.Rect(266, 0, 267, 600)),
-        call(server, c, wel.Rect(533, 0, 267, 600)),
-    ]
-
-
-def test_apply_geometry_other_monitor():
-    """apply_geometry only touches clients visible on its monitor."""
-    m1 = make_monitor(window_area=wel.Rect(0, 0, 800, 600))
-    m1.active_workspace = make_workspace(monitor=m1)
-    m2 = make_monitor(window_area=wel.Rect(0, 0, 800, 600))
-    m2.active_workspace = make_workspace(monitor=m2)
-    a = make_client(workspace=m1.active_workspace)
-    b = make_client(workspace=m2.active_workspace)
-    m1.active_workspace.root = flat_tree(a)
-    m2.active_workspace.root = flat_tree(b)
-    server = make_server(clients=[a, b])
-
-    with patch("welpy.app.resize_client") as resize:
-        wel.apply_geometry(server, m1)
-
-    resize.assert_called_once_with(server, a, wel.Rect(0, 0, 800, 600))
-
-
-def test_apply_geometry_skips_floating():
-    """Floating windows aren't in the tree; the tile path covers tiles only,
-    then floats get their own rect."""
-    m = make_monitor(window_area=wel.Rect(0, 0, 800, 600))
-    m.active_workspace = make_workspace(monitor=m)
-    a = make_client(
-        workspace=m.active_workspace,
-        floating_geom=wel.Rect(50, 60, 100, 80),
-    )
-    b = make_client(workspace=m.active_workspace)
-    m.active_workspace.root = flat_tree(b)
-    server = make_server(clients=[a, b])
-
-    with patch("welpy.app.resize_client") as resize:
-        wel.apply_geometry(server, m)
-
-    # The tile gets the full window area; the float gets its own rect.
-    assert resize.call_args_list == [
-        call(server, b, wel.Rect(0, 0, 800, 600)),
-        call(server, a, wel.Rect(50, 60, 100, 80)),
-    ]
-
-
-def test_apply_geometry_sizes_fullscreen():
-    """A fullscreen window is sized to the monitor box; the windows hidden
-    behind it are left untouched until fullscreen exits."""
-    m = make_monitor(window_area=wel.Rect(0, 0, 800, 600))
-    m.active_workspace = make_workspace(monitor=m)
-    fs = make_client(workspace=m.active_workspace)
-    m.active_workspace.fullscreen = fs
-    tile = make_client(workspace=m.active_workspace)
-    m.active_workspace.root = flat_tree(fs, tile)
-    server = make_server(clients=[fs, tile])
-
-    with patch("welpy.app.monitor_box",
-               return_value=wel.Rect(0, 0, 800, 600)), \
-         patch("welpy.app.resize_client") as resize:
-        wel.apply_geometry(server, m)
-
-    resize.assert_called_once_with(server, fs, wel.Rect(0, 0, 800, 600))
-
-
-def test_apply_geometry_empty():
-    """With no tile/fullscreen clients on the monitor, apply_geometry
-    does nothing."""
-    server = make_server()
-    m = make_monitor()
-    m.active_workspace = make_workspace(monitor=m)
-
-    with patch("welpy.app.resize_client") as resize:
-        wel.apply_geometry(server, m)
-
-    resize.assert_not_called()
-
-
-def test_apply_geometry_reconciles_float():
-    """A floating client is resized to its floating_geom on every
-    apply_geometry, so any drift between wlroots state and dataclass
-    state converges."""
-    m = make_monitor()
-    m.active_workspace = make_workspace(monitor=m)
-    saved = wel.Rect(10, 20, 300, 200)
-    c = make_client(workspace=m.active_workspace, floating_geom=saved)
-    server = make_server(clients=[c])
-
-    with patch("welpy.app.resize_client") as resize:
-        wel.apply_geometry(server, m)
-
-    resize.assert_called_once_with(server, c, saved)
-    assert c.floating_geom == saved
-
-
 def test_update_monitors_arranges_all():
     """update_monitors arranges every connected monitor."""
     m1 = MagicMock(name="m1", fullscreen=None)
     m2 = MagicMock(name="m2", fullscreen=None)
     server = make_server(monitors=[m1, m2])
 
-    with patch("welpy.app.apply_geometry") as apply_geom:
+    with patch("welpy.geometry.apply_geometry") as apply_geom:
         wel.update_monitors(server)
 
     assert apply_geom.call_args_list == [call(server, m1), call(server, m2)]
@@ -4196,171 +3785,10 @@ def test_update_monitors_no_monitors():
     """With no monitors connected, apply_geometry isn't called."""
     server = make_server()
 
-    with patch("welpy.app.apply_geometry") as apply_geom:
+    with patch("welpy.geometry.apply_geometry") as apply_geom:
         wel.update_monitors(server)
 
     apply_geom.assert_not_called()
-
-
-def test_client_layer_tile():
-    """A client with no floating_geom and not pinned to any monitor's
-    fullscreen slot is tiled."""
-    client = make_client(toplevel=MagicMock(), scene_tree=MagicMock())
-    assert wel.client_layer(client) == wel.Layer.TILE
-
-
-def test_client_layer_float():
-    """A client with a floating_geom is floating."""
-    client = make_client(
-        toplevel=MagicMock(),
-        scene_tree=MagicMock(),
-        floating_geom=wel.Rect(0, 0, 100, 100),
-    )
-    assert wel.client_layer(client) == wel.Layer.FLOAT
-
-
-def test_client_layer_fullscreen():
-    """A client occupying its workspace's fullscreen slot is fullscreen,
-    even if it also has a floating_geom stashed for restore."""
-    client = make_client(
-        toplevel=MagicMock(),
-        scene_tree=MagicMock(),
-        floating_geom=wel.Rect(0, 0, 100, 100),
-    )
-    client.workspace = make_workspace(fullscreen=client)
-    assert wel.client_layer(client) == wel.Layer.FULLSCREEN
-
-
-def test_init_floating_geom_centers():
-    """init_floating_geom centers the window in its screen's usable area at
-    the size the app asked for plus border."""
-    m = make_monitor(window_area=wel.Rect(100, 50, 800, 600))
-    m.active_workspace = make_workspace(monitor=m)
-    toplevel = MagicMock()
-    toplevel.base.geometry.width = 400
-    toplevel.base.geometry.height = 300
-    client = make_client(toplevel=toplevel, workspace=m.active_workspace)
-
-    outer_w = 400 + 2 * wel.BORDER_WIDTH
-    outer_h = 300 + 2 * wel.BORDER_WIDTH
-    assert wel.init_floating_geom(client) == wel.Rect(
-        100 + (800 - outer_w) // 2,
-        50 + (600 - outer_h) // 2,
-        outer_w, outer_h)
-
-
-def test_init_floating_geom_fallback():
-    """When the app commits with empty geometry, init_floating_geom picks
-    a default size so the window isn't invisibly small."""
-    m = make_monitor(window_area=wel.Rect(0, 0, 800, 600))
-    m.active_workspace = make_workspace(monitor=m)
-    toplevel = MagicMock()
-    toplevel.base.geometry.width = 0
-    toplevel.base.geometry.height = 0
-    client = make_client(toplevel=toplevel, workspace=m.active_workspace)
-
-    rect = wel.init_floating_geom(client)
-
-    assert rect.width == 250 + 2 * wel.BORDER_WIDTH
-    assert rect.height == 200 + 2 * wel.BORDER_WIDTH
-
-
-def test_fullscreen_slot_enters():
-    """Assigning a client to its workspace's fullscreen slot notifies the
-    app so its xdg state matches."""
-    server = make_server()
-    workspace = make_workspace()
-    client = make_client(
-        toplevel=MagicMock(),
-        scene_tree=MagicMock(),
-        workspace=workspace,
-    )
-
-    wel.set_fullscreen(server, workspace, client)
-
-    assert workspace.fullscreen is client
-    server.lib.wlr_xdg_toplevel_set_fullscreen.assert_called_once_with(
-        client.toplevel, True)
-
-
-def test_fullscreen_slot_exits():
-    """Clearing the slot notifies the previously-fullscreen app."""
-    server = make_server()
-    client = make_client(toplevel=MagicMock(), scene_tree=MagicMock())
-    workspace = make_workspace(fullscreen=client)
-    client.workspace = workspace
-
-    wel.set_fullscreen(server, workspace, None)
-
-    assert workspace.fullscreen is None
-    server.lib.wlr_xdg_toplevel_set_fullscreen.assert_called_once_with(
-        client.toplevel, False)
-
-
-def test_fullscreen_slot_noop():
-    """Setting the slot to its current value is a no-op so no spurious
-    configure goes out."""
-    server = make_server()
-    client = make_client(toplevel=MagicMock(), scene_tree=MagicMock())
-    workspace = make_workspace(fullscreen=client)
-    client.workspace = workspace
-
-    wel.set_fullscreen(server, workspace, client)
-
-    server.lib.wlr_xdg_toplevel_set_fullscreen.assert_not_called()
-
-
-def test_fullscreen_slot_replaces():
-    """Replacing one fullscreen client with another notifies both: the
-    outgoing one exits, the incoming one enters."""
-    server = make_server()
-    outgoing = make_client(
-        toplevel=MagicMock(name="out"),
-        scene_tree=MagicMock(),
-    )
-    incoming = make_client(
-        toplevel=MagicMock(name="in"),
-        scene_tree=MagicMock(),
-    )
-    workspace = make_workspace(fullscreen=outgoing)
-    outgoing.workspace = workspace
-    incoming.workspace = workspace
-
-    wel.set_fullscreen(server, workspace, incoming)
-
-    assert workspace.fullscreen is incoming
-    assert server.lib.wlr_xdg_toplevel_set_fullscreen.call_args_list == [
-        call(outgoing.toplevel, False),
-        call(incoming.toplevel, True),
-    ]
-
-
-def test_fullscreen_slot_keeps_float():
-    """Entering and exiting fullscreen leaves floating_geom untouched, so a
-    window that was floating before going fullscreen returns to floating
-    at the same rect; a window that was tiled stays tiled."""
-    server = make_server()
-    workspace = make_workspace()
-    saved = wel.Rect(50, 60, 304, 204)
-    floater = make_client(
-        toplevel=MagicMock(),
-        scene_tree=MagicMock(),
-        workspace=workspace,
-        floating_geom=saved,
-    )
-    tiler = make_client(
-        toplevel=MagicMock(),
-        scene_tree=MagicMock(),
-        workspace=workspace,
-    )
-
-    wel.set_fullscreen(server, workspace, floater)
-    wel.set_fullscreen(server, workspace, None)
-    assert floater.floating_geom == saved
-
-    wel.set_fullscreen(server, workspace, tiler)
-    wel.set_fullscreen(server, workspace, None)
-    assert tiler.floating_geom is None
 
 
 def test_toggle_fullscreen_enters():
@@ -4372,7 +3800,7 @@ def test_toggle_fullscreen_enters():
     server = make_server(monitors=[m], active_monitor=m, clients=[client])
     wel.focus_client(server, client)
 
-    with patch("welpy.app.apply_geometry"):
+    with patch("welpy.geometry.apply_geometry"):
         wel.toggle_fullscreen(server)
 
     assert m.active_workspace.fullscreen is client
@@ -4387,11 +3815,11 @@ def test_toggle_fullscreen_to_tile():
     m.active_workspace.fullscreen = client
     server = make_server(monitors=[m], active_monitor=m, clients=[client])
 
-    with patch("welpy.app.apply_geometry"):
+    with patch("welpy.geometry.apply_geometry"):
         wel.toggle_fullscreen(server)
 
     assert m.active_workspace.fullscreen is None
-    assert wel.client_layer(client) == wel.Layer.TILE
+    assert geometry.client_layer(client) == wel.Layer.TILE
 
 
 def test_toggle_fullscreen_to_float():
@@ -4405,12 +3833,12 @@ def test_toggle_fullscreen_to_float():
     m.active_workspace.fullscreen = client
     server = make_server(monitors=[m], active_monitor=m, clients=[client])
 
-    with patch("welpy.app.apply_geometry"):
+    with patch("welpy.geometry.apply_geometry"):
         wel.toggle_fullscreen(server)
 
     assert m.active_workspace.fullscreen is None
     assert client.floating_geom == saved
-    assert wel.client_layer(client) == wel.Layer.FLOAT
+    assert geometry.client_layer(client) == wel.Layer.FLOAT
 
 
 def test_toggle_fullscreen_no_focus():
@@ -4419,7 +3847,7 @@ def test_toggle_fullscreen_no_focus():
     m.active_workspace = make_workspace(monitor=m)
     server = make_server(monitors=[m], active_monitor=m)
 
-    with patch("welpy.app.set_fullscreen") as sf:
+    with patch("welpy.geometry.set_fullscreen") as sf:
         wel.toggle_fullscreen(server)
 
     sf.assert_not_called()
@@ -4435,8 +3863,8 @@ def test_toggle_floating_to_float():
     wel.focus_client(server, client)
 
     seed = wel.Rect(50, 60, 304, 204)
-    with patch("welpy.app.client_outer_rect", return_value=seed), \
-         patch("welpy.app.apply_geometry"):
+    with patch("welpy.geometry.client_outer_rect", return_value=seed), \
+         patch("welpy.geometry.apply_geometry"):
         wel.toggle_floating(server)
 
     assert client.floating_geom == seed
@@ -4454,7 +3882,7 @@ def test_toggle_floating_to_tile():
     )
     server = make_server(monitors=[m], active_monitor=m, clients=[client])
 
-    with patch("welpy.app.apply_geometry"):
+    with patch("welpy.geometry.apply_geometry"):
         wel.toggle_floating(server)
 
     assert client.floating_geom is None
@@ -4471,8 +3899,8 @@ def test_toggle_floating_drops_leaf():
     wel.focus_client(server, a)
 
     seed = wel.Rect(0, 0, 100, 100)
-    with patch("welpy.app.client_outer_rect", return_value=seed), \
-         patch("welpy.app.apply_geometry"):
+    with patch("welpy.geometry.client_outer_rect", return_value=seed), \
+         patch("welpy.geometry.apply_geometry"):
         wel.toggle_floating(server)
 
     assert m.active_workspace.root.children == [b]
@@ -4492,7 +3920,7 @@ def test_toggle_floating_adds_leaf():
     server = make_server(
         monitors=[m], active_monitor=m, clients=[tiled, floater])
 
-    with patch("welpy.app.apply_geometry"):
+    with patch("welpy.geometry.apply_geometry"):
         wel.toggle_floating(server)
 
     assert m.active_workspace.root.children == [tiled, floater]
@@ -4507,7 +3935,7 @@ def test_toggle_floating_fullscreen_noop():
     server = make_server(monitors=[m], active_monitor=m, clients=[client])
     before = client.floating_geom
 
-    with patch("welpy.app.apply_geometry") as apply_geom:
+    with patch("welpy.geometry.apply_geometry") as apply_geom:
         wel.toggle_floating(server)
 
     assert client.floating_geom is before
@@ -4520,7 +3948,7 @@ def test_toggle_floating_no_focus():
     m.active_workspace = make_workspace(monitor=m)
     server = make_server(monitors=[m], active_monitor=m)
 
-    with patch("welpy.app.apply_geometry") as apply_geom:
+    with patch("welpy.geometry.apply_geometry") as apply_geom:
         wel.toggle_floating(server)
 
     apply_geom.assert_not_called()
@@ -4539,7 +3967,8 @@ def test_request_fullscreen_enters():
     )
     client.toplevel.requested.fullscreen = True
 
-    with patch("welpy.app.apply_tree"), patch("welpy.app.apply_geometry"), \
+    with patch("welpy.geometry.apply_tree"), \
+         patch("welpy.geometry.apply_geometry"), \
          patch("welpy.app.apply_focus"):
         wel.client_request_fullscreen(server, client, None)
 
@@ -4563,7 +3992,8 @@ def test_request_fullscreen_keeps_float():
     )
     client.toplevel.requested.fullscreen = True
 
-    with patch("welpy.app.apply_tree"), patch("welpy.app.apply_geometry"), \
+    with patch("welpy.geometry.apply_tree"), \
+         patch("welpy.geometry.apply_geometry"), \
          patch("welpy.app.apply_focus"):
         wel.client_request_fullscreen(server, client, None)
 
@@ -4585,12 +4015,13 @@ def test_request_fullscreen_to_tile():
     m.active_workspace.fullscreen = client
     client.toplevel.requested.fullscreen = False
 
-    with patch("welpy.app.apply_tree"), patch("welpy.app.apply_geometry"), \
+    with patch("welpy.geometry.apply_tree"), \
+         patch("welpy.geometry.apply_geometry"), \
          patch("welpy.app.apply_focus"):
         wel.client_request_fullscreen(server, client, None)
 
     assert m.active_workspace.fullscreen is None
-    assert wel.client_layer(client) == wel.Layer.TILE
+    assert geometry.client_layer(client) == wel.Layer.TILE
 
 
 def test_request_fullscreen_to_float():
@@ -4609,13 +4040,14 @@ def test_request_fullscreen_to_float():
     m.active_workspace.fullscreen = client
     client.toplevel.requested.fullscreen = False
 
-    with patch("welpy.app.apply_tree"), patch("welpy.app.apply_geometry"), \
+    with patch("welpy.geometry.apply_tree"), \
+         patch("welpy.geometry.apply_geometry"), \
          patch("welpy.app.apply_focus"):
         wel.client_request_fullscreen(server, client, None)
 
     assert m.active_workspace.fullscreen is None
     assert client.floating_geom == saved
-    assert wel.client_layer(client) == wel.Layer.FLOAT
+    assert geometry.client_layer(client) == wel.Layer.FLOAT
 
 
 def test_request_fullscreen_pre_map():
@@ -4627,11 +4059,11 @@ def test_request_fullscreen_pre_map():
     client = make_client(scene_tree=None)
     client.toplevel.requested.fullscreen = True
 
-    with patch("welpy.app.set_fullscreen") as sf:
+    with patch("welpy.geometry.set_fullscreen") as sf:
         wel.client_request_fullscreen(server, client, None)
     sf.assert_not_called()
 
-    with patch("welpy.app.set_fullscreen") as sf, \
+    with patch("welpy.geometry.set_fullscreen") as sf, \
          patch("welpy.app.focus_client"):
         wel.client_map(server, client, None)
     sf.assert_called_with(server, m.active_workspace, client)
@@ -4651,7 +4083,8 @@ def test_request_fullscreen_noop():
     m.active_workspace.fullscreen = client
     client.toplevel.requested.fullscreen = True
 
-    with patch("welpy.app.apply_tree"), patch("welpy.app.apply_geometry"), \
+    with patch("welpy.geometry.apply_tree"), \
+         patch("welpy.geometry.apply_geometry"), \
          patch("welpy.app.apply_focus"):
         wel.client_request_fullscreen(server, client, None)
 
@@ -4680,7 +4113,8 @@ def test_client_map_unfullscreens_existing():
     server = make_server(monitors=[m], active_monitor=m, clients=[existing])
     fresh = make_client(scene_tree=None)
 
-    with patch("welpy.app.focus_client"), patch("welpy.app.apply_geometry"):
+    with patch("welpy.app.focus_client"), \
+         patch("welpy.geometry.apply_geometry"):
         wel.client_map(server, fresh, None)
 
     assert m.active_workspace.fullscreen is None
@@ -4688,50 +4122,7 @@ def test_client_map_unfullscreens_existing():
         existing.toplevel, False)
 
 
-def test_resize_client_fullscreen():
-    """Resizing a fullscreen window leaves no room for borders: the inner
-    surface fills the rect, the xdg subtree sits flush at (0, 0), and the
-    border rects collapse to zero size."""
-    server = make_server()
-    m = make_monitor()
-    m.active_workspace = make_workspace(monitor=m)
-    client = make_client(
-        workspace=m.active_workspace,
-        borders=tuple(MagicMock(name=f"b{i}") for i in range(4)),
-    )
-    m.active_workspace.fullscreen = client
-
-    wel.resize_client(server, client, wel.Rect(0, 0, 800, 600))
-
-    server.lib.wlr_xdg_toplevel_set_size.assert_called_once_with(
-        client.toplevel, 800, 600)
-    # The xdg subtree is repositioned flush against the wrapper origin.
-    server.lib.wlr_scene_node_set_position.assert_any_call(
-        server.ffi.addressof.return_value, 0, 0)
-    # All four border rects sized so they cover nothing.
-    top, bottom, left, right = client.borders
-    server.lib.wlr_scene_rect_set_size.assert_any_call(top, 800, 0)
-    server.lib.wlr_scene_rect_set_size.assert_any_call(bottom, 800, 0)
-    server.lib.wlr_scene_rect_set_size.assert_any_call(left, 0, 600)
-    server.lib.wlr_scene_rect_set_size.assert_any_call(right, 0, 600)
-
-
 # --- layer-shell ----------------------------------------------------------
-
-
-def make_layer_surface(**kwargs):
-    """Build a LayerSurface, filling fields the test doesn't care about."""
-    return wel.LayerSurface(**{
-        "layer_surface": MagicMock(),
-        "scene_layer": MagicMock(),
-        "scene_tree": MagicMock(),
-        "popups_tree": MagicMock(),
-        "monitor": MagicMock(),
-        "focused": False,
-        "mapped": False,
-        "listeners": [],
-        **kwargs,
-    })
 
 
 def _stage_layer_surface_new(server, *, layer=0, output=None, monitor=None):
@@ -4977,7 +4368,7 @@ def test_layer_commit_moves_bucket():
     ls.layer_surface.current.layer = 2  # TOP
     monitor.layers[wel.Layer.BOTTOM].append(ls)
 
-    with patch("welpy.app.arrange_layers"):
+    with patch("welpy.geometry.arrange_layers"):
         wel.layer_surface_commit(server, ls, None)
 
     assert ls not in monitor.layers[wel.Layer.BOTTOM]
@@ -4995,7 +4386,7 @@ def test_layer_commit_skips_content():
     ls.layer_surface.current.committed = 0
     ls.layer_surface.surface.mapped = True
 
-    with patch("welpy.app.arrange_layers") as arrange:
+    with patch("welpy.geometry.arrange_layers") as arrange:
         wel.layer_surface_commit(server, ls, None)
 
     arrange.assert_not_called()
@@ -5008,7 +4399,8 @@ def test_layer_unmap_clears_focus():
     monitor = make_monitor()
     ls = make_layer_surface(monitor=monitor, focused=True)
 
-    with patch("welpy.app.arrange_layers"), patch("welpy.app.focus_client"):
+    with patch("welpy.geometry.arrange_layers"), \
+         patch("welpy.app.focus_client"):
         wel.layer_surface_unmap(server, ls, None)
 
     assert ls.focused is False
@@ -5024,7 +4416,7 @@ def test_layer_unmap_refocuses_client():
         monitors=[monitor], active_monitor=monitor, clients=[client])
     ls = make_layer_surface(monitor=monitor, focused=True)
 
-    with patch("welpy.app.arrange_layers"), \
+    with patch("welpy.geometry.arrange_layers"), \
          patch("welpy.app.focus_client") as focus:
         wel.layer_surface_unmap(server, ls, None)
 
@@ -5047,7 +4439,7 @@ def test_layer_unmap_refocuses_monitor():
         clients=[selected_client, monitor_client])
     ls = make_layer_surface(monitor=monitor, focused=True)
 
-    with patch("welpy.app.arrange_layers"), \
+    with patch("welpy.geometry.arrange_layers"), \
          patch("welpy.app.focus_client") as focus:
         wel.layer_surface_unmap(server, ls, None)
 
@@ -5061,7 +4453,7 @@ def test_layer_unmap_unfocused():
     server = make_server(monitors=[monitor])
     ls = make_layer_surface(monitor=monitor, focused=False)
 
-    with patch("welpy.app.arrange_layers"), \
+    with patch("welpy.geometry.arrange_layers"), \
          patch("welpy.app.focus_client") as focus:
         wel.layer_surface_unmap(server, ls, None)
 
@@ -5078,7 +4470,7 @@ def test_layer_cleanup_removes():
     h = MagicMock()
     ls.listeners.append(h)
 
-    with patch("welpy.app.arrange_layers"):
+    with patch("welpy.geometry.arrange_layers"):
         wel.layer_surface_cleanup(server, ls, None)
 
     h.remove.assert_called_once()
@@ -5389,11 +4781,13 @@ def test_lock_surfaces_reconfigured():
         session_lock=make_session_lock(surfaces=[ls]))
     server.ffi.addressof.side_effect = lambda obj, *args: ("ADDR", obj, *args)
 
-    with patch("welpy.app.apply_hierarchy"), \
-         patch("welpy.app.apply_visibility"), \
-         patch("welpy.app.apply_tree"), patch("welpy.app.arrange_layers"), \
-         patch("welpy.app.apply_geometry"), patch("welpy.app.apply_focus"), \
-         patch("welpy.app.monitor_box",
+    with patch("welpy.geometry.apply_hierarchy"), \
+         patch("welpy.geometry.apply_visibility"), \
+         patch("welpy.geometry.apply_tree"), \
+         patch("welpy.geometry.arrange_layers"), \
+         patch("welpy.geometry.apply_geometry"), \
+         patch("welpy.app.apply_focus"), \
+         patch("welpy.geometry.monitor_box",
                return_value=wel.Rect(10, 20, 300, 200)):
         wel.update_monitors(server)
 
@@ -5415,10 +4809,11 @@ def test_lock_surfaces_pruned():
         monitors=[remaining], active_monitor=remaining, locked=True,
         session_lock=session_lock)
 
-    with patch("welpy.app.apply_hierarchy"), \
-         patch("welpy.app.apply_visibility"), \
-         patch("welpy.app.apply_tree"), patch("welpy.app.arrange_layers"), \
-         patch("welpy.app.apply_geometry"), patch("welpy.app.apply_focus"):
+    with patch("welpy.geometry.apply_hierarchy"), \
+         patch("welpy.geometry.apply_visibility"), \
+         patch("welpy.geometry.apply_tree"), \
+         patch("welpy.geometry.arrange_layers"), \
+         patch("welpy.geometry.apply_geometry"), patch("welpy.app.apply_focus"):
         wel.update_monitors(server)
 
     assert ls not in session_lock.surfaces
@@ -5438,33 +4833,6 @@ def test_monitor_cleanup_destroys_layers():
         ls.layer_surface)
 
 
-def test_arrange_layers_shrinks_area():
-    """A surface with exclusive_zone > 0 reserves space; the monitor's
-    window_area shrinks accordingly and tiles re-flow."""
-    server = make_server()
-    monitor = make_monitor(window_area=wel.Rect(0, 0, 800, 600))
-    ls = make_layer_surface(monitor=monitor)
-    ls.layer_surface.initialized = True
-    ls.layer_surface.current.exclusive_zone = 30
-    monitor.layers[wel.Layer.TOP].append(ls)
-
-    def make_box(_type, vals):
-        box = MagicMock()
-        box.x, box.y, box.width, box.height = vals
-        return box
-    server.ffi.new.side_effect = make_box
-    # Mimic the wlroots helper shrinking `usable` to reflect the zone.
-    def configure(_scene, _full, usable):
-        usable.y = 30
-        usable.height = 570
-    server.lib.wlr_scene_layer_surface_v1_configure.side_effect = configure
-
-    with patch("welpy.app.monitor_box", return_value=wel.Rect(0, 0, 800, 600)):
-        wel.arrange_layers(server, monitor)
-
-    assert monitor.window_area == wel.Rect(0, 30, 800, 570)
-
-
 def test_popup_new_layer_owner():
     """A popup whose parent is a layer-shell surface unconstrains against
     that surface's monitor, not a client's."""
@@ -5479,7 +4847,7 @@ def test_popup_new_layer_owner():
         ls.layer_surface.surface)
     _stage_popup(server)
 
-    with patch("welpy.app.monitor_box",
+    with patch("welpy.geometry.monitor_box",
                return_value=wel.Rect(0, 0, 800, 600)):
         wel.popup_new(server, "DATA")
         trigger(server, server.lib.welpy_surface_commit, "COMMIT")
@@ -5490,70 +4858,6 @@ def test_popup_new_layer_owner():
 
 
 # --- configure tracking ---------------------------------------------------
-
-
-def test_track_configure_acked():
-    """An already-acked serial leaves pending cleared, so a no-op configure
-    doesn't freeze the screen."""
-    # pylint: disable=protected-access
-    client = make_client(scene_tree=MagicMock())
-    client.toplevel.base.current.configure_serial = 5
-
-    wel._track_configure(client, 5)
-    assert client.pending_serial is None
-    wel._track_configure(client, 3)
-    assert client.pending_serial is None
-
-
-def test_track_configure_pending():
-    """A serial the client hasn't reached yet is recorded as pending so the
-    screen waits."""
-    # pylint: disable=protected-access
-    client = make_client(scene_tree=MagicMock())
-    client.toplevel.base.current.configure_serial = 3
-
-    wel._track_configure(client, 7)
-
-    assert client.pending_serial == 7
-
-
-def test_set_size_tracks():
-    """set_size sends the configure and records the returned serial."""
-    server = make_server()
-    server.lib.wlr_xdg_toplevel_set_size.return_value = 9
-    client = make_client(scene_tree=MagicMock())
-
-    wel.set_size(server, client, 100, 200)
-
-    server.lib.wlr_xdg_toplevel_set_size.assert_called_once_with(
-        client.toplevel, 100, 200)
-    assert client.pending_serial == 9
-
-
-def test_set_activated_no_hold():
-    """set_activated sends focus state without recording a resize hold."""
-    server = make_server()
-    server.lib.wlr_xdg_toplevel_set_activated.return_value = 4
-    client = make_client(scene_tree=MagicMock())
-
-    wel.set_activated(server, client, True)
-
-    server.lib.wlr_xdg_toplevel_set_activated.assert_called_once_with(
-        client.toplevel, True)
-    assert client.pending_serial is None
-
-
-def test_set_tiled_tracks():
-    """set_tiled sends the configure and records the returned serial."""
-    server = make_server()
-    server.lib.wlr_xdg_toplevel_set_tiled.return_value = 6
-    client = make_client(scene_tree=MagicMock())
-
-    wel.set_tiled(server, client, 15)
-
-    server.lib.wlr_xdg_toplevel_set_tiled.assert_called_once_with(
-        client.toplevel, 15)
-    assert client.pending_serial == 6
 
 
 def test_begin_dragging_floats():
@@ -5571,8 +4875,8 @@ def test_begin_dragging_floats():
     server.lib.wlr_scene_node_at.return_value = node
 
     seed = wel.Rect(0, 0, 100, 80)
-    with patch("welpy.app.client_outer_rect", return_value=seed), \
-         patch("welpy.app.apply_geometry"):
+    with patch("welpy.geometry.client_outer_rect", return_value=seed), \
+         patch("welpy.geometry.apply_geometry"):
         wel.begin_dragging_client(server)
 
     assert client.floating_geom == seed
@@ -5593,9 +4897,9 @@ def test_begin_dragging_drops_leaf():
     node.parent = a.scene_tree
     server.lib.wlr_scene_node_at.return_value = node
 
-    with patch("welpy.app.client_outer_rect",
+    with patch("welpy.geometry.client_outer_rect",
                return_value=wel.Rect(0, 0, 100, 80)), \
-         patch("welpy.app.apply_geometry"):
+         patch("welpy.geometry.apply_geometry"):
         wel.begin_dragging_client(server)
 
     assert m.active_workspace.root.children == [b]
@@ -5616,9 +4920,9 @@ def test_begin_resizing_drops_leaf():
     node.parent = a.scene_tree
     server.lib.wlr_scene_node_at.return_value = node
 
-    with patch("welpy.app.client_outer_rect",
+    with patch("welpy.geometry.client_outer_rect",
                return_value=wel.Rect(0, 0, 100, 80)), \
-         patch("welpy.app.apply_geometry"):
+         patch("welpy.geometry.apply_geometry"):
         wel.begin_resizing_client(server)
 
     assert m.active_workspace.root.children == [b]
@@ -5633,7 +4937,7 @@ def test_client_commit_initial_tiled():
     toplevel.base.initial_commit = True
     client = make_client(toplevel=toplevel, workspace=workspace)
 
-    with patch("welpy.app.apply_geometry") as apply_geom:
+    with patch("welpy.geometry.apply_geometry") as apply_geom:
         wel.client_commit(server, client, None)
 
     apply_geom.assert_not_called()
@@ -5653,7 +4957,7 @@ def test_client_commit_initial_floating():
         workspace=workspace,
     )
 
-    with patch("welpy.app.apply_geometry") as apply_geom:
+    with patch("welpy.geometry.apply_geometry") as apply_geom:
         wel.client_commit(server, client, None)
 
     apply_geom.assert_not_called()
@@ -5669,7 +4973,7 @@ def test_client_commit_initial_unassigned():
     toplevel.base.initial_commit = True
     client = make_client(toplevel=toplevel, workspace=None)
 
-    with patch("welpy.app.apply_geometry") as apply_geom:
+    with patch("welpy.geometry.apply_geometry") as apply_geom:
         wel.client_commit(server, client, None)
 
     apply_geom.assert_not_called()
@@ -5687,7 +4991,7 @@ def test_client_unmap_arranges():
     b = make_client(workspace=m.active_workspace)
     server = make_server(monitors=[m], active_monitor=m, clients=[a, b])
 
-    with patch("welpy.app.apply_geometry") as apply_geom:
+    with patch("welpy.geometry.apply_geometry") as apply_geom:
         wel.client_unmap(server, a, None)
 
     apply_geom.assert_called_once_with(server, m)
@@ -5717,7 +5021,8 @@ def test_client_unmap_drops_leaf():
     m.active_workspace.root = flat_tree(a, b)
     server = make_server(monitors=[m], active_monitor=m, clients=[a, b])
 
-    with patch("welpy.app.focus_client"), patch("welpy.app.apply_geometry"):
+    with patch("welpy.app.focus_client"), \
+         patch("welpy.geometry.apply_geometry"):
         wel.client_unmap(server, a, None)
 
     assert m.active_workspace.root.children == [b]
@@ -5728,7 +5033,7 @@ def test_client_unmap_orphan():
     client = make_client(workspace=None)
     server = make_server(clients=[client])
 
-    with patch("welpy.app.apply_geometry") as apply_geom:
+    with patch("welpy.geometry.apply_geometry") as apply_geom:
         wel.client_unmap(server, client, None)
 
     apply_geom.assert_not_called()
@@ -5742,7 +5047,7 @@ def test_client_unmap_stale():
     client = make_client(workspace=m.active_workspace)
     server = make_server(clients=[client])
 
-    with patch("welpy.app.apply_geometry") as apply_geom:
+    with patch("welpy.geometry.apply_geometry") as apply_geom:
         wel.client_unmap(server, client, None)
 
     apply_geom.assert_not_called()
@@ -5945,260 +5250,6 @@ def test_setup_workspaces_orphaned():
     assert server.active_monitor is None
 
 
-# --- workspaces: apply_hierarchy ------------------------------------------
-
-
-def test_hierarchy_seed():
-    """A monitor with no workspaces gets seeded with the first orphan,
-    becoming the active monitor."""
-    monitor = make_monitor()
-    server = make_server(
-        workspaces=[make_workspace(name="1"), make_workspace(name="2")],
-        monitors=[monitor])
-
-    wel.apply_hierarchy(server)
-
-    assert server.workspaces[0].monitor is monitor
-    assert monitor.active_workspace is server.workspaces[0]
-    assert server.active_monitor is monitor
-    assert server.workspaces[1].monitor is None
-
-
-def test_hierarchy_hotplug():
-    """When a new monitor joins an existing layout, it stays empty -- no
-    orphan is auto-claimed."""
-    first = make_monitor()
-    ws = make_workspace(name="1", monitor=first)
-    first.active_workspace = ws
-    second = make_monitor()
-    server = make_server(
-        workspaces=[ws], monitors=[first, second], active_monitor=first)
-
-    wel.apply_hierarchy(server)
-
-    assert second.active_workspace is None
-    assert server.active_monitor is first
-
-
-def test_hierarchy_unplug_migrate():
-    """When a monitor is removed, non-empty workspaces migrate to the
-    active monitor."""
-    gone = make_monitor()
-    survivor = make_monitor()
-    ws_gone = make_workspace(name="1", monitor=gone)
-    ws_surv = make_workspace(name="2", monitor=survivor)
-    survivor.active_workspace = ws_surv
-    server = make_server(
-        workspaces=[ws_gone, ws_surv], monitors=[survivor],
-        active_monitor=survivor, clients=[make_client(workspace=ws_gone)])
-
-    wel.apply_hierarchy(server)
-
-    assert ws_gone.monitor is survivor
-
-
-def test_hierarchy_rehome_occupied():
-    """After every monitor briefly vanished (e.g. a VT switch) orphaned all
-    workspaces, a returning monitor re-homes the occupied ones so the bar
-    sees them again, not just the seeded active workspace."""
-    monitor = make_monitor()
-    ws_active = make_workspace(name="1", monitor=None)
-    ws_occupied = make_workspace(name="2", monitor=None)
-    ws_empty = make_workspace(name="3", monitor=None)
-    server = make_server(
-        workspaces=[ws_active, ws_occupied, ws_empty], monitors=[monitor],
-        clients=[make_client(workspace=ws_occupied)])
-
-    wel.apply_hierarchy(server)
-
-    assert ws_occupied.monitor is monitor
-    assert ws_empty.monitor is None
-
-
-def test_hierarchy_unplug_orphan():
-    """When a monitor is removed, empty workspaces on it are orphaned."""
-    gone = make_monitor()
-    survivor = make_monitor()
-    ws_gone = make_workspace(name="1", monitor=gone)
-    ws_surv = make_workspace(name="2", monitor=survivor)
-    survivor.active_workspace = ws_surv
-    server = make_server(
-        workspaces=[ws_gone, ws_surv], monitors=[survivor],
-        active_monitor=survivor)
-
-    wel.apply_hierarchy(server)
-
-    assert ws_gone.monitor is None
-
-
-def test_hierarchy_unplug_repoint():
-    """When the active monitor is removed, active falls to a survivor."""
-    gone = make_monitor()
-    survivor = make_monitor()
-    ws = make_workspace(name="1", monitor=survivor)
-    survivor.active_workspace = ws
-    server = make_server(
-        workspaces=[ws], monitors=[survivor], active_monitor=gone)
-
-    wel.apply_hierarchy(server)
-
-    assert server.active_monitor is survivor
-
-
-def test_hierarchy_idempotent():
-    """Calling apply_hierarchy twice produces the same state as once."""
-    server = make_server(
-        workspaces=[make_workspace(name="1"), make_workspace(name="2")],
-        monitors=[make_monitor()])
-
-    wel.apply_hierarchy(server)
-    snapshot = (
-        server.active_monitor,
-        [(w.name, w.monitor) for w in server.workspaces],
-        [(m, m.active_workspace) for m in server.monitors])
-    wel.apply_hierarchy(server)
-
-    assert snapshot == (
-        server.active_monitor,
-        [(w.name, w.monitor) for w in server.workspaces],
-        [(m, m.active_workspace) for m in server.monitors])
-
-
-def test_hierarchy_fullscreen_unmapped():
-    """A fullscreen pointer to a client that's no longer mapped is cleared."""
-    monitor = make_monitor()
-    ws = make_workspace(name="1", monitor=monitor)
-    monitor.active_workspace = ws
-    server = make_server(
-        workspaces=[ws], monitors=[monitor], active_monitor=monitor)
-    ghost = make_client(workspace=ws)
-    ws.fullscreen = ghost  # not in server.clients
-
-    wel.apply_hierarchy(server)
-
-    assert ws.fullscreen is None
-
-
-def test_hierarchy_fullscreen_mismatch():
-    """A fullscreen pointer to a client on a different workspace is cleared."""
-    monitor = make_monitor()
-    active = make_workspace(name="1", monitor=monitor)
-    other = make_workspace(name="2")
-    monitor.active_workspace = active
-    client = make_client(workspace=other)
-    server = make_server(
-        workspaces=[active, other], monitors=[monitor],
-        active_monitor=monitor, clients=[client])
-    active.fullscreen = client
-
-    wel.apply_hierarchy(server)
-
-    assert active.fullscreen is None
-
-
-def test_hierarchy_inactive_empty():
-    """A non-active workspace with no clients is orphaned."""
-    monitor = make_monitor()
-    active = make_workspace(name="1", monitor=monitor)
-    inactive = make_workspace(name="2", monitor=monitor)
-    monitor.active_workspace = active
-    server = make_server(
-        workspaces=[active, inactive], monitors=[monitor],
-        active_monitor=monitor)
-
-    wel.apply_hierarchy(server)
-
-    assert inactive.monitor is None
-
-
-def test_hierarchy_inactive_kept():
-    """A non-active workspace with clients stays assigned."""
-    monitor = make_monitor()
-    active = make_workspace(name="1", monitor=monitor)
-    inactive = make_workspace(name="2", monitor=monitor)
-    monitor.active_workspace = active
-    server = make_server(
-        workspaces=[active, inactive], monitors=[monitor],
-        active_monitor=monitor, clients=[make_client(workspace=inactive)])
-
-    wel.apply_hierarchy(server)
-
-    assert inactive.monitor is monitor
-
-
-def test_hierarchy_no_monitors():
-    """Without monitors, all workspaces are orphaned and active is None."""
-    ws = make_workspace(name="1", monitor=MagicMock())
-    server = make_server(workspaces=[ws], active_monitor=MagicMock())
-
-    wel.apply_hierarchy(server)
-
-    assert ws.monitor is None
-    assert server.active_monitor is None
-
-
-def test_hierarchy_active_repair():
-    """A monitor whose active_workspace lives elsewhere gets repointed."""
-    monitor = make_monitor()
-    on_monitor = make_workspace(name="1", monitor=monitor)
-    elsewhere = make_workspace(name="2")
-    monitor.active_workspace = elsewhere  # not on monitor
-    server = make_server(
-        workspaces=[on_monitor, elsewhere], monitors=[monitor],
-        active_monitor=monitor)
-
-    wel.apply_hierarchy(server)
-
-    assert monitor.active_workspace is on_monitor
-
-
-# --- workspaces: apply_visibility -----------------------------------------
-
-
-def test_apply_visibility_active():
-    """Clients on a monitor's active workspace have their scene nodes
-    enabled."""
-    monitor = make_monitor()
-    ws = make_workspace(name="1", monitor=monitor)
-    monitor.active_workspace = ws
-    client = make_client(workspace=ws)
-    server = make_server(
-        workspaces=[ws], monitors=[monitor], clients=[client])
-
-    wel.apply_visibility(server)
-
-    server.lib.wlr_scene_node_set_enabled.assert_called_with(
-        server.ffi.addressof.return_value, True)
-
-
-def test_apply_visibility_inactive():
-    """Clients on a non-active workspace have their scene nodes disabled."""
-    monitor = make_monitor()
-    active = make_workspace(name="1", monitor=monitor)
-    inactive = make_workspace(name="2", monitor=monitor)
-    monitor.active_workspace = active
-    client = make_client(workspace=inactive)
-    server = make_server(
-        workspaces=[active, inactive], monitors=[monitor], clients=[client])
-
-    wel.apply_visibility(server)
-
-    server.lib.wlr_scene_node_set_enabled.assert_called_with(
-        server.ffi.addressof.return_value, False)
-
-
-def test_apply_visibility_orphan():
-    """Clients on an orphaned workspace are hidden."""
-    ws = make_workspace(name="1")
-    client = make_client(workspace=ws)
-    server = make_server(workspaces=[ws], clients=[client])
-
-    wel.apply_visibility(server)
-
-    server.lib.wlr_scene_node_set_enabled.assert_called_with(
-        server.ffi.addressof.return_value, False)
-
-
 # --- workspaces: view_workspace -------------------------------------------
 
 
@@ -6254,6 +5305,7 @@ def test_view_workspace_ends_grabs():
 
 def test_view_workspace_unknown():
     """view_workspace with an unknown name leaves state untouched."""
+    # pylint: disable=duplicate-code
     monitor = make_monitor()
     ws = make_workspace(name="1", monitor=monitor)
     monitor.active_workspace = ws
@@ -6355,7 +5407,7 @@ def test_move_client_moves_leaf():
         workspaces=[ws1, ws2], monitors=[monitor], active_monitor=monitor,
         clients=[client])
 
-    with patch("welpy.app.apply_geometry"), patch("welpy.app.apply_focus"):
+    with patch("welpy.geometry.apply_geometry"), patch("welpy.app.apply_focus"):
         wel.move_client_to_workspace(server, "2")
 
     assert ws1.root.children == []
@@ -6478,6 +5530,7 @@ def test_move_workspace_wraps():
 
 def test_move_workspace_single():
     """move_active_workspace_to_monitor is a no-op with one monitor."""
+    # pylint: disable=duplicate-code
     monitor = make_monitor()
     ws = make_workspace(name="1", monitor=monitor)
     monitor.active_workspace = ws
@@ -6937,23 +5990,6 @@ def test_xwayland_dissociate_detaches():
     map_handle.remove.assert_called_once_with()
 
 
-def test_xwayland_client_surface():
-    """client_surface unwraps the X11 surface to its inner wl_surface."""
-    client = make_x11_client()
-    assert wel.client_surface(client) is client.xsurface.surface
-
-
-def test_xwayland_client_geometry():
-    """X11 windows have no CSD offset; geometry is the raw size at (0, 0)."""
-    client = make_x11_client()
-    client.xsurface.width = 640
-    client.xsurface.height = 480
-
-    geom = wel.client_geometry(client)
-
-    assert (geom.x, geom.y, geom.width, geom.height) == (0, 0, 640, 480)
-
-
 def test_xwayland_for_surface():
     """A mapped X11 window resolves from its inner wl_surface."""
     server = make_server()
@@ -6962,67 +5998,6 @@ def test_xwayland_for_surface():
 
     assert wel.client_for_surface(
         server, client.xsurface.surface) is client
-
-
-def test_xwayland_wants_fullscreen():
-    """client_wants_fullscreen reads the X11 surface's fullscreen flag."""
-    client = make_x11_client()
-    client.xsurface.fullscreen = True
-    assert wel.client_wants_fullscreen(client) is True
-
-
-def test_xwayland_wants_float():
-    """A transient X11 window (one with a parent) opens floating."""
-    client = make_x11_client()
-    client.xsurface.parent = MagicMock()
-    assert wel.client_wants_float(client) is True
-
-
-def test_xwayland_set_size():
-    """X11 sizing couples position and size, so set_size sends an absolute
-    configure derived from the already-placed wrapper plus the border inset."""
-    server = make_server()
-    client = make_x11_client(inner_size=None)
-    client.scene_tree.node.x = 100
-    client.scene_tree.node.y = 50
-
-    wel.set_size(server, client, 200, 150)
-
-    server.lib.wlr_xwayland_surface_configure.assert_called_once_with(
-        client.xsurface,
-        100 + wel.BORDER_WIDTH, 50 + wel.BORDER_WIDTH, 200, 150)
-
-
-def test_xwayland_position_only():
-    """An X11 move with unchanged size still sends ConfigureNotify because
-    X11 couples the window position and size in one configure."""
-    server = make_server()
-    client = make_x11_client(inner_size=(200, 150))
-    client.scene_tree.node.x = 300
-    client.scene_tree.node.y = 400
-
-    wel.set_size(server, client, 200, 150)
-
-    server.lib.wlr_xwayland_surface_configure.assert_called_once_with(
-        client.xsurface,
-        300 + wel.BORDER_WIDTH, 400 + wel.BORDER_WIDTH, 200, 150)
-
-
-def test_xwayland_size_unchanged_skips():
-    """Re-applying the geometry an X11 window already has sends no configure,
-    so repeated layouts don't spam the client with redundant ConfigureNotify."""
-    server = make_server()
-    client = make_x11_client(inner_size=(200, 150))
-    client.scene_tree.node.x = 100
-    client.scene_tree.node.y = 50
-    client.xsurface.x = 100 + wel.BORDER_WIDTH
-    client.xsurface.y = 50 + wel.BORDER_WIDTH
-    client.xsurface.width = 200
-    client.xsurface.height = 150
-
-    wel.set_size(server, client, 200, 150)
-
-    server.lib.wlr_xwayland_surface_configure.assert_not_called()
 
 
 def test_xwayland_drag_move():
@@ -7046,34 +6021,7 @@ def test_xwayland_drag_move():
 
     server.lib.wlr_xwayland_surface_configure.assert_called_once_with(
         client.xsurface,
-        190 + wel.BORDER_WIDTH, 280 + wel.BORDER_WIDTH, 200, 150)
-
-
-def test_xwayland_set_activated():
-    """set_activated routes to the X11 activate call."""
-    server = make_server()
-    client = make_x11_client()
-    wel.set_activated(server, client, True)
-    server.lib.wlr_xwayland_surface_activate.assert_called_once_with(
-        client.xsurface, True)
-
-
-def test_xwayland_set_tiled():
-    """X11 has no tiled-edge state, so set_tiled does nothing."""
-    server = make_server()
-    client = make_x11_client()
-    wel.set_tiled(server, client, 15)
-    server.lib.wlr_xdg_toplevel_set_tiled.assert_not_called()
-
-
-def test_xwayland_set_fullscreen():
-    """set_fullscreen routes to the X11 fullscreen call."""
-    server = make_server()
-    ws = make_workspace()
-    client = make_x11_client(workspace=ws)
-    wel.set_fullscreen(server, ws, client)
-    server.lib.wlr_xwayland_surface_set_fullscreen.assert_called_once_with(
-        client.xsurface, True)
+        190 + model.BORDER_WIDTH, 280 + model.BORDER_WIDTH, 200, 150)
 
 
 def test_xwayland_close():

@@ -207,7 +207,7 @@ judgment-only changes. `scripts/` is `pylint`-ignored and removed at landing.
   281 `patch("wel.X")` strings became canonical `patch("welpy.app.X")`. No code moves
   between modules yet.
 - [x] `model.py` — extracted (green + reviewed clean)
-- [ ] `geometry.py`
+- [x] `geometry.py` — extracted (green + reviewed clean)
 - [ ] `focus.py`
 - [ ] `windows.py`
 - [ ] `xwayland.py`
@@ -318,3 +318,35 @@ One surgical line-wrap (a `model.client_monitor(...)` ternary crossed 80).
   qualified (`model.X`) and their tests move to the mirror file. The cross-module
   qualified-call rule + its override-mechanism reason are now in `MEMORY.md`
   (Conventions), so Final won't need to re-derive them.
+
+**Phase 2 (module carving) — box 2 `geometry.py` — done (green, reviewed clean):** carved
+via `scripts/phase2_geometry.py`. Manifest = 26 functions (arrange/setters/screen/
+decoration/client-geometry queries), written **top-down** (callers above callees);
+68 geometry-subject tests → `tests/test_geometry.py`. `app.py` 2592→2175 lines.
+
+- `extract_defs` was changed to emit in **requested** order (it had sorted by source
+  line) so a carved module can be written top-down; its self-test was updated, 8 self-
+  tests green. Remaining boxes rely on this requested-order behavior.
+- Literal-replace qualification landmine: a moved fn name can be a **suffix of a
+  wlroots C call** — `set_size(` also matches `wlr_*_set_size(` in a *staying* fn.
+  Qualified `set_size` via its unique full-arg literal so the wlr call wasn't corrupted.
+  Watch this in remaining boxes: a substring collision can net the *expected* count yet
+  corrupt, so the count-assert alone won't catch it — check `calls` vs word-boundary refs.
+- Test-move selection = **subject rule**: a test moves iff its subject-under-test is a
+  carved fn (incl. the 6 `test_xwayland_set_*`, which call a geometry setter as their
+  action), whereas a test that merely *asserts* a carved fn (e.g.
+  `client_layer(...)==Layer.X`) stays. 68 moved, not the 62 first estimated.
+- Local test helpers travel by use: `_make_deco` (used only by moved decoration tests)
+  moved into the mirror file; `make_layer_surface` (used by staying + 1 moved test) was
+  promoted to `tests/helpers.py`.
+- Driver reproduces the **semantic** state only — the `_configure_x11`→`configure_x11`
+  rename, ~17 `with patch(...)` line-wraps (the `welpy.geometry` qualifier is +5 chars),
+  4 inline `# pylint: disable=duplicate-code`, and one local `geometry`→`apply_geom` var
+  rename are manual Pass-2 finishing (re-running regenerates the pre-rename names + long
+  lines). Two durable rules from this box are now in `MEMORY.md` (so Final won't re-
+  derive): the R0801 duplicate-code inline-disable policy (Conventions) and the
+  cross-module `_private`→W0212 carve-rename (Gotchas).
+- Deferred to **Final** (cosmetic): two now-thin section headers in `tests/test_app.py`
+  read stale after their subject tests moved out — `# --- configure tracking ---` (fronts
+  only `begin_dragging`/`client_commit` tests) and `# --- apply_decoration ---` (fronts
+  only `test_client_map_reasserts_decoration`).
