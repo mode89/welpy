@@ -267,7 +267,10 @@ _Refactor-only working notes — observations from doing the boxes, for whoever 
 **Not** durable project context (that's `MEMORY.md`), and **not** promoted at landing
 (unlike *To Remember*); deleted with this spec._
 
-**Phase 1 (packageize) — done in the working tree (uncommitted), green:** 469 tests
+_Plan mode: editing `SPEC.md` and `MEMORY.md` while planning is fine — the "only edit
+`PLAN.md`" restriction covers code/config under plan, not these working/memory docs._
+
+**Phase 1 (packageize) — shipped (commit `d4c3fd4`), green:** 469 tests
 pass (472 − 3 deleted override tests), `pylint .` 10/10, `import welpy.app` +
 `welpy.override` ok; the six moved files show as git renames (history preserved). The
 target-only `override` and `python -m welpy` decisions shipped here and are already in
@@ -292,5 +295,18 @@ target-only `override` and `python -m welpy` decisions shipped here and are alre
   (`patch("welpy.app.X")` is +6 chars); wrap them in the surgical pass. The pre-existing
   100+ char lines stay clean — pylint exempts any line with a trailing `# pylint:` pragma.
 - Deferred to **Final** (not done): `tests/test_app.py` still has the docstring
-  `"""Unit tests for wel.py."""`; `AGENTS.md` still shows the bare `@wel.override` form,
-  `pytest tests.py`, and `wel.py`/`tests.py` in its file list.
+  `"""Unit tests for wel.py."""`; `welpy/layout.py`'s module docstring still says
+  "`wel.py` owns the window/workspace side"; `AGENTS.md` still shows the bare
+  `@wel.override` form, `pytest tests.py`, and `wel.py`/`tests.py` in its file list.
+
+**Phase 2 (module carving) — box 1 `model.py` planned (see `PLAN.md`):** manifest = 7
+constants, `Layer` + `SHELL_LAYERS`, 14 dataclasses (`Grab`…`Server`), the 3 queries
+(`clients_in`/`clients_visible`/`client_monitor`); 5 query tests → `tests/test_model.py`.
+
+- `refactorlib`'s `extract_defs`/`delete_defs` resolve `def`/`class` only (`_DEFS` =
+  FunctionDef/AsyncFunctionDef/ClassDef), so module-level constants and tuples
+  (`BORDER_WIDTH`…, `SHELL_LAYERS`) move via literal `replace`, not the AST primitives —
+  recurs in any box that relocates constants.
+- Importing the moved types/constants **by name** into `app.py` needs no ref sweep: bare
+  refs and `wel.X` test refs keep resolving via re-export; only moved *functions* are
+  qualified (`model.X`) and their tests move to the mirror file.
