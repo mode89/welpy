@@ -424,7 +424,7 @@ def test_monitor_scale_configured():
     server = make_server()
     server.ffi.string.return_value.decode.return_value = "eDP-1"
 
-    with patch.dict(wel.OUTPUT_SCALE, {"eDP-1": 2.0}, clear=True):
+    with patch.dict(model.OUTPUT_SCALE, {"eDP-1": 2.0}, clear=True):
         wel.monitor_new(server, "OUTPUT_DATA")
 
     server.lib.wlr_output_state_set_scale.assert_called_once_with(ANY, 2.0)
@@ -435,11 +435,11 @@ def test_monitor_scale_default():
     server = make_server()
     server.ffi.string.return_value.decode.return_value = "HDMI-A-1"
 
-    with patch.dict(wel.OUTPUT_SCALE, {"eDP-1": 2.0}, clear=True):
+    with patch.dict(model.OUTPUT_SCALE, {"eDP-1": 2.0}, clear=True):
         wel.monitor_new(server, "OUTPUT_DATA")
 
     server.lib.wlr_output_state_set_scale.assert_called_once_with(
-        ANY, wel.DEFAULT_SCALE)
+        ANY, model.DEFAULT_SCALE)
 
 
 def test_monitor_new_appends():
@@ -2841,8 +2841,8 @@ def test_apply_focus_borders():
     wel.apply_focus(server)
 
     color_args = [c.args for c in server.ffi.new.call_args_list]
-    assert ("float[4]", wel.BORDER_COLOR_ACTIVE) in color_args
-    assert ("float[4]", wel.BORDER_COLOR_INACTIVE) in color_args
+    assert ("float[4]", model.BORDER_COLOR_ACTIVE) in color_args
+    assert ("float[4]", model.BORDER_COLOR_INACTIVE) in color_args
 
 
 def test_apply_focus_sticky():

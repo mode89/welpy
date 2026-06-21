@@ -19,11 +19,9 @@ from . import libinput
 from . import model
 from .layout import Rect
 from .model import (
-    BORDER_COLOR_ACTIVE, BORDER_COLOR_INACTIVE, BORDER_COLOR_URGENT,
-    Client, Cursor, DEFAULT_SCALE, Grab, KeyboardGroup,
-    Layer, LayerSurface, LockSurface, Monitor, OUTPUT_SCALE,
-    PointerConstraint, Server, SessionLock, SHELL_LAYERS, Unmanaged,
-    Workspace, WORKSPACE_NAMES, X11Client, XdgClient,
+    Client, Cursor, Grab, KeyboardGroup, Layer, LayerSurface,
+    LockSurface, Monitor, PointerConstraint, Server, SessionLock,
+    SHELL_LAYERS, Unmanaged, Workspace, X11Client, XdgClient,
 )
 
 
@@ -185,7 +183,7 @@ def setup() -> Server: # pylint: disable=too-many-locals,too-many-statements
             Workspace(
                 name=name, monitor=None, fullscreen=None,
                 root=layout.Container(layout.ContainerLayout.HORIZONTAL, []))
-            for name in WORKSPACE_NAMES
+            for name in model.WORKSPACE_NAMES
         ],
         previous_workspace=None,
         ext_workspace=None,
@@ -407,7 +405,7 @@ def monitor_new(server: Server, data) -> None:
     logger.info("new output: %s", name)
     lib.wlr_output_init_render(output, server.allocator, server.renderer)
 
-    scale = OUTPUT_SCALE.get(name, DEFAULT_SCALE)
+    scale = model.OUTPUT_SCALE.get(name, model.DEFAULT_SCALE)
 
     state = lib.welpy_output_state_new()
     lib.wlr_output_state_set_enabled(state, True)
@@ -725,7 +723,7 @@ def mark_urgent(server: Server, client: Client) -> None:
     if client is focused:
         return
     client.urgent = True
-    geometry.set_border_color(server, client, BORDER_COLOR_URGENT)
+    geometry.set_border_color(server, client, model.BORDER_COLOR_URGENT)
     if server.ext_workspace is not None:
         ext_workspace.publish(server)
 
@@ -755,7 +753,7 @@ def create_window_scene(server: Server, client: Client) -> None:
         # and popup_new reads .data to find the parent scene tree.
         client.toplevel.base.surface.data = ffi.cast(
             "void *", client.scene_tree)
-    color = ffi.new("float[4]", BORDER_COLOR_INACTIVE)
+    color = ffi.new("float[4]", model.BORDER_COLOR_INACTIVE)
     client.borders = tuple(
         lib.wlr_scene_rect_create(client.scene_tree, 0, 0, color)
         for _ in range(4))
@@ -1298,13 +1296,15 @@ def apply_focus(server: Server) -> None: # pylint: disable=too-many-branches
     if (current_client is not None
             and current_client is not target_client):
         geometry.set_activated(server, current_client, False)
-        geometry.set_border_color(server, current_client, BORDER_COLOR_INACTIVE)
+        geometry.set_border_color(
+            server, current_client, model.BORDER_COLOR_INACTIVE)
 
     if target_client is not None and target_client is not current_client:
         lib.wlr_scene_node_raise_to_top(
             ffi.addressof(target_client.scene_tree.node))
         geometry.set_activated(server, target_client, True)
-        geometry.set_border_color(server, target_client, BORDER_COLOR_ACTIVE)
+        geometry.set_border_color(
+            server, target_client, model.BORDER_COLOR_ACTIVE)
 
     if target_surface != current_surface:
         if target_surface is None:
@@ -2046,7 +2046,7 @@ def key_bindings(server: Server) -> dict:
         (mod, lib.BTN_RIGHT): begin_resizing_client,
         (mod, server.keycode["Tab"]): view_previous_workspace,
     }
-    for name in WORKSPACE_NAMES:
+    for name in model.WORKSPACE_NAMES:
         key = name if name != "10" else "0"
         table[(mod, server.keycode[key])] = (
             lambda s, n=name: view_workspace(s, n))

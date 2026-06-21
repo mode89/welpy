@@ -10,7 +10,7 @@ from . import layout
 from . import model
 from .layout import Rect
 from .model import (
-    BORDER_WIDTH, Client, Layer, LayerSurface, Monitor, Server,
+    Client, Layer, LayerSurface, Monitor, Server,
     SHELL_LAYERS, X11Client,
 )
 
@@ -144,7 +144,7 @@ def resize_client(server: Server, client: Client, rect: Rect) -> None:
     inner surface is configured smaller to leave room for the border;
     fullscreen windows skip the border so the surface fills the rect."""
     ffi, lib = server.ffi, server.lib
-    bw = 0 if client_layer(client) == Layer.FULLSCREEN else BORDER_WIDTH
+    bw = 0 if client_layer(client) == Layer.FULLSCREEN else model.BORDER_WIDTH
     inner_w = max(rect.width - 2 * bw, 0)
     inner_h = max(rect.height - 2 * bw, 0)
     lib.wlr_scene_node_set_position(
@@ -247,7 +247,7 @@ def configure_x11(
         server: Server, client: X11Client, width: int, height: int) -> None:
     """Configure an X11 window. X11 couples position and size in one request,
     so derive the absolute content origin from the already-placed wrapper."""
-    bw = 0 if client_layer(client) == Layer.FULLSCREEN else BORDER_WIDTH
+    bw = 0 if client_layer(client) == Layer.FULLSCREEN else model.BORDER_WIDTH
     node = client.scene_tree.node
     x, y = node.x + bw, node.y + bw
     xs = client.xsurface
@@ -374,8 +374,8 @@ def init_floating_geom(client: Client) -> Rect:
     geom = client_geometry(client)
     inner_w = geom.width or 250
     inner_h = geom.height or 200
-    outer_w = inner_w + 2 * BORDER_WIDTH
-    outer_h = inner_h + 2 * BORDER_WIDTH
+    outer_w = inner_w + 2 * model.BORDER_WIDTH
+    outer_h = inner_h + 2 * model.BORDER_WIDTH
     return Rect(
         area.x + (area.width - outer_w) // 2,
         area.y + (area.height - outer_h) // 2,
@@ -388,7 +388,8 @@ def client_outer_rect(client: Client) -> Rect:
     geom = client_geometry(client)
     return Rect(
         client.scene_tree.node.x, client.scene_tree.node.y,
-        geom.width + 2 * BORDER_WIDTH, geom.height + 2 * BORDER_WIDTH)
+        geom.width + 2 * model.BORDER_WIDTH,
+        geom.height + 2 * model.BORDER_WIDTH)
 
 
 def client_layer(client: Client) -> Layer:

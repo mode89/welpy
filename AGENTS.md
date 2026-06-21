@@ -15,6 +15,7 @@ Users customize welpy from `~/.config/welpy/config.py`, run at startup before th
 - Spot new customization points: behavior encoding a user preference, policy, or aesthetic (keybindings, launched apps, colors, focus/placement rules, etc.). Expose what you write as a top-level hook; flag existing inlined cases instead of refactoring them. Trigger: a user would plausibly want to change it.
 - A hook's signature is an API contract: reordering or inserting positional params silently breaks configs and chained overrides. Don't churn it.
 - Hooks are genuine customization points, not every function — don't freeze ordinary helpers.
+- Reference a customization point — an override-hook function or a tunable constant (`BORDER_WIDTH`, `BORDER_COLOR_*`, scales) — **qualified** (`model.BORDER_WIDTH`), never by name (`from .model import BORDER_WIDTH`): a config rebinds the attribute on the symbol's home module, which a qualified read sees but a by-name import — bound in the importer before the config loads — silently ignores. Types/classes stay by-name; configs construct with them, never rebind them.
 
 ## Bindings
 

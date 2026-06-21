@@ -317,7 +317,8 @@ One surgical line-wrap (a `model.client_monitor(...)` ternary crossed 80).
   refs and `wel.X` test refs keep resolving via re-export; only moved *functions* are
   qualified (`model.X`) and their tests move to the mirror file. The cross-module
   qualified-call rule + its override-mechanism reason are now in `MEMORY.md`
-  (Conventions), so Final won't need to re-derive them.
+  (Conventions), so Final won't need to re-derive them. (Tunable **constants** were later
+  reversed to qualified reads too — see the constants note at the Log's end.)
 
 **Phase 2 (module carving) — box 2 `geometry.py` — done (green, reviewed clean):** carved
 via `scripts/phase2_geometry.py`. Manifest = 26 functions (arrange/setters/screen/
@@ -350,3 +351,13 @@ decoration/client-geometry queries), written **top-down** (callers above callees
   read stale after their subject tests moved out — `# --- configure tracking ---` (fronts
   only `begin_dragging`/`client_commit` tests) and `# --- apply_decoration ---` (fronts
   only `test_client_map_reasserts_decoration`).
+
+**Tunable constants read qualified (supersedes the box-1 'constants by-name' note):**
+updating the user's config exposed that a config's `model.BORDER_WIDTH = 3` no longer
+propagated — `geometry`/`app` imported the tunable constants (`BORDER_WIDTH`,
+`BORDER_COLOR_*`, `WORKSPACE_NAMES`, `OUTPUT_SCALE`/`DEFAULT_SCALE`) **by name**, freezing
+the value before the config runs. Fixed by reading them `model.X` qualified (dropped from
+the by-name imports; 5 `wel.X`→`model.X` test repoints; a few +6-char lines wrapped).
+Now an `AGENTS.md` rule: qualify customization points (override-hook functions **and**
+tunable constants); **types** stay by-name and re-export as `wel.X` for the test bridge.
+Remaining boxes: import model **types** by-name, read model **constants** qualified.
