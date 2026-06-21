@@ -202,7 +202,7 @@ judgment-only changes. `scripts/` is `pylint`-ignored and removed at landing.
   test refs split — `wel.X` attribute refs ride `from welpy import app as wel`, but the
   281 `patch("wel.X")` strings became canonical `patch("welpy.app.X")`. No code moves
   between modules yet.
-- [ ] `model.py`
+- [x] `model.py` — extracted (green + reviewed clean)
 - [ ] `geometry.py`
 - [ ] `focus.py`
 - [ ] `windows.py`
@@ -299,9 +299,11 @@ target-only `override` and `python -m welpy` decisions shipped here and are alre
   "`wel.py` owns the window/workspace side"; `AGENTS.md` still shows the bare
   `@wel.override` form, `pytest tests.py`, and `wel.py`/`tests.py` in its file list.
 
-**Phase 2 (module carving) — box 1 `model.py` planned (see `PLAN.md`):** manifest = 7
-constants, `Layer` + `SHELL_LAYERS`, 14 dataclasses (`Grab`…`Server`), the 3 queries
+**Phase 2 (module carving) — box 1 `model.py` — done (green, reviewed clean):** carved
+via `scripts/phase2_model.py`. Manifest = 7 constants, `Layer` + `SHELL_LAYERS`, 14
+dataclasses (`Grab`…`Server`), the 3 queries
 (`clients_in`/`clients_visible`/`client_monitor`); 5 query tests → `tests/test_model.py`.
+One surgical line-wrap (a `model.client_monitor(...)` ternary crossed 80).
 
 - `refactorlib`'s `extract_defs`/`delete_defs` resolve `def`/`class` only (`_DEFS` =
   FunctionDef/AsyncFunctionDef/ClassDef), so module-level constants and tuples
@@ -309,4 +311,6 @@ constants, `Layer` + `SHELL_LAYERS`, 14 dataclasses (`Grab`…`Server`), the 3 q
   recurs in any box that relocates constants.
 - Importing the moved types/constants **by name** into `app.py` needs no ref sweep: bare
   refs and `wel.X` test refs keep resolving via re-export; only moved *functions* are
-  qualified (`model.X`) and their tests move to the mirror file.
+  qualified (`model.X`) and their tests move to the mirror file. The cross-module
+  qualified-call rule + its override-mechanism reason are now in `MEMORY.md`
+  (Conventions), so Final won't need to re-derive them.

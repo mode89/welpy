@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import enum
 import importlib.util
 import logging
 import os
@@ -10,221 +9,24 @@ import signal
 import subprocess
 import sys
 import time
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
 from . import bindings
 from . import ext_workspace
 from . import layout
 from . import libinput
+from . import model
 from .layout import Rect
+from .model import (
+    BORDER_COLOR_ACTIVE, BORDER_COLOR_INACTIVE, BORDER_COLOR_URGENT,
+    BORDER_WIDTH, Client, Cursor, DEFAULT_SCALE, Grab, KeyboardGroup,
+    Layer, LayerSurface, LockSurface, Monitor, OUTPUT_SCALE,
+    PointerConstraint, Server, SessionLock, SHELL_LAYERS, Unmanaged,
+    Workspace, WORKSPACE_NAMES, X11Client, XdgClient,
+)
 
 
 logger = logging.getLogger(__name__)
-
-
-BORDER_WIDTH = 2
-OUTPUT_SCALE = {}  # screen name -> scale factor; e.g. {"eDP-1": 2.0}
-DEFAULT_SCALE = 1.0
-BORDER_COLOR_ACTIVE = (0.0, 0.5, 1.0, 1.0)
-BORDER_COLOR_INACTIVE = (0.3, 0.3, 0.3, 1.0)
-BORDER_COLOR_URGENT = (0.9, 0.0, 0.0, 1.0)
-WORKSPACE_NAMES = ("1", "2", "3", "4", "5", "6", "7", "8", "9", "10")
-
-
-class Layer(enum.Enum):
-    """Z-ordered scene layers; later members render above earlier ones."""
-    BACKGROUND = enum.auto()
-    BOTTOM = enum.auto()
-    TILE = enum.auto()
-    FLOAT = enum.auto()
-    TOP = enum.auto()
-    FULLSCREEN = enum.auto()
-    OVERLAY = enum.auto()
-    LOCK = enum.auto()
-
-
-# Indexed by zwlr_layer_shell_v1 layer values (0..3) to map them to Layer.
-SHELL_LAYERS = (Layer.BACKGROUND, Layer.BOTTOM, Layer.TOP, Layer.OVERLAY)
-
-
-@dataclass(frozen=True)
-class Grab:
-    """Active mouse-driven interaction on a window. In both kinds,
-    `cursor - (x, y)` is the value drag_client preserves under motion --
-    the window origin for "move", the window size for "resize"."""
-    kind: str
-    x: int
-    y: int
-
-
-@dataclass
-class Workspace:
-    """Switchable container of windows on a monitor."""
-    name: str                # user-facing label, e.g. "1".."9", "0"
-    monitor: Any             # the screen this workspace lives on; may be None
-    fullscreen: Any          # Client occupying it fullscreen, or None
-    root: Any                # layout.Container: this workspace's tile tree
-
-
-@dataclass
-class Monitor:
-    """Physical screen."""
-    output: Any              # wlr_output: the physical screen
-    scene_output: Any        # per-screen render state inside the scene graph
-    layers: dict             # {Layer: list[LayerSurface]} per shell layer
-    window_area: Rect        # screen rect minus shell exclusive zones
-    active_workspace: Any    # currently shown Workspace, or None if empty
-    frame_timer: Any         # safety valve: forces a paint if hold lingers
-    listeners: list[Any]
-
-
-@dataclass
-class LayerSurface: # pylint: disable=too-many-instance-attributes
-    """Shell-component window (bar, wallpaper, launcher) anchored to a
-    screen edge via the layer-shell protocol."""
-    layer_surface: Any       # wlr_layer_surface_v1
-    scene_layer: Any         # wlr_scene_layer_surface_v1: anchor/zone geometry
-    scene_tree: Any          # scene_layer.tree, cached for reparenting
-    popups_tree: Any         # parent scene tree for popups from this surface
-    monitor: Monitor
-    focused: bool            # True while this surface holds the keyboard
-    mapped: bool             # last-seen surface.mapped; gates re-arrange
-    listeners: list[Any]
-
-
-@dataclass(kw_only=True)
-class Client: # pylint: disable=too-many-instance-attributes
-    """Application window. Base shared by xdg-shell and X11/XWayland windows;
-    per-kind fields live on the subclasses below."""
-    scene_tree: Any          # wrapper tree: content subtree + four border rects
-    content_tree: Any        # content subtree; inset within the wrapper
-    borders: tuple           # (top, bottom, left, right) wlr_scene_rect handles
-    focus_order: int         # bumped on each focus; higher = more recent
-    urgent: bool             # app asked for attention while unfocused
-    grab: Grab | None        # active mouse drag (move/resize), or None
-    floating_geom: Rect | None  # the float's rect; None means tiled
-    workspace: Any           # Workspace this window belongs to; None pre-map
-    listeners: list[Any]
-    decoration: Any          # wlr_xdg_toplevel_decoration_v1, if any; X11: None
-    handle: Any              # ffi.new_handle: backs the surface's back-pointer
-    inner_size: tuple[int, int] | None  # inner (w, h) configured; None pre-map
-
-
-@dataclass(kw_only=True)
-class XdgClient(Client):
-    """A Wayland-native window speaking the xdg-shell protocol."""
-    toplevel: Any            # the window (xdg_toplevel role on a wl_surface)
-    pending_serial: int | None   # configure serial; None when client caught up
-
-
-@dataclass(kw_only=True)
-class X11Client(Client):
-    """A legacy X11 window bridged through the embedded XWayland server."""
-    xsurface: Any            # wlr_xwayland_surface
-
-
-@dataclass(kw_only=True)
-class Unmanaged:
-    """An override-redirect X11 surface (menu, tooltip, dropdown, drag icon):
-    the app positions and stacks it itself, so we just place it above the
-    windows and hand it the keyboard when it asks."""
-    xsurface: Any            # wlr_xwayland_surface
-    scene_tree: Any          # subsurface tree in OVERLAY layer; None pre-map
-    listeners: list[Any]
-
-
-@dataclass
-class SessionLock:
-    """An active screen lock: a locker app has taken over every screen and
-    holds it until it authenticates the user (or crashes)."""
-    lock: Any                # wlr_session_lock_v1
-    tree: Any                # scene tree holding the lock surfaces, above all
-    surfaces: list           # LockSurface per screen
-    listeners: list[Any]
-
-
-@dataclass
-class LockSurface:
-    """A locker's blanking surface covering one screen while locked."""
-    lock_surface: Any        # wlr_session_lock_surface_v1
-    monitor: Monitor
-    scene_tree: Any
-    listeners: list[Any]
-
-
-@dataclass
-class Cursor:
-    """Mouse pointer."""
-    cursor: Any              # wlr_cursor: tracks pointer position
-    xcursor_manager: Any     # loads themed cursor images from disk
-    listeners: list[Any]
-
-
-@dataclass
-class PointerConstraint:
-    """A client's request to lock or confine the pointer to one of its windows
-    (games, 3D tools). Tracked so its destroy listener can be detached."""
-    constraint: Any          # wlr_pointer_constraint_v1
-    listeners: list[Any]
-
-
-@dataclass
-class KeyboardGroup:
-    """Every physical keyboard funneled into one logical keyboard, so apps
-    see a single source of key events no matter how many keyboards are
-    plugged in."""
-    group: Any               # wlr_keyboard_group: combines member keyboards
-    keymap: Any              # xkb_keymap: layout shared by every member
-    xkb_context: Any         # xkb_context: owns the keymap
-    listeners: list[Any]
-
-
-@dataclass
-class Server: # pylint: disable=too-many-instance-attributes
-    """The compositor's long-lived state."""
-    ffi: Any
-    lib: Any
-    listen: Any
-    add_signal: Any
-    add_timer: Any
-    display: Any
-    event_loop: Any
-    backend: Any
-    session: Any             # NULL under nested wayland/x11 backends
-    renderer: Any
-    allocator: Any
-    renderer_lost: Any       # listener handle, re-bound on GPU reset
-    compositor: Any
-    output_layout: Any       # geometric arrangement of physical screens
-    scene: Any               # root of the scene graph -- everything to draw
-    scene_layout: Any        # bridges scene_outputs with output_layout
-    xdg_shell: Any
-    layer_shell: Any
-    xwayland: Any            # embedded X server for legacy X11 apps
-    seat: Any
-    cursor: Cursor
-    keyboard_group: KeyboardGroup
-    monitors: list[Monitor]
-    active_monitor: Any      # Monitor receiving new windows / key bindings
-    clients: list[Client]
-    workspaces: list         # all Workspaces; created at setup, never resized
-    previous_workspace: Any  # name of last-viewed workspace, for toggling back
-    ext_workspace: Any       # ext-workspace-v1 protocol state
-    layers: dict             # scene tree per Layer; key order = z order
-    lock_background: Any      # black rect on the LOCK layer hiding all windows
-    session_lock: Any        # active SessionLock, or None when unlocked
-    locked: bool             # True while the screen is locked
-    unmanaged_focus: Any     # focus-holding override-redirect surface, or None
-    keycode: dict            # sym-name -> evdev-keycode
-    bindings: dict           # (mods, code) -> action(server)
-    passthrough: bool        # True forwards keys to the app, bypassing bindings
-    pointer_constraints: Any  # wlr_pointer_constraints_v1: lock/confine manager
-    relative_pointer_mgr: Any  # streams raw motion deltas to games/3D tools
-    active_constraint: Any   # wlr_pointer_constraint_v1 in effect, or None
-    constraints: list        # PointerConstraint records, for listener cleanup
-    listeners: list[Any]
 
 
 def main():
@@ -679,7 +481,7 @@ def monitor_render(server: Server, monitor: Monitor, _data) -> None:
     ffi, lib = server.ffi, server.lib
     held = any(
         client_holds_paint(server, c)
-        for c in clients_visible(server, monitor)
+        for c in model.clients_visible(server, monitor)
     )
     if not held:
         lib.wlr_scene_output_commit(monitor.scene_output, ffi.NULL)
@@ -893,7 +695,7 @@ def client_map(server: Server, client: Client, _data) -> None:
     create_window_scene(server, client)
     if server.active_monitor is not None:
         client.workspace = server.active_monitor.active_workspace
-    monitor = client_monitor(client)
+    monitor = model.client_monitor(client)
     workspace = client.workspace
     # Un-fullscreen any window already fullscreen on this workspace so the
     # new window isn't buried under it.
@@ -932,7 +734,7 @@ def client_unmap(server: Server, client: Client, _data) -> None:
     removal lands in a single frame."""
     ffi, lib = server.ffi, server.lib
     client.grab = None
-    monitor = client_monitor(client)
+    monitor = model.client_monitor(client)
     successor = None
     if client.workspace is not None and client.floating_geom is None:
         # Pick the successor before remove(): _collapse drops the lineage.
@@ -964,7 +766,8 @@ def client_request_fullscreen(
     """An app asked to enter or leave fullscreen."""
     # Pre-map: client_map reads the same flag once the tree exists.
     workspace = client.workspace if client.scene_tree is not None else None
-    monitor = client_monitor(client) if client.scene_tree is not None else None
+    monitor = (model.client_monitor(client)
+               if client.scene_tree is not None else None)
     if workspace is not None and monitor is not None:
         wants = client_wants_fullscreen(client)
         if wants and workspace.fullscreen is not client:
@@ -1320,7 +1123,7 @@ def _popup_owner(server: Server, root_surface):
     for c in server.clients:
         if (c.scene_tree is not None
                 and client_surface(c) == root_surface):
-            return c.scene_tree.node, client_monitor(c)
+            return c.scene_tree.node, model.client_monitor(c)
     for m in server.monitors:
         for bucket in m.layers.values():
             for ls in bucket:
@@ -1724,27 +1527,10 @@ def grabbed_client(server: Server):
     return grabbed[0] if grabbed else None
 
 
-def clients_in(server: Server, workspace):
-    """Clients assigned to `workspace`, preserving `Server.clients` order."""
-    return [c for c in server.clients if c.workspace is workspace]
-
-
-def clients_visible(server: Server, monitor):
-    """Clients shown on `monitor` (its active workspace's clients)."""
-    if monitor is None or monitor.active_workspace is None:
-        return []
-    return clients_in(server, monitor.active_workspace)
-
-
-def client_monitor(client: Client):
-    """The monitor this window appears on, or None if orphaned/pre-map."""
-    return client.workspace.monitor if client.workspace is not None else None
-
-
 def top_client(server: Server, monitor):
     """The most-recently-focused visible window on `monitor`, or None."""
     return max(
-        (c for c in clients_visible(server, monitor)
+        (c for c in model.clients_visible(server, monitor)
          if c.scene_tree is not None),
         key=lambda c: c.focus_order, default=None)
 
@@ -2044,7 +1830,7 @@ def apply_geometry(server: Server, monitor: Monitor) -> None:
     for leaf, rect in layout.walk(workspace.root, monitor.window_area):
         if leaf.scene_tree is not None:
             resize_client(server, leaf, rect)
-    for c in clients_visible(server, monitor):
+    for c in model.clients_visible(server, monitor):
         if client_layer(c) == Layer.FLOAT and c.scene_tree is not None:
             resize_client(server, c, c.floating_geom)
 
@@ -2236,7 +2022,7 @@ def client_outer_rect(client: Client) -> Rect:
 def init_floating_geom(client: Client) -> Rect:
     """Center a freshly-floated window in its screen's usable area at the
     size the app asked for (or a default if it didn't)."""
-    area = client_monitor(client).window_area
+    area = model.client_monitor(client).window_area
     geom = client_geometry(client)
     inner_w = geom.width or 250
     inner_h = geom.height or 200
@@ -2513,7 +2299,7 @@ def cursor_button(server: Server, data) -> None:
         client = client_at(
             server, server.cursor.cursor.x, server.cursor.cursor.y)
         if client is not None:
-            monitor = client_monitor(client)
+            monitor = model.client_monitor(client)
             if monitor is not None:
                 server.active_monitor = monitor
             focus_client(server, client)
@@ -2560,7 +2346,7 @@ def begin_dragging_client(server: Server) -> None:
     cur = server.cursor.cursor
     client = client_at(server, cur.x, cur.y)
     if client is not None:
-        monitor = client_monitor(client)
+        monitor = model.client_monitor(client)
         workspace = client.workspace
         if workspace is not None and workspace.fullscreen is client:
             set_fullscreen(server, workspace, None)
@@ -2581,7 +2367,7 @@ def begin_resizing_client(server: Server) -> None:
     cur = server.cursor.cursor
     client = client_at(server, cur.x, cur.y)
     if client is not None:
-        monitor = client_monitor(client)
+        monitor = model.client_monitor(client)
         workspace = client.workspace
         if workspace is not None and workspace.fullscreen is client:
             set_fullscreen(server, workspace, None)

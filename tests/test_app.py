@@ -6492,55 +6492,6 @@ def test_move_workspace_single():
 # --- workspaces: helpers --------------------------------------------------
 
 
-def test_clients_in_filters():
-    """clients_in returns only the clients assigned to the workspace."""
-    ws1 = make_workspace(name="1")
-    ws2 = make_workspace(name="2")
-    a = make_client(workspace=ws1)
-    b = make_client(workspace=ws2)
-    c = make_client(workspace=ws1)
-    server = make_server(clients=[a, b, c])
-
-    assert wel.clients_in(server, ws1) == [a, c]
-
-
-def test_clients_visible_active():
-    """clients_visible returns clients on the monitor's active workspace."""
-    monitor = make_monitor()
-    active = make_workspace(name="1", monitor=monitor)
-    inactive = make_workspace(name="2", monitor=monitor)
-    monitor.active_workspace = active
-    on_active = make_client(workspace=active)
-    on_inactive = make_client(workspace=inactive)
-    server = make_server(clients=[on_active, on_inactive])
-
-    assert wel.clients_visible(server, monitor) == [on_active]
-
-
-def test_clients_visible_empty():
-    """clients_visible returns [] for a monitor with no active workspace."""
-    server = make_server()
-    monitor = make_monitor()
-
-    assert wel.clients_visible(server, monitor) == []
-
-
-def test_client_monitor_derives():
-    """client_monitor reads the monitor through the client's workspace."""
-    monitor = make_monitor()
-    workspace = make_workspace(monitor=monitor)
-    client = make_client(workspace=workspace)
-
-    assert wel.client_monitor(client) is monitor
-
-
-def test_client_monitor_orphaned():
-    """A client with no workspace has no monitor."""
-    client = make_client(workspace=None)
-
-    assert wel.client_monitor(client) is None
-
-
 def test_urgent_marks():
     """An activation request flags an unfocused window urgent."""
     monitor = make_monitor()
