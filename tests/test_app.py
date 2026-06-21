@@ -13,206 +13,13 @@ from unittest.mock import ANY, MagicMock, call, patch
 import cffi
 import pytest
 
-import bindings
-import ext_workspace
-import layout
-import libinput
-import wel
-
-
-def make_server(**kwargs):
-    """Build a Server, filling fields the test doesn't care about with mocks."""
-    ffi, lib, listen, add_timer, add_signal = make_bindings(
-        ffi=kwargs.get("ffi"), lib=kwargs.get("lib"))
-    seat = kwargs.get("seat") or MagicMock(name="seat")
-    seat.keyboard_state.focused_surface = ffi.NULL
-    return wel.Server(**{
-        "ffi": ffi, "lib": lib, "seat": seat,
-        "listen": listen,
-        "add_signal": add_signal,
-        "add_timer": add_timer,
-        "display": "DISPLAY", "event_loop": MagicMock(name="event_loop"),
-        "backend": "BACKEND", "session": MagicMock(name="session"),
-        "renderer": "RENDERER", "allocator": "ALLOCATOR",
-        "renderer_lost": MagicMock(name="renderer_lost"),
-        "compositor": MagicMock(name="compositor"),
-        "output_layout": "OUTPUT_LAYOUT",
-        # Accessed structurally (scene.tree); leave auto-mocked.
-        "scene": MagicMock(name="scene"), "scene_layout": "SCENE_LAYOUT",
-        "xdg_shell": MagicMock(name="xdg_shell"),
-        "layer_shell": MagicMock(name="layer_shell"),
-        "xwayland": MagicMock(name="xwayland"),
-        "cursor": MagicMock(name="cursor"),
-        "keyboard_group": make_keyboard_group(
-            group="GROUP", keymap="KEYMAP", xkb_context="XKB"),
-        "monitors": [], "active_monitor": None, "clients": [],
-        "workspaces": [], "previous_workspace": MagicMock(name="prev_ws"),
-        "ext_workspace": MagicMock(name="ext_workspace"),
-        "layers": {layer: MagicMock(name=layer.name.lower())
-                   for layer in wel.Layer},
-        "lock_background": MagicMock(name="lock_background"),
-        "session_lock": None, "locked": False, "unmanaged_focus": None,
-        "keycode": {}, "bindings": {}, "passthrough": False,
-        "pointer_constraints": MagicMock(name="pointer_constraints"),
-        "relative_pointer_mgr": MagicMock(name="relative_pointer_mgr"),
-        "active_constraint": None, "constraints": [],
-        "listeners": [],
-        **kwargs,
-    })
-
-
-def make_bindings(**kwargs):
-    """Mock the bindings.build() tuple (ffi, lib, listen, add_timer,
-    add_signal) with defaults shared by make_server() and setup() tests."""
-    ffi = kwargs.get("ffi") or MagicMock(name="ffi")
-    lib = kwargs.get("lib") or MagicMock(name="lib")
-    lib.ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_NONE = 0
-    # Concrete press/release flag so keyboard_key's dispatch can compare it.
-    lib.WL_KEYBOARD_KEY_STATE_PRESSED = 1
-    # Setter return values participate in pending_serial bookkeeping; default
-    # to 0 so existing tests stay caught up unless they opt in.
-    lib.wlr_xdg_toplevel_set_size.return_value = 0
-    lib.wlr_xdg_toplevel_set_activated.return_value = 0
-    lib.wlr_xdg_toplevel_set_tiled.return_value = 0
-    lib.wlr_xdg_toplevel_set_fullscreen.return_value = 0
-    # No GPU device by default: skip the wlr_drm / dmabuf / syncobj branch.
-    lib.wlr_renderer_get_drm_fd.return_value = -1
-    # No active pointer constraint by default; resolve to NULL like wlroots.
-    lib.wlr_pointer_constraints_v1_constraint_for_surface.return_value = \
-        ffi.NULL
-    # Distinct handle per listen() call so listener counts add up.
-    listen = MagicMock(side_effect=lambda *_a: MagicMock(name="handle"))
-    return (ffi, lib, listen,
-            MagicMock(name="add_timer"), MagicMock(name="add_signal"))
-
-
-def make_client(**kwargs):
-    """Build an XdgClient, filling fields the test doesn't care about."""
-    toplevel = kwargs.get("toplevel") or MagicMock()
-    # Default to caught-up so pending_serial is a no-op unless the test opts
-    # in. Raw-string toplevels skip this since they never hit setter wrappers.
-    if isinstance(toplevel, MagicMock):
-        toplevel.base.current.configure_serial = 0
-        toplevel.requested.fullscreen = False
-        toplevel.parent = None
-    kwargs["toplevel"] = toplevel
-    return wel.XdgClient(**{
-        "scene_tree": MagicMock(),
-        "content_tree": MagicMock(),
-        "borders": tuple(MagicMock() for _ in range(4)),
-        "focus_order": 0, "urgent": False, "grab": None,
-        "floating_geom": None,
-        "workspace": None, "listeners": [],
-        "pending_serial": None,
-        "decoration": None, "handle": None,
-        "inner_size": None,
-        **kwargs,
-    })
-
-
-def make_x11_client(**kwargs):
-    """Build an X11Client, filling fields the test doesn't care about."""
-    xsurface = kwargs.get("xsurface") or MagicMock()
-    if isinstance(xsurface, MagicMock):
-        xsurface.fullscreen = False
-        xsurface.parent = None
-        xsurface.override_redirect = False
-    kwargs["xsurface"] = xsurface
-    return wel.X11Client(**{
-        "scene_tree": MagicMock(),
-        "content_tree": MagicMock(),
-        "borders": tuple(MagicMock() for _ in range(4)),
-        "focus_order": 0, "urgent": False, "grab": None,
-        "floating_geom": None,
-        "workspace": None, "listeners": [],
-        "decoration": None, "handle": None,
-        "inner_size": None,
-        **kwargs,
-    })
-
-
-def make_unmanaged(**kwargs):
-    """Build an Unmanaged override-redirect surface entity."""
-    xsurface = kwargs.get("xsurface") or MagicMock()
-    if isinstance(xsurface, MagicMock):
-        xsurface.override_redirect = True
-    kwargs["xsurface"] = xsurface
-    return wel.Unmanaged(**{
-        "scene_tree": None,
-        "listeners": [],
-        **kwargs,
-    })
-
-
-def make_monitor(**kwargs):
-    """Build a Monitor, filling fields the test doesn't care about."""
-    return wel.Monitor(**{
-        "output": MagicMock(), "scene_output": MagicMock(),
-        "layers": {layer: [] for layer in wel.SHELL_LAYERS},
-        "window_area": wel.Rect(0, 0, 800, 600),
-        "active_workspace": None,
-        "frame_timer": MagicMock(name="frame_timer"),
-        "listeners": [],
-        **kwargs,
-    })
-
-
-def make_workspace(**kwargs):
-    """Build a Workspace, filling fields the test doesn't care about."""
-    return wel.Workspace(**{
-        "name": "1",
-        "monitor": None,
-        "fullscreen": None,
-        "root": layout.Container(layout.ContainerLayout.HORIZONTAL, []),
-        **kwargs,
-    })
-
-
-def flat_tree(*clients):
-    """A one-level HORIZONTAL container holding `clients` as tiled leaves."""
-    return layout.Container(
-        layout.ContainerLayout.HORIZONTAL, list(clients))
-
-
-def make_cursor(**kwargs):
-    """Build a Cursor, filling fields the test doesn't care about."""
-    return wel.Cursor(**{
-        "cursor": MagicMock(), "xcursor_manager": MagicMock(),
-        "listeners": [],
-        **kwargs,
-    })
-
-
-def make_keyboard_group(**kwargs):
-    """Build a KeyboardGroup, filling fields the test doesn't care about."""
-    return wel.KeyboardGroup(**{
-        "group": MagicMock(), "keymap": MagicMock(),
-        "xkb_context": MagicMock(), "listeners": [],
-        **kwargs,
-    })
-
-
-def make_keycode_map():
-    """Stand-in keycode map covering every key referenced by built-in
-    bindings, so `setup()` can build `server.bindings` without KeyError."""
-    return {"Return": 28, "q": 16, "j": 36, "k": 37, "f": 33,
-            "p": 25, "v": 47,
-            "e": 18, "space": 57, "h": 35, "l": 38, "Tab": 15,
-            "1": 2, "2": 3, "3": 4, "4": 5, "5": 6,
-            "6": 7, "7": 8, "8": 9, "9": 10, "0": 11,
-            "F1": 59, "F2": 60, "F3": 61, "F4": 62, "F5": 63, "F6": 64,
-            "F7": 65, "F8": 66, "F9": 67, "F10": 68, "F11": 87,
-            "F12": 88}
-
-
-def trigger(server, signal_accessor, data):
-    """Invoke the callback registered with `listen` for this wlroots signal,
-    simulating wlroots firing the event with `data`."""
-    target = signal_accessor.return_value
-    for c in server.listen.mock_calls:
-        if c.args and c.args[0] is target:
-            return c.args[1](data)
-    raise AssertionError(f"no callback registered for {signal_accessor}")
+import welpy
+from welpy import app as wel, bindings, ext_workspace, layout, libinput
+from tests.helpers import (
+    make_server, make_bindings, make_client, make_x11_client, make_unmanaged,
+    make_monitor, make_workspace, flat_tree, make_cursor, make_keyboard_group,
+    make_keycode_map, trigger,
+)
 
 
 # --- setup ----------------------------------------------------------------
@@ -225,8 +32,8 @@ def test_setup_seat_caps():
     _, lib, *_ = build
     lib.WL_SEAT_CAPABILITY_POINTER = 1
     lib.WL_SEAT_CAPABILITY_KEYBOARD = 2
-    with patch("wel.bindings.build", return_value=build), \
-         patch("wel.build_keycode_map",
+    with patch("welpy.app.bindings.build", return_value=build), \
+         patch("welpy.app.build_keycode_map",
                return_value=make_keycode_map()):
         wel.setup()
 
@@ -239,8 +46,8 @@ def test_setup_keycode():
     can reference keys by name."""
     build = make_bindings()
     ffi, lib, *_ = build
-    with patch("wel.bindings.build", return_value=build), \
-         patch("wel.build_keycode_map",
+    with patch("welpy.app.bindings.build", return_value=build), \
+         patch("welpy.app.build_keycode_map",
                return_value=make_keycode_map()) as bm:
         server = wel.setup()
 
@@ -310,8 +117,8 @@ def test_setup_bindings():
     lib.WLR_MODIFIER_ALT = 0x8
     lib.BTN_LEFT = 0x110
     lib.BTN_RIGHT = 0x111
-    with patch("wel.bindings.build", return_value=build), \
-         patch("wel.build_keycode_map",
+    with patch("welpy.app.bindings.build", return_value=build), \
+         patch("welpy.app.build_keycode_map",
                return_value=make_keycode_map()):
         server = wel.setup()
 
@@ -327,8 +134,8 @@ def test_setup_clipboard_managers():
     tools can exchange selections."""
     build = make_bindings()
     _, lib, *_ = build
-    with patch("wel.bindings.build", return_value=build), \
-         patch("wel.build_keycode_map",
+    with patch("welpy.app.bindings.build", return_value=build), \
+         patch("welpy.app.build_keycode_map",
                return_value=make_keycode_map()):
         server = wel.setup()
 
@@ -347,8 +154,8 @@ def test_setup_dmabuf_integrated():
     _, lib, *_ = build
     lib.wlr_renderer_get_drm_fd.return_value = 7
     dmabuf = lib.wlr_linux_dmabuf_v1_create_with_renderer.return_value
-    with patch("wel.bindings.build", return_value=build), \
-         patch("wel.build_keycode_map", return_value=make_keycode_map()):
+    with patch("welpy.app.bindings.build", return_value=build), \
+         patch("welpy.app.build_keycode_map", return_value=make_keycode_map()):
         server = wel.setup()
 
     lib.wlr_drm_create.assert_called_once_with(server.display, server.renderer)
@@ -364,8 +171,8 @@ def test_setup_no_drm_fd():
     build = make_bindings()
     _, lib, *_ = build
     lib.wlr_renderer_get_drm_fd.return_value = -1
-    with patch("wel.bindings.build", return_value=build), \
-         patch("wel.build_keycode_map", return_value=make_keycode_map()):
+    with patch("welpy.app.bindings.build", return_value=build), \
+         patch("welpy.app.build_keycode_map", return_value=make_keycode_map()):
         server = wel.setup()
 
     lib.wlr_renderer_init_wl_shm.assert_called_once_with(
@@ -382,8 +189,8 @@ def test_setup_syncobj_timeline():
     _, lib, *_ = build
     lib.wlr_renderer_get_drm_fd.return_value = 7
     lib.welpy_supports_timeline.return_value = True
-    with patch("wel.bindings.build", return_value=build), \
-         patch("wel.build_keycode_map", return_value=make_keycode_map()):
+    with patch("welpy.app.bindings.build", return_value=build), \
+         patch("welpy.app.build_keycode_map", return_value=make_keycode_map()):
         server = wel.setup()
 
     lib.wlr_linux_drm_syncobj_manager_v1_create.assert_called_once_with(
@@ -397,8 +204,8 @@ def test_setup_no_timeline():
     _, lib, *_ = build
     lib.wlr_renderer_get_drm_fd.return_value = 7
     lib.welpy_supports_timeline.return_value = False
-    with patch("wel.bindings.build", return_value=build), \
-         patch("wel.build_keycode_map", return_value=make_keycode_map()):
+    with patch("welpy.app.bindings.build", return_value=build), \
+         patch("welpy.app.build_keycode_map", return_value=make_keycode_map()):
         wel.setup()
 
     lib.wlr_linux_drm_syncobj_manager_v1_create.assert_not_called()
@@ -411,8 +218,9 @@ def test_setup_xwayland_failure():
     ffi, lib, *_ = build
     lib.wlr_xwayland_create.return_value = ffi.NULL
 
-    with patch("wel.bindings.build", return_value=build), \
-         patch("wel.build_keycode_map", return_value=make_keycode_map()), \
+    with patch("welpy.app.bindings.build", return_value=build), \
+         patch("welpy.app.build_keycode_map",
+               return_value=make_keycode_map()), \
          pytest.raises(RuntimeError, match="XWayland"):
         wel.setup()
 
@@ -422,9 +230,10 @@ def test_setup_renderer_lost_listener():
     recovery."""
     build = make_bindings()
     _, lib, *_ = build
-    with patch("wel.bindings.build", return_value=build), \
-         patch("wel.build_keycode_map", return_value=make_keycode_map()), \
-         patch("wel.renderer_lost") as handler:
+    with patch("welpy.app.bindings.build", return_value=build), \
+         patch("welpy.app.build_keycode_map",
+               return_value=make_keycode_map()), \
+         patch("welpy.app.renderer_lost") as handler:
         server = wel.setup()
         trigger(server, lib.welpy_renderer_lost_signal, "LOST")
 
@@ -645,7 +454,7 @@ def test_monitor_new_frame():
     """The screen's frame signal drives monitor_render so painting happens
     once per refresh."""
     server = make_server()
-    with patch("wel.monitor_render") as render:
+    with patch("welpy.app.monitor_render") as render:
         wel.monitor_new(server, "OUTPUT_DATA")
         trigger(server, server.lib.welpy_output_frame, "FRAME_DATA")
     render.assert_called_once_with(server, server.monitors[0], "FRAME_DATA")
@@ -655,7 +464,7 @@ def test_monitor_new_request_state():
     """The screen's request_state signal drives monitor_request_state so the
     nested-backend window can ask to resize the screen at runtime."""
     server = make_server()
-    with patch("wel.monitor_request_state") as handler:
+    with patch("welpy.app.monitor_request_state") as handler:
         wel.monitor_new(server, "OUTPUT_DATA")
         trigger(server, server.lib.welpy_output_request_state, "RS_DATA")
     handler.assert_called_once_with(server, server.monitors[0], "RS_DATA")
@@ -723,7 +532,7 @@ def test_monitor_new_destroy():
     """The screen's destroy signal triggers monitor_cleanup so an unplug
     self-cleans without leaks."""
     server = make_server()
-    with patch("wel.monitor_cleanup") as cleanup:
+    with patch("welpy.app.monitor_cleanup") as cleanup:
         wel.monitor_new(server, "OUTPUT_DATA")
         trigger(server, server.lib.welpy_output_destroy_signal, "DESTROY_DATA")
     cleanup.assert_called_once_with(server, server.monitors[0], "DESTROY_DATA")
@@ -749,7 +558,7 @@ def test_monitor_new_timer():
     so its refresh loop can be unstuck if an app is slow to catch up."""
     server = make_server()
 
-    with patch("wel.monitor_force_paint") as forced:
+    with patch("welpy.app.monitor_force_paint") as forced:
         wel.monitor_new(server, "OUTPUT_DATA")
         monitor = server.monitors[0]
         server.add_timer.assert_called_once()
@@ -796,7 +605,7 @@ def test_monitor_render_holds():
     b = make_client(workspace=monitor.active_workspace)
     server = make_server(clients=[a, b])
 
-    with patch("wel.client_rendered", return_value=True):
+    with patch("welpy.app.client_rendered", return_value=True):
         wel.monitor_render(server, monitor, None)
 
     server.lib.wlr_scene_output_commit.assert_not_called()
@@ -817,7 +626,7 @@ def test_monitor_render_occluded():
     )
     server = make_server(clients=[full, hidden])
 
-    with patch("wel.client_rendered", return_value=False):
+    with patch("welpy.app.client_rendered", return_value=False):
         wel.monitor_render(server, monitor, None)
 
     server.lib.wlr_scene_output_commit.assert_called_once()
@@ -832,7 +641,7 @@ def test_monitor_render_fullscreen_holds():
     monitor.active_workspace.fullscreen = full
     server = make_server(clients=[full])
 
-    with patch("wel.client_rendered", return_value=True):
+    with patch("welpy.app.client_rendered", return_value=True):
         wel.monitor_render(server, monitor, None)
 
     server.lib.wlr_scene_output_commit.assert_not_called()
@@ -918,7 +727,7 @@ def test_monitor_render_arms_timer():
     )
     server = make_server(clients=[client])
 
-    with patch("wel.client_rendered", return_value=True):
+    with patch("welpy.app.client_rendered", return_value=True):
         wel.monitor_render(server, monitor, None)
 
     monitor.frame_timer.update.assert_called_once_with(100)
@@ -1116,7 +925,7 @@ def test_client_map_inserts_front():
     server = make_server(clients=[old])
     fresh = make_client(scene_tree=None)
 
-    with patch("wel.focus_client"):
+    with patch("welpy.app.focus_client"):
         wel.client_map(server, fresh, None)
 
     assert server.clients[0] is fresh
@@ -1127,7 +936,7 @@ def test_client_new_commit():
     """The window's surface commit signal drives client_commit so the
     initial configure path runs on first commit."""
     server = make_server()
-    with patch("wel.client_commit") as committed:
+    with patch("welpy.app.client_commit") as committed:
         wel.client_new(server, "TOPLEVEL_DATA")
         trigger(server, server.lib.welpy_surface_commit, "COMMIT_DATA")
     committed.assert_called_once_with(server, ANY, "COMMIT_DATA")
@@ -1137,7 +946,7 @@ def test_client_new_map():
     """The window's surface map signal drives client_map so a window gets
     focused the moment it has something to show."""
     server = make_server()
-    with patch("wel.client_map") as mapped:
+    with patch("welpy.app.client_map") as mapped:
         wel.client_new(server, "TOPLEVEL_DATA")
         trigger(server, server.lib.welpy_surface_map, "MAP_DATA")
     mapped.assert_called_once_with(server, ANY, "MAP_DATA")
@@ -1147,7 +956,7 @@ def test_client_new_destroy():
     """The window's destroy signal triggers client_cleanup so closing an
     app doesn't leave stale listeners attached to the dying surface."""
     server = make_server()
-    with patch("wel.client_cleanup") as cleanup:
+    with patch("welpy.app.client_cleanup") as cleanup:
         wel.client_new(server, "TOPLEVEL_DATA")
         trigger(server, server.lib.welpy_xdg_toplevel_destroy, "DESTROY_DATA")
     cleanup.assert_called_once_with(server, ANY, "DESTROY_DATA")
@@ -1157,7 +966,7 @@ def test_client_new_unmap():
     """The window's surface unmap signal drives client_unmap so closing
     one window hands focus to another."""
     server = make_server()
-    with patch("wel.client_unmap") as unmap:
+    with patch("welpy.app.client_unmap") as unmap:
         wel.client_new(server, "TOPLEVEL_DATA")
         trigger(server, server.lib.welpy_surface_unmap, "UNMAP_DATA")
     unmap.assert_called_once_with(server, ANY, "UNMAP_DATA")
@@ -1167,7 +976,7 @@ def test_client_new_request_fullscreen():
     """The window's request_fullscreen signal drives client_request_fullscreen
     so app-initiated fullscreen toggles are honored."""
     server = make_server()
-    with patch("wel.client_request_fullscreen") as handler:
+    with patch("welpy.app.client_request_fullscreen") as handler:
         wel.client_new(server, "TOPLEVEL_DATA")
         trigger(
             server, server.lib.welpy_xdg_toplevel_request_fullscreen,
@@ -1179,7 +988,7 @@ def test_client_new_request_maximize():
     """The window's request_maximize signal drives client_request_maximize
     so the client gets the configure xdg-shell requires in reply."""
     server = make_server()
-    with patch("wel.client_request_maximize") as handler:
+    with patch("welpy.app.client_request_maximize") as handler:
         wel.client_new(server, "TOPLEVEL_DATA")
         trigger(
             server, server.lib.welpy_xdg_toplevel_request_maximize,
@@ -1216,7 +1025,8 @@ def test_client_unmap_refocuses():
     b = make_client(focus_order=1, workspace=m.active_workspace)
     server = make_server(monitors=[m], active_monitor=m, clients=[a, b])
 
-    with patch("wel.apply_geometry"), patch("wel.focus_client") as focus:
+    with patch("welpy.app.apply_geometry"), \
+         patch("welpy.app.focus_client") as focus:
         wel.client_unmap(server, a, "DATA")
 
     focus.assert_called_once_with(server, b)
@@ -1243,7 +1053,7 @@ def test_client_unmap_alone():
     )
     server = make_server(monitors=[m], active_monitor=m, clients=[only])
 
-    with patch("wel.focus_client") as focus:
+    with patch("welpy.app.focus_client") as focus:
         wel.client_unmap(server, only, "DATA")
 
     focus.assert_not_called()
@@ -1262,7 +1072,8 @@ def test_client_unmap_lineage():
         layout.ContainerLayout.HORIZONTAL, [a, inner])
     server = make_server(monitors=[m], active_monitor=m, clients=[a, b, c])
 
-    with patch("wel.apply_geometry"), patch("wel.focus_client") as focus:
+    with patch("welpy.app.apply_geometry"), \
+         patch("welpy.app.focus_client") as focus:
         wel.client_unmap(server, b, "DATA")
 
     focus.assert_called_once_with(server, c)
@@ -1281,7 +1092,8 @@ def test_client_unmap_float_fallback():
         floating_geom=wel.Rect(0, 0, 100, 100))
     server = make_server(monitors=[m], active_monitor=m, clients=[a, b, f])
 
-    with patch("wel.apply_geometry"), patch("wel.focus_client") as focus:
+    with patch("welpy.app.apply_geometry"), \
+         patch("welpy.app.focus_client") as focus:
         wel.client_unmap(server, f, "DATA")
 
     focus.assert_called_once_with(server, b)
@@ -1295,7 +1107,7 @@ def test_client_map_subtree():
     server.lib.wlr_scene_tree_create.return_value = wrapper
     client = make_client(toplevel=MagicMock(), scene_tree=None)
 
-    with patch("wel.focus_client"):
+    with patch("welpy.app.focus_client"):
         wel.client_map(server, client, None)
 
     server.lib.wlr_scene_tree_create.assert_called_once_with(
@@ -1315,9 +1127,9 @@ def test_client_map_orders():
 
     calls = []
     with patch(
-            "wel.apply_geometry",
+            "welpy.app.apply_geometry",
             side_effect=lambda *_: calls.append("geometry")), \
-         patch("wel.focus_client",
+         patch("welpy.app.focus_client",
                side_effect=lambda *_a: calls.append("focus")):
         wel.client_map(server, client, None)
 
@@ -1333,7 +1145,7 @@ def test_client_map_anchors_popups():
     server.ffi.cast.side_effect = lambda type_, val: ("CAST", type_, val)
     client = make_client(toplevel=MagicMock(), scene_tree=None)
 
-    with patch("wel.focus_client"):
+    with patch("welpy.app.focus_client"):
         wel.client_map(server, client, None)
 
     assert client.toplevel.base.surface.data == ("CAST", "void *", wrapper)
@@ -1377,10 +1189,10 @@ def test_setup_popup_listener():
     app-created popup hits our handler."""
     build = make_bindings()
     _, lib, *_ = build
-    with patch("wel.bindings.build", return_value=build), \
-         patch("wel.build_keycode_map",
+    with patch("welpy.app.bindings.build", return_value=build), \
+         patch("welpy.app.build_keycode_map",
                return_value=make_keycode_map()), \
-         patch("wel.popup_new") as handler:
+         patch("welpy.app.popup_new") as handler:
         built = wel.setup()
         trigger(built, lib.welpy_xdg_shell_new_popup, "POPUP_DATA")
     handler.assert_called_once_with(built, "POPUP_DATA")
@@ -1448,7 +1260,7 @@ def test_popup_new_unconstrain():
     owner.scene_tree.node.y = 50
     server = make_server(monitors=[m], clients=[owner])
     popup, _ = _stage_popup(server, owner=owner)
-    with patch("wel.monitor_box",
+    with patch("welpy.app.monitor_box",
                return_value=wel.Rect(10, 20, 800, 600)):
         wel.popup_new(server, "DATA")
         trigger(server, server.lib.welpy_surface_commit, "COMMIT")
@@ -1526,8 +1338,8 @@ def test_setup_decoration_managers():
     default to server-side so apps without xdg-decoration also get SSD."""
     build = make_bindings()
     _, lib, *_ = build
-    with patch("wel.bindings.build", return_value=build), \
-         patch("wel.build_keycode_map",
+    with patch("welpy.app.bindings.build", return_value=build), \
+         patch("welpy.app.build_keycode_map",
                return_value=make_keycode_map()):
         wel.setup()
 
@@ -1543,10 +1355,10 @@ def test_setup_decoration_listener():
     signal to decoration_new so each app's request hits our handler."""
     build = make_bindings()
     _, lib, *_ = build
-    with patch("wel.bindings.build", return_value=build), \
-         patch("wel.build_keycode_map",
+    with patch("welpy.app.bindings.build", return_value=build), \
+         patch("welpy.app.build_keycode_map",
                return_value=make_keycode_map()), \
-         patch("wel.decoration_new") as handler:
+         patch("welpy.app.decoration_new") as handler:
         built = wel.setup()
         trigger(built, lib.welpy_xdg_decoration_manager_new, "DECO_DATA")
     handler.assert_called_once_with(built, "DECO_DATA")
@@ -1687,8 +1499,8 @@ def test_client_map_reasserts_decoration():
     server = make_server(monitors=[MagicMock(name="m", fullscreen=None)])
     client = make_client(scene_tree=None)
 
-    with patch("wel.apply_geometry"), patch("wel.focus_client"), \
-         patch("wel.apply_decoration") as ad:
+    with patch("welpy.app.apply_geometry"), patch("welpy.app.focus_client"), \
+         patch("welpy.app.apply_decoration") as ad:
         wel.client_map(server, client, None)
 
     ad.assert_called_once_with(server)
@@ -1740,7 +1552,7 @@ def test_install_signals_drain():
     by_signum = {c.args[0]: c.args[1] for c in server.add_signal.mock_calls}
 
     # waitpid yields two children, then "no more ready" (pid == 0).
-    with patch("wel.os.waitpid",
+    with patch("welpy.app.os.waitpid",
                side_effect=[(123, 0), (124, 0), (0, 0)]) as wp:
         by_signum[signal.SIGCHLD](signal.SIGCHLD)
 
@@ -1753,7 +1565,7 @@ def test_install_signals_orphan():
     wel.install_signals(server)
     by_signum = {c.args[0]: c.args[1] for c in server.add_signal.mock_calls}
 
-    with patch("wel.os.waitpid", side_effect=ChildProcessError):
+    with patch("welpy.app.os.waitpid", side_effect=ChildProcessError):
         by_signum[signal.SIGCHLD](signal.SIGCHLD)  # must not raise
 
 
@@ -1779,7 +1591,7 @@ def test_keyboard_create_key():
     """The combined keyboard's key signal drives keyboard_key so presses
     on any physical keyboard reach the focused app."""
     server = make_server()
-    with patch("wel.keyboard_key") as handler:
+    with patch("welpy.app.keyboard_key") as handler:
         wel.create_keyboard_group(server)
         trigger(server, server.lib.welpy_keyboard_key_signal, "KEY_DATA")
     handler.assert_called_once_with(server, "KEY_DATA")
@@ -1789,7 +1601,7 @@ def test_keyboard_create_modifiers():
     """The combined keyboard's modifiers signal drives keyboard_modifiers so
     shift-level changes reach the focused app."""
     server = make_server()
-    with patch("wel.keyboard_modifiers") as handler:
+    with patch("welpy.app.keyboard_modifiers") as handler:
         wel.create_keyboard_group(server)
         trigger(server, server.lib.welpy_keyboard_modifiers_signal, "MOD_DATA")
     handler.assert_called_once_with(server, "MOD_DATA")
@@ -1895,7 +1707,7 @@ def test_keyboard_key_lookup_hook():
     event.state = 1
     event.keycode = 28
 
-    with patch("wel.lookup_binding", return_value=action) as hook:
+    with patch("welpy.app.lookup_binding", return_value=action) as hook:
         wel.keyboard_key(server, "KEY_DATA")
 
     hook.assert_called_once()
@@ -2033,7 +1845,7 @@ def test_cursor_create_motion():
     """The cursor's relative-motion signal drives cursor_motion so a moving
     mouse actually moves the pointer."""
     server = make_server()
-    with patch("wel.cursor_motion") as handler:
+    with patch("welpy.app.cursor_motion") as handler:
         wel.create_cursor(server)
         trigger(server, server.lib.welpy_cursor_motion, "MOTION_DATA")
     handler.assert_called_once_with(server, "MOTION_DATA")
@@ -2043,7 +1855,7 @@ def test_cursor_create_motion_absolute():
     """The cursor's absolute-motion signal drives cursor_motion_absolute so
     touchscreens / nested-backend events still position the pointer."""
     server = make_server()
-    with patch("wel.cursor_motion_absolute") as handler:
+    with patch("welpy.app.cursor_motion_absolute") as handler:
         wel.create_cursor(server)
         trigger(
             server, server.lib.welpy_cursor_motion_absolute, "MA_DATA")
@@ -2054,7 +1866,7 @@ def test_cursor_create_axis():
     """The cursor's axis signal drives cursor_axis so scroll events reach
     apps."""
     server = make_server()
-    with patch("wel.cursor_axis") as handler:
+    with patch("welpy.app.cursor_axis") as handler:
         wel.create_cursor(server)
         trigger(server, server.lib.welpy_cursor_axis, "AXIS_DATA")
     handler.assert_called_once_with(server, "AXIS_DATA")
@@ -2064,7 +1876,7 @@ def test_cursor_create_frame():
     """The cursor's frame signal drives cursor_frame so apps see a batch
     boundary after every grouped pointer update."""
     server = make_server()
-    with patch("wel.cursor_frame") as handler:
+    with patch("welpy.app.cursor_frame") as handler:
         wel.create_cursor(server)
         trigger(server, server.lib.welpy_cursor_frame, "FRAME_DATA")
     handler.assert_called_once_with(server, "FRAME_DATA")
@@ -2253,7 +2065,7 @@ def test_constraint_confined_clamps():
     event = server.ffi.cast.return_value
     event.delta_x, event.delta_y = 10.0, 0.0
 
-    with patch("wel.surface_at", return_value=("SURF", 1.0, 2.0)):
+    with patch("welpy.app.surface_at", return_value=("SURF", 1.0, 2.0)):
         wel.cursor_motion(server, "D")
 
     # confined dest (6, 2) - surface-local start (1, 2) = delta (5, 0)
@@ -2303,7 +2115,7 @@ def test_constraint_destroy_clears():
     server.constraints = [record]
     server.active_constraint = constraint
 
-    with patch("wel.constraint_warp_to_hint") as warp:
+    with patch("welpy.app.constraint_warp_to_hint") as warp:
         wel.constraint_destroy(server, record)
 
     warp.assert_called_once_with(server, constraint)
@@ -2325,7 +2137,7 @@ def test_constraint_deactivate_destroys():
     server.lib.wlr_pointer_constraint_v1_send_deactivated.side_effect = \
         lambda _c: wel.constraint_destroy(server, old_record)
 
-    with patch("wel.constraint_warp_to_hint") as warp:
+    with patch("welpy.app.constraint_warp_to_hint") as warp:
         wel.set_active_constraint(server, new)
 
     warp.assert_called_once_with(server, old)
@@ -2353,7 +2165,7 @@ def test_constraint_warp_to_hint():
         return True
     server.lib.wlr_scene_node_coords.side_effect = coords
 
-    with patch("wel.client_for_surface", return_value=make_client()):
+    with patch("welpy.app.client_for_surface", return_value=make_client()):
         wel.constraint_warp_to_hint(server, constraint)
 
     # content origin (100, 200) + surface-local hint (3, 4)
@@ -2378,7 +2190,7 @@ def test_pointer_motion_resets_default():
     cur = MagicMock(name="cur")
     server = make_server(
         cursor=make_cursor(cursor=cur, xcursor_manager="XMGR"))
-    with patch("wel.surface_at", return_value=(None, 0.0, 0.0)):
+    with patch("welpy.app.surface_at", return_value=(None, 0.0, 0.0)):
         wel.forward_pointer_motion(server, 123)
 
     server.lib.wlr_cursor_set_xcursor.assert_called_once_with(
@@ -2391,7 +2203,7 @@ def test_pointer_motion_keeps_cursor():
     """Over a client surface the compositor leaves the cursor image alone so
     the app's own set-cursor request stands."""
     server = make_server(cursor=make_cursor(xcursor_manager="XMGR"))
-    with patch("wel.surface_at", return_value=("SURF", 1.0, 2.0)):
+    with patch("welpy.app.surface_at", return_value=("SURF", 1.0, 2.0)):
         wel.forward_pointer_motion(server, 5)
 
     server.lib.wlr_cursor_set_xcursor.assert_not_called()
@@ -2404,7 +2216,7 @@ def test_pointer_rebase_repoints():
     next click/scroll lands there."""
     server = make_server(cursor=make_cursor(xcursor_manager="X"))
     server.seat.pointer_state.focused_surface = "OLD"
-    with patch("wel.surface_at", return_value=("NEW", 3.0, 4.0)):
+    with patch("welpy.app.surface_at", return_value=("NEW", 3.0, 4.0)):
         wel.rebase_pointer(server, 7)
 
     server.lib.wlr_seat_pointer_notify_enter.assert_called_once_with(
@@ -2418,7 +2230,7 @@ def test_pointer_rebase_matched():
     cursor, so a scroll in place doesn't emit a redundant motion."""
     server = make_server(cursor=make_cursor(xcursor_manager="X"))
     server.seat.pointer_state.focused_surface = "SURF"
-    with patch("wel.surface_at", return_value=("SURF", 1.0, 2.0)):
+    with patch("welpy.app.surface_at", return_value=("SURF", 1.0, 2.0)):
         wel.rebase_pointer(server, 5)
 
     server.lib.wlr_seat_pointer_notify_enter.assert_not_called()
@@ -2431,7 +2243,7 @@ def test_pointer_rebase_clears():
     click on the background doesn't reach a stale surface."""
     server = make_server(cursor=make_cursor(xcursor_manager="X"))
     server.seat.pointer_state.focused_surface = "OLD"
-    with patch("wel.surface_at", return_value=(None, 0.0, 0.0)):
+    with patch("welpy.app.surface_at", return_value=(None, 0.0, 0.0)):
         wel.rebase_pointer(server, 9)
 
     server.lib.wlr_seat_pointer_clear_focus.assert_called_once_with(
@@ -2443,7 +2255,7 @@ def test_pointer_rebase_empty():
     re-clearing an already-empty focus."""
     server = make_server(cursor=make_cursor(xcursor_manager="X"))
     server.seat.pointer_state.focused_surface = server.ffi.NULL
-    with patch("wel.surface_at", return_value=(None, 0.0, 0.0)):
+    with patch("welpy.app.surface_at", return_value=(None, 0.0, 0.0)):
         wel.rebase_pointer(server, 1)
 
     server.lib.wlr_seat_pointer_clear_focus.assert_not_called()
@@ -2477,7 +2289,7 @@ def test_cursor_axis_rebases():
     def rebase_first(*_a):
         server.lib.wlr_seat_pointer_notify_axis.assert_not_called()
 
-    with patch("wel.rebase_pointer", side_effect=rebase_first) as rebase:
+    with patch("welpy.app.rebase_pointer", side_effect=rebase_first) as rebase:
         wel.cursor_axis(server, "AXIS_DATA")
 
     rebase.assert_called_once_with(server, 17)
@@ -2491,7 +2303,7 @@ def test_cursor_axis_grab():
     server = make_server(
         clients=[client], cursor=make_cursor(xcursor_manager="X"))
 
-    with patch("wel.rebase_pointer") as rebase:
+    with patch("welpy.app.rebase_pointer") as rebase:
         wel.cursor_axis(server, "AXIS_DATA")
 
     rebase.assert_not_called()
@@ -2515,7 +2327,7 @@ def test_cursor_create_button():
     """The cursor's button signal drives cursor_button so Alt+Left can start
     a drag-to-move and release can end it."""
     server = make_server()
-    with patch("wel.cursor_button") as handler:
+    with patch("welpy.app.cursor_button") as handler:
         wel.create_cursor(server)
         trigger(server, server.lib.welpy_cursor_button, "BUTTON_DATA")
     handler.assert_called_once_with(server, "BUTTON_DATA")
@@ -2553,7 +2365,7 @@ def test_cursor_button_focuses():
     event.button = "ANY_BUTTON"
     event.state = server.lib.WL_POINTER_BUTTON_STATE_PRESSED
 
-    with patch("wel.focus_client") as focus:
+    with patch("welpy.app.focus_client") as focus:
         wel.cursor_button(server, "BUTTON_DATA")
 
     focus.assert_called_once_with(server, client)
@@ -2578,7 +2390,7 @@ def test_cursor_button_active_monitor():
     event.button = "ANY_BUTTON"
     event.state = server.lib.WL_POINTER_BUTTON_STATE_PRESSED
 
-    with patch("wel.client_at", return_value=client):
+    with patch("welpy.app.client_at", return_value=client):
         wel.cursor_button(server, "BUTTON_DATA")
 
     assert server.active_monitor is m2
@@ -2610,7 +2422,7 @@ def test_cursor_button_release_pointer():
     event.state = "RELEASED"  # any sentinel != PRESSED
     event.time_msec = 42
 
-    with patch("wel.forward_pointer_motion") as fwd:
+    with patch("welpy.app.forward_pointer_motion") as fwd:
         wel.cursor_button(server, "BUTTON_DATA")
 
     fwd.assert_called_once_with(server, 42)
@@ -2631,9 +2443,9 @@ def test_begin_dragging_offset():
     node.parent = client.scene_tree
     server.lib.wlr_scene_node_at.return_value = node
 
-    with patch("wel.client_outer_rect",
+    with patch("welpy.app.client_outer_rect",
                return_value=wel.Rect(100, 150, 200, 200)), \
-         patch("wel.apply_geometry"):
+         patch("welpy.app.apply_geometry"):
         wel.begin_dragging_client(server)
 
     assert client.grab == wel.Grab("move", 20, 50)
@@ -2644,7 +2456,7 @@ def test_begin_dragging_empty():
     server = make_server(cursor=make_cursor(xcursor_manager="X"))
     server.lib.wlr_scene_node_at.return_value = server.ffi.NULL
 
-    with patch("wel.apply_geometry") as apply_geom:
+    with patch("welpy.app.apply_geometry") as apply_geom:
         wel.begin_dragging_client(server)
 
     apply_geom.assert_not_called()
@@ -2681,9 +2493,9 @@ def test_begin_resizing_anchor():
     node.parent = client.scene_tree
     server.lib.wlr_scene_node_at.return_value = node
 
-    with patch("wel.client_outer_rect",
+    with patch("welpy.app.client_outer_rect",
                return_value=wel.Rect(100, 150, 300, 200)), \
-         patch("wel.apply_geometry"):
+         patch("welpy.app.apply_geometry"):
         wel.begin_resizing_client(server)
 
     assert client.grab == wel.Grab("resize", 200, 200)
@@ -2694,7 +2506,7 @@ def test_begin_resizing_empty():
     server = make_server(cursor=make_cursor(xcursor_manager="X"))
     server.lib.wlr_scene_node_at.return_value = server.ffi.NULL
 
-    with patch("wel.apply_geometry") as apply_geom:
+    with patch("welpy.app.apply_geometry") as apply_geom:
         wel.begin_resizing_client(server)
 
     apply_geom.assert_not_called()
@@ -2714,7 +2526,7 @@ def test_cursor_motion_resizes():
     server.cursor.cursor.x = 500.0
     server.cursor.cursor.y = 400.0
 
-    with patch("wel.resize_client") as rc:
+    with patch("welpy.app.resize_client") as rc:
         wel.cursor_motion(server, "MOTION_DATA")
 
     rc.assert_called_once_with(server, grabbed, wel.Rect(100, 150, 300, 200))
@@ -2735,7 +2547,7 @@ def test_cursor_motion_resize_min():
     server.cursor.cursor.x = 50.0
     server.cursor.cursor.y = 50.0
 
-    with patch("wel.resize_client") as rc:
+    with patch("welpy.app.resize_client") as rc:
         wel.cursor_motion(server, "MOTION_DATA")
 
     rc.assert_called_once_with(server, grabbed, wel.Rect(100, 150, 1, 1))
@@ -2780,7 +2592,7 @@ def test_cursor_button_rebases():
     def rebase_first(*_a):
         server.lib.wlr_seat_pointer_notify_button.assert_not_called()
 
-    with patch("wel.rebase_pointer", side_effect=rebase_first) as rebase:
+    with patch("welpy.app.rebase_pointer", side_effect=rebase_first) as rebase:
         wel.cursor_button(server, "BUTTON_DATA")
 
     rebase.assert_called_once_with(server, 8)
@@ -2800,7 +2612,7 @@ def test_cursor_button_binding_norebase():
     event.button = 0x110
     event.state = server.lib.WL_POINTER_BUTTON_STATE_PRESSED
 
-    with patch("wel.rebase_pointer") as rebase:
+    with patch("welpy.app.rebase_pointer") as rebase:
         wel.cursor_button(server, "BUTTON_DATA")
 
     rebase.assert_not_called()
@@ -2843,7 +2655,7 @@ def test_grabbed_client_multiple():
     b = make_client(grab=wel.Grab("move", 0, 0))
     server = make_server(clients=[a, b])
 
-    with patch("wel.logger") as log:
+    with patch("welpy.app.logger") as log:
         wel.grabbed_client(server)
 
     log.warning.assert_called_once()
@@ -2955,7 +2767,7 @@ def test_client_map_focuses():
     server = make_server()
     client = make_client(toplevel=MagicMock(), scene_tree=MagicMock())
 
-    with patch("wel.focus_client") as focus:
+    with patch("welpy.app.focus_client") as focus:
         wel.client_map(server, client, None)
 
     focus.assert_called_once_with(server, client)
@@ -3279,7 +3091,7 @@ def test_apply_focus_pointer():
     scene change doesn't leave a scroll/click landing on a hidden window."""
     server = make_server()
 
-    with patch("wel.forward_pointer_motion") as fwd:
+    with patch("welpy.app.forward_pointer_motion") as fwd:
         wel.apply_focus(server)
 
     fwd.assert_called_once_with(server, 0)
@@ -3292,9 +3104,9 @@ def test_apply_focus_pointer_grab():
     dragging = make_server(
         clients=[make_client(grab=wel.Grab("move", 0, 0))])
 
-    with patch("wel.forward_pointer_motion") as fwd_idle:
+    with patch("welpy.app.forward_pointer_motion") as fwd_idle:
         wel.apply_focus(idle)
-    with patch("wel.forward_pointer_motion") as fwd_drag:
+    with patch("welpy.app.forward_pointer_motion") as fwd_drag:
         wel.apply_focus(dragging)
 
     assert fwd_idle.called
@@ -3307,9 +3119,9 @@ def test_apply_focus_pointer_locked():
     unlocked = make_server()
     locked = make_server(locked=True)
 
-    with patch("wel.forward_pointer_motion") as fwd_unlocked:
+    with patch("welpy.app.forward_pointer_motion") as fwd_unlocked:
         wel.apply_focus(unlocked)
-    with patch("wel.forward_pointer_motion") as fwd_locked:
+    with patch("welpy.app.forward_pointer_motion") as fwd_locked:
         wel.apply_focus(locked)
 
     assert fwd_unlocked.called
@@ -3328,8 +3140,8 @@ def test_setup_layers_created():
     lib.WL_SEAT_CAPABILITY_KEYBOARD = 2
     trees = [MagicMock(name=f"tree_{i}") for i in range(len(wel.Layer))]
     lib.wlr_scene_tree_create.side_effect = list(trees)
-    with patch("wel.bindings.build", return_value=build), \
-         patch("wel.build_keycode_map",
+    with patch("welpy.app.bindings.build", return_value=build), \
+         patch("welpy.app.build_keycode_map",
                return_value=make_keycode_map()):
         server = wel.setup()
 
@@ -3346,7 +3158,7 @@ def test_client_map_to_tile():
     server = make_server()
     client = make_client(toplevel=MagicMock(), scene_tree=None)
 
-    with patch("wel.focus_client"):
+    with patch("welpy.app.focus_client"):
         wel.client_map(server, client, None)
 
     server.lib.wlr_scene_tree_create.assert_called_once_with(
@@ -3363,7 +3175,7 @@ def test_client_map_monitor_selected():
     server = make_server(monitors=[m1, m2], active_monitor=m1)
     client = make_client(scene_tree=None)
 
-    with patch("wel.focus_client"), patch("wel.apply_geometry"):
+    with patch("welpy.app.focus_client"), patch("welpy.app.apply_geometry"):
         wel.client_map(server, client, None)
 
     assert client.workspace is m1.active_workspace
@@ -3374,7 +3186,7 @@ def test_client_map_monitor_none():
     server = make_server()
     client = make_client(scene_tree=None)
 
-    with patch("wel.focus_client"):
+    with patch("welpy.app.focus_client"):
         wel.client_map(server, client, None)
 
     assert client.workspace is None
@@ -3392,7 +3204,7 @@ def test_client_map_floats_dialog():
     client = make_client(toplevel=toplevel, scene_tree=None)
     toplevel.parent = MagicMock(name="parent_toplevel")
 
-    with patch("wel.focus_client"), patch("wel.apply_geometry"):
+    with patch("welpy.app.focus_client"), patch("welpy.app.apply_geometry"):
         wel.client_map(server, client, None)
 
     assert wel.client_layer(client) == wel.Layer.FLOAT
@@ -3405,7 +3217,7 @@ def test_client_map_no_parent():
     server = make_server(monitors=[m], active_monitor=m)
     client = make_client(scene_tree=None)
 
-    with patch("wel.focus_client"), patch("wel.apply_geometry"):
+    with patch("welpy.app.focus_client"), patch("welpy.app.apply_geometry"):
         wel.client_map(server, client, None)
 
     assert wel.client_layer(client) == wel.Layer.TILE
@@ -3421,7 +3233,7 @@ def test_client_map_adds_leaf():
     server = make_server(monitors=[m], active_monitor=m, clients=[old])
     fresh = make_client(scene_tree=None)
 
-    with patch("wel.focus_client"), patch("wel.apply_geometry"):
+    with patch("welpy.app.focus_client"), patch("welpy.app.apply_geometry"):
         wel.client_map(server, fresh, None)
 
     assert m.active_workspace.root.children == [old, fresh]
@@ -3465,7 +3277,8 @@ def test_focus_direction_moves():
     server = make_server(monitors=[m], active_monitor=m, clients=[a, b, c])
     wel.focus_client(server, a)
 
-    with patch("wel.apply_focus"), patch("wel.focus_client") as focus:
+    with patch("welpy.app.apply_focus"), \
+         patch("welpy.app.focus_client") as focus:
         wel.focus_direction(server, layout.Direction.RIGHT)
 
     focus.assert_called_once_with(server, b)
@@ -3482,7 +3295,8 @@ def test_focus_direction_edge():
     server = make_server(monitors=[m], active_monitor=m, clients=[a, b])
     wel.focus_client(server, b)
 
-    with patch("wel.apply_focus"), patch("wel.focus_client") as focus:
+    with patch("welpy.app.apply_focus"), \
+         patch("welpy.app.focus_client") as focus:
         wel.focus_direction(server, layout.Direction.RIGHT)
 
     focus.assert_not_called()
@@ -3499,7 +3313,8 @@ def test_focus_direction_fullscreen():
     server = make_server(monitors=[m], active_monitor=m, clients=[a, b])
     wel.focus_client(server, a)
 
-    with patch("wel.apply_focus"), patch("wel.focus_client") as focus:
+    with patch("welpy.app.apply_focus"), \
+         patch("welpy.app.focus_client") as focus:
         wel.focus_direction(server, layout.Direction.RIGHT)
 
     focus.assert_not_called()
@@ -3519,7 +3334,8 @@ def test_focus_direction_floating():
     server = make_server(monitors=[m], active_monitor=m, clients=[a, b])
     wel.focus_client(server, b)
 
-    with patch("wel.apply_focus"), patch("wel.focus_client") as focus:
+    with patch("welpy.app.apply_focus"), \
+         patch("welpy.app.focus_client") as focus:
         wel.focus_direction(server, layout.Direction.LEFT)
 
     focus.assert_not_called()
@@ -3539,7 +3355,8 @@ def test_focus_direction_group_mru():
     server = make_server(monitors=[m], active_monitor=m, clients=[a, b, c])
     wel.focus_client(server, a)
 
-    with patch("wel.apply_focus"), patch("wel.focus_client") as focus:
+    with patch("welpy.app.apply_focus"), \
+         patch("welpy.app.focus_client") as focus:
         wel.focus_direction(server, layout.Direction.RIGHT)
 
     focus.assert_called_once_with(server, c)
@@ -3557,7 +3374,7 @@ def test_move_direction_moves():
     server = make_server(monitors=[m], active_monitor=m, clients=[a, b, c])
     wel.focus_client(server, a)
 
-    with patch("wel.apply_geometry"), patch("wel.apply_focus"):
+    with patch("welpy.app.apply_geometry"), patch("welpy.app.apply_focus"):
         wel.move_direction(server, layout.Direction.RIGHT)
 
     assert m.active_workspace.root.children == [b, a, c]
@@ -3574,7 +3391,7 @@ def test_move_direction_edge():
     server = make_server(monitors=[m], active_monitor=m, clients=[a, b])
     wel.focus_client(server, b)
 
-    with patch("wel.apply_geometry"), patch("wel.apply_focus"):
+    with patch("welpy.app.apply_geometry"), patch("welpy.app.apply_focus"):
         wel.move_direction(server, layout.Direction.RIGHT)
 
     assert m.active_workspace.root.children == [a, b]
@@ -3591,7 +3408,7 @@ def test_move_direction_fullscreen():
     server = make_server(monitors=[m], active_monitor=m, clients=[a, b])
     wel.focus_client(server, a)
 
-    with patch("wel.apply_geometry"), patch("wel.apply_focus"):
+    with patch("welpy.app.apply_geometry"), patch("welpy.app.apply_focus"):
         wel.move_direction(server, layout.Direction.RIGHT)
 
     assert m.active_workspace.root.children == [a, b]
@@ -3611,7 +3428,8 @@ def test_move_direction_floating():
     server = make_server(monitors=[m], active_monitor=m, clients=[a, b])
     wel.focus_client(server, b)
 
-    with patch("wel.apply_geometry") as geometry, patch("wel.apply_focus"):
+    with patch("welpy.app.apply_geometry") as geometry, \
+         patch("welpy.app.apply_focus"):
         wel.move_direction(server, layout.Direction.LEFT)
 
     geometry.assert_not_called()
@@ -3631,7 +3449,7 @@ def test_move_direction_vertical():
     server = make_server(monitors=[m], active_monitor=m, clients=[a, b, c])
     wel.focus_client(server, a)
 
-    with patch("wel.apply_geometry"), patch("wel.apply_focus"):
+    with patch("welpy.app.apply_geometry"), patch("welpy.app.apply_focus"):
         wel.move_direction(server, layout.Direction.DOWN)
 
     assert m.active_workspace.root.children == [b, a, c]
@@ -3648,7 +3466,7 @@ def test_group_window_wraps():
     server = make_server(monitors=[m], active_monitor=m, clients=[a, b])
     wel.focus_client(server, a)
 
-    with patch("wel.apply_geometry"), patch("wel.apply_focus"):
+    with patch("welpy.app.apply_geometry"), patch("welpy.app.apply_focus"):
         wel.group_window(server)
 
     root = m.active_workspace.root
@@ -3668,7 +3486,7 @@ def test_group_window_alone():
     server = make_server(monitors=[m], active_monitor=m, clients=[a])
     wel.focus_client(server, a)
 
-    with patch("wel.apply_geometry"), patch("wel.apply_focus"):
+    with patch("welpy.app.apply_geometry"), patch("welpy.app.apply_focus"):
         wel.group_window(server)
 
     assert m.active_workspace.root.children == [a]
@@ -3688,7 +3506,7 @@ def test_group_window_nested():
     server = make_server(monitors=[m], active_monitor=m, clients=[a, b, c])
     wel.focus_client(server, a)
 
-    with patch("wel.apply_geometry"), patch("wel.apply_focus"):
+    with patch("welpy.app.apply_geometry"), patch("welpy.app.apply_focus"):
         wel.group_window(server)
 
     assert isinstance(column.children[0], layout.Container)
@@ -3708,7 +3526,7 @@ def test_cycle_layout_flips():
     server = make_server(monitors=[m], active_monitor=m, clients=[a, b])
     wel.focus_client(server, a)
 
-    with patch("wel.apply_geometry"), patch("wel.apply_focus"):
+    with patch("welpy.app.apply_geometry"), patch("welpy.app.apply_focus"):
         wel.cycle_layout(server)
 
     assert m.active_workspace.root.layout == layout.ContainerLayout.VERTICAL
@@ -3724,7 +3542,7 @@ def test_client_unmap_unselected():
     a = make_client(focus_order=1, workspace=m2.active_workspace)
     server = make_server(monitors=[m1], active_monitor=m1, clients=[a])
 
-    with patch("wel.focus_client") as focus:
+    with patch("welpy.app.focus_client") as focus:
         wel.client_unmap(server, a, "DATA")
 
     focus.assert_not_called()
@@ -3787,7 +3605,7 @@ def test_borders_present():
     server.lib.wlr_scene_tree_create.return_value = wrapper
     client = make_client(toplevel=MagicMock(), scene_tree=None)
 
-    with patch("wel.focus_client"):
+    with patch("welpy.app.focus_client"):
         wel.client_map(server, client, None)
 
     assert len(client.borders) == 4
@@ -4245,7 +4063,7 @@ def test_apply_geometry_single_full():
     m.active_workspace.root = flat_tree(a)
     server = make_server(clients=[a])
 
-    with patch("wel.resize_client") as resize:
+    with patch("welpy.app.resize_client") as resize:
         wel.apply_geometry(server, m)
 
     resize.assert_called_once_with(server, a, wel.Rect(0, 0, 800, 600))
@@ -4262,7 +4080,7 @@ def test_apply_geometry_row():
     m.active_workspace.root = flat_tree(a, b, c)
     server = make_server(clients=[a, b, c])
 
-    with patch("wel.resize_client") as resize:
+    with patch("welpy.app.resize_client") as resize:
         wel.apply_geometry(server, m)
 
     assert resize.call_args_list == [
@@ -4284,7 +4102,7 @@ def test_apply_geometry_other_monitor():
     m2.active_workspace.root = flat_tree(b)
     server = make_server(clients=[a, b])
 
-    with patch("wel.resize_client") as resize:
+    with patch("welpy.app.resize_client") as resize:
         wel.apply_geometry(server, m1)
 
     resize.assert_called_once_with(server, a, wel.Rect(0, 0, 800, 600))
@@ -4303,7 +4121,7 @@ def test_apply_geometry_skips_floating():
     m.active_workspace.root = flat_tree(b)
     server = make_server(clients=[a, b])
 
-    with patch("wel.resize_client") as resize:
+    with patch("welpy.app.resize_client") as resize:
         wel.apply_geometry(server, m)
 
     # The tile gets the full window area; the float gets its own rect.
@@ -4324,8 +4142,9 @@ def test_apply_geometry_sizes_fullscreen():
     m.active_workspace.root = flat_tree(fs, tile)
     server = make_server(clients=[fs, tile])
 
-    with patch("wel.monitor_box", return_value=wel.Rect(0, 0, 800, 600)), \
-         patch("wel.resize_client") as resize:
+    with patch("welpy.app.monitor_box",
+               return_value=wel.Rect(0, 0, 800, 600)), \
+         patch("welpy.app.resize_client") as resize:
         wel.apply_geometry(server, m)
 
     resize.assert_called_once_with(server, fs, wel.Rect(0, 0, 800, 600))
@@ -4338,7 +4157,7 @@ def test_apply_geometry_empty():
     m = make_monitor()
     m.active_workspace = make_workspace(monitor=m)
 
-    with patch("wel.resize_client") as resize:
+    with patch("welpy.app.resize_client") as resize:
         wel.apply_geometry(server, m)
 
     resize.assert_not_called()
@@ -4354,7 +4173,7 @@ def test_apply_geometry_reconciles_float():
     c = make_client(workspace=m.active_workspace, floating_geom=saved)
     server = make_server(clients=[c])
 
-    with patch("wel.resize_client") as resize:
+    with patch("welpy.app.resize_client") as resize:
         wel.apply_geometry(server, m)
 
     resize.assert_called_once_with(server, c, saved)
@@ -4367,7 +4186,7 @@ def test_update_monitors_arranges_all():
     m2 = MagicMock(name="m2", fullscreen=None)
     server = make_server(monitors=[m1, m2])
 
-    with patch("wel.apply_geometry") as apply_geom:
+    with patch("welpy.app.apply_geometry") as apply_geom:
         wel.update_monitors(server)
 
     assert apply_geom.call_args_list == [call(server, m1), call(server, m2)]
@@ -4377,7 +4196,7 @@ def test_update_monitors_no_monitors():
     """With no monitors connected, apply_geometry isn't called."""
     server = make_server()
 
-    with patch("wel.apply_geometry") as apply_geom:
+    with patch("welpy.app.apply_geometry") as apply_geom:
         wel.update_monitors(server)
 
     apply_geom.assert_not_called()
@@ -4553,7 +4372,7 @@ def test_toggle_fullscreen_enters():
     server = make_server(monitors=[m], active_monitor=m, clients=[client])
     wel.focus_client(server, client)
 
-    with patch("wel.apply_geometry"):
+    with patch("welpy.app.apply_geometry"):
         wel.toggle_fullscreen(server)
 
     assert m.active_workspace.fullscreen is client
@@ -4568,7 +4387,7 @@ def test_toggle_fullscreen_to_tile():
     m.active_workspace.fullscreen = client
     server = make_server(monitors=[m], active_monitor=m, clients=[client])
 
-    with patch("wel.apply_geometry"):
+    with patch("welpy.app.apply_geometry"):
         wel.toggle_fullscreen(server)
 
     assert m.active_workspace.fullscreen is None
@@ -4586,7 +4405,7 @@ def test_toggle_fullscreen_to_float():
     m.active_workspace.fullscreen = client
     server = make_server(monitors=[m], active_monitor=m, clients=[client])
 
-    with patch("wel.apply_geometry"):
+    with patch("welpy.app.apply_geometry"):
         wel.toggle_fullscreen(server)
 
     assert m.active_workspace.fullscreen is None
@@ -4600,7 +4419,7 @@ def test_toggle_fullscreen_no_focus():
     m.active_workspace = make_workspace(monitor=m)
     server = make_server(monitors=[m], active_monitor=m)
 
-    with patch("wel.set_fullscreen") as sf:
+    with patch("welpy.app.set_fullscreen") as sf:
         wel.toggle_fullscreen(server)
 
     sf.assert_not_called()
@@ -4616,8 +4435,8 @@ def test_toggle_floating_to_float():
     wel.focus_client(server, client)
 
     seed = wel.Rect(50, 60, 304, 204)
-    with patch("wel.client_outer_rect", return_value=seed), \
-         patch("wel.apply_geometry"):
+    with patch("welpy.app.client_outer_rect", return_value=seed), \
+         patch("welpy.app.apply_geometry"):
         wel.toggle_floating(server)
 
     assert client.floating_geom == seed
@@ -4635,7 +4454,7 @@ def test_toggle_floating_to_tile():
     )
     server = make_server(monitors=[m], active_monitor=m, clients=[client])
 
-    with patch("wel.apply_geometry"):
+    with patch("welpy.app.apply_geometry"):
         wel.toggle_floating(server)
 
     assert client.floating_geom is None
@@ -4652,8 +4471,8 @@ def test_toggle_floating_drops_leaf():
     wel.focus_client(server, a)
 
     seed = wel.Rect(0, 0, 100, 100)
-    with patch("wel.client_outer_rect", return_value=seed), \
-         patch("wel.apply_geometry"):
+    with patch("welpy.app.client_outer_rect", return_value=seed), \
+         patch("welpy.app.apply_geometry"):
         wel.toggle_floating(server)
 
     assert m.active_workspace.root.children == [b]
@@ -4673,7 +4492,7 @@ def test_toggle_floating_adds_leaf():
     server = make_server(
         monitors=[m], active_monitor=m, clients=[tiled, floater])
 
-    with patch("wel.apply_geometry"):
+    with patch("welpy.app.apply_geometry"):
         wel.toggle_floating(server)
 
     assert m.active_workspace.root.children == [tiled, floater]
@@ -4688,7 +4507,7 @@ def test_toggle_floating_fullscreen_noop():
     server = make_server(monitors=[m], active_monitor=m, clients=[client])
     before = client.floating_geom
 
-    with patch("wel.apply_geometry") as apply_geom:
+    with patch("welpy.app.apply_geometry") as apply_geom:
         wel.toggle_floating(server)
 
     assert client.floating_geom is before
@@ -4701,7 +4520,7 @@ def test_toggle_floating_no_focus():
     m.active_workspace = make_workspace(monitor=m)
     server = make_server(monitors=[m], active_monitor=m)
 
-    with patch("wel.apply_geometry") as apply_geom:
+    with patch("welpy.app.apply_geometry") as apply_geom:
         wel.toggle_floating(server)
 
     apply_geom.assert_not_called()
@@ -4720,8 +4539,8 @@ def test_request_fullscreen_enters():
     )
     client.toplevel.requested.fullscreen = True
 
-    with patch("wel.apply_tree"), patch("wel.apply_geometry"), \
-         patch("wel.apply_focus"):
+    with patch("welpy.app.apply_tree"), patch("welpy.app.apply_geometry"), \
+         patch("welpy.app.apply_focus"):
         wel.client_request_fullscreen(server, client, None)
 
     assert m.active_workspace.fullscreen is client
@@ -4744,8 +4563,8 @@ def test_request_fullscreen_keeps_float():
     )
     client.toplevel.requested.fullscreen = True
 
-    with patch("wel.apply_tree"), patch("wel.apply_geometry"), \
-         patch("wel.apply_focus"):
+    with patch("welpy.app.apply_tree"), patch("welpy.app.apply_geometry"), \
+         patch("welpy.app.apply_focus"):
         wel.client_request_fullscreen(server, client, None)
 
     assert m.active_workspace.fullscreen is client
@@ -4766,8 +4585,8 @@ def test_request_fullscreen_to_tile():
     m.active_workspace.fullscreen = client
     client.toplevel.requested.fullscreen = False
 
-    with patch("wel.apply_tree"), patch("wel.apply_geometry"), \
-         patch("wel.apply_focus"):
+    with patch("welpy.app.apply_tree"), patch("welpy.app.apply_geometry"), \
+         patch("welpy.app.apply_focus"):
         wel.client_request_fullscreen(server, client, None)
 
     assert m.active_workspace.fullscreen is None
@@ -4790,8 +4609,8 @@ def test_request_fullscreen_to_float():
     m.active_workspace.fullscreen = client
     client.toplevel.requested.fullscreen = False
 
-    with patch("wel.apply_tree"), patch("wel.apply_geometry"), \
-         patch("wel.apply_focus"):
+    with patch("welpy.app.apply_tree"), patch("welpy.app.apply_geometry"), \
+         patch("welpy.app.apply_focus"):
         wel.client_request_fullscreen(server, client, None)
 
     assert m.active_workspace.fullscreen is None
@@ -4808,11 +4627,12 @@ def test_request_fullscreen_pre_map():
     client = make_client(scene_tree=None)
     client.toplevel.requested.fullscreen = True
 
-    with patch("wel.set_fullscreen") as sf:
+    with patch("welpy.app.set_fullscreen") as sf:
         wel.client_request_fullscreen(server, client, None)
     sf.assert_not_called()
 
-    with patch("wel.set_fullscreen") as sf, patch("wel.focus_client"):
+    with patch("welpy.app.set_fullscreen") as sf, \
+         patch("welpy.app.focus_client"):
         wel.client_map(server, client, None)
     sf.assert_called_with(server, m.active_workspace, client)
 
@@ -4831,8 +4651,8 @@ def test_request_fullscreen_noop():
     m.active_workspace.fullscreen = client
     client.toplevel.requested.fullscreen = True
 
-    with patch("wel.apply_tree"), patch("wel.apply_geometry"), \
-         patch("wel.apply_focus"):
+    with patch("welpy.app.apply_tree"), patch("welpy.app.apply_geometry"), \
+         patch("welpy.app.apply_focus"):
         wel.client_request_fullscreen(server, client, None)
 
     server.lib.wlr_xdg_toplevel_set_fullscreen.assert_not_called()
@@ -4860,7 +4680,7 @@ def test_client_map_unfullscreens_existing():
     server = make_server(monitors=[m], active_monitor=m, clients=[existing])
     fresh = make_client(scene_tree=None)
 
-    with patch("wel.focus_client"), patch("wel.apply_geometry"):
+    with patch("welpy.app.focus_client"), patch("welpy.app.apply_geometry"):
         wel.client_map(server, fresh, None)
 
     assert m.active_workspace.fullscreen is None
@@ -4935,8 +4755,8 @@ def test_setup_layer_shell():
     _, lib, *_ = build
     lib.WL_SEAT_CAPABILITY_POINTER = 1
     lib.WL_SEAT_CAPABILITY_KEYBOARD = 2
-    with patch("wel.bindings.build", return_value=build), \
-         patch("wel.build_keycode_map", return_value=make_keycode_map()):
+    with patch("welpy.app.bindings.build", return_value=build), \
+         patch("welpy.app.build_keycode_map", return_value=make_keycode_map()):
         server = wel.setup()
 
     lib.wlr_layer_shell_v1_create.assert_called_once_with(
@@ -4951,9 +4771,10 @@ def test_setup_layer_listener():
     _, lib, *_ = build
     lib.WL_SEAT_CAPABILITY_POINTER = 1
     lib.WL_SEAT_CAPABILITY_KEYBOARD = 2
-    with patch("wel.bindings.build", return_value=build), \
-         patch("wel.build_keycode_map", return_value=make_keycode_map()), \
-         patch("wel.layer_surface_new") as handler:
+    with patch("welpy.app.bindings.build", return_value=build), \
+         patch("welpy.app.build_keycode_map",
+               return_value=make_keycode_map()), \
+         patch("welpy.app.layer_surface_new") as handler:
         built = wel.setup()
         trigger(built, lib.welpy_layer_shell_new_surface, "LS_DATA")
     handler.assert_called_once_with(built, "LS_DATA")
@@ -4965,8 +4786,8 @@ def test_setup_session_lock():
     _, lib, *_ = build
     lib.WL_SEAT_CAPABILITY_POINTER = 1
     lib.WL_SEAT_CAPABILITY_KEYBOARD = 2
-    with patch("wel.bindings.build", return_value=build), \
-         patch("wel.build_keycode_map", return_value=make_keycode_map()):
+    with patch("welpy.app.bindings.build", return_value=build), \
+         patch("welpy.app.build_keycode_map", return_value=make_keycode_map()):
         wel.setup()
 
     lib.wlr_session_lock_manager_v1_create.assert_called_once_with(
@@ -4980,9 +4801,10 @@ def test_setup_lock_listener():
     _, lib, *_ = build
     lib.WL_SEAT_CAPABILITY_POINTER = 1
     lib.WL_SEAT_CAPABILITY_KEYBOARD = 2
-    with patch("wel.bindings.build", return_value=build), \
-         patch("wel.build_keycode_map", return_value=make_keycode_map()), \
-         patch("wel.lock_new") as handler:
+    with patch("welpy.app.bindings.build", return_value=build), \
+         patch("welpy.app.build_keycode_map",
+               return_value=make_keycode_map()), \
+         patch("welpy.app.lock_new") as handler:
         built = wel.setup()
         trigger(built, lib.welpy_session_lock_mgr_new_lock, "LOCK_DATA")
     handler.assert_called_once_with(built, "LOCK_DATA")
@@ -4995,8 +4817,8 @@ def test_setup_pointer_constraints():
     _, lib, *_ = build
     lib.WL_SEAT_CAPABILITY_POINTER = 1
     lib.WL_SEAT_CAPABILITY_KEYBOARD = 2
-    with patch("wel.bindings.build", return_value=build), \
-         patch("wel.build_keycode_map", return_value=make_keycode_map()):
+    with patch("welpy.app.bindings.build", return_value=build), \
+         patch("welpy.app.build_keycode_map", return_value=make_keycode_map()):
         wel.setup()
 
     lib.wlr_pointer_constraints_v1_create.assert_called_once_with(
@@ -5012,9 +4834,10 @@ def test_setup_constraint_listener():
     _, lib, *_ = build
     lib.WL_SEAT_CAPABILITY_POINTER = 1
     lib.WL_SEAT_CAPABILITY_KEYBOARD = 2
-    with patch("wel.bindings.build", return_value=build), \
-         patch("wel.build_keycode_map", return_value=make_keycode_map()), \
-         patch("wel.constraint_new") as handler:
+    with patch("welpy.app.bindings.build", return_value=build), \
+         patch("welpy.app.build_keycode_map",
+               return_value=make_keycode_map()), \
+         patch("welpy.app.constraint_new") as handler:
         built = wel.setup()
         trigger(built, lib.welpy_pointer_constraints_new_constraint, "C_DATA")
     handler.assert_called_once_with(built, "C_DATA")
@@ -5027,9 +4850,10 @@ def test_setup_set_cursor_listener():
     _, lib, *_ = build
     lib.WL_SEAT_CAPABILITY_POINTER = 1
     lib.WL_SEAT_CAPABILITY_KEYBOARD = 2
-    with patch("wel.bindings.build", return_value=build), \
-         patch("wel.build_keycode_map", return_value=make_keycode_map()), \
-         patch("wel.seat_set_cursor") as handler:
+    with patch("welpy.app.bindings.build", return_value=build), \
+         patch("welpy.app.build_keycode_map",
+               return_value=make_keycode_map()), \
+         patch("welpy.app.seat_set_cursor") as handler:
         built = wel.setup()
         trigger(built, lib.welpy_seat_request_set_cursor, "SC_DATA")
     handler.assert_called_once_with(built, "SC_DATA")
@@ -5042,8 +4866,8 @@ def test_setup_output_power():
     _, lib, *_ = build
     lib.WL_SEAT_CAPABILITY_POINTER = 1
     lib.WL_SEAT_CAPABILITY_KEYBOARD = 2
-    with patch("wel.bindings.build", return_value=build), \
-         patch("wel.build_keycode_map", return_value=make_keycode_map()):
+    with patch("welpy.app.bindings.build", return_value=build), \
+         patch("welpy.app.build_keycode_map", return_value=make_keycode_map()):
         wel.setup()
 
     lib.wlr_output_power_manager_v1_create.assert_called_once_with(
@@ -5057,9 +4881,10 @@ def test_setup_output_power_listener():
     _, lib, *_ = build
     lib.WL_SEAT_CAPABILITY_POINTER = 1
     lib.WL_SEAT_CAPABILITY_KEYBOARD = 2
-    with patch("wel.bindings.build", return_value=build), \
-         patch("wel.build_keycode_map", return_value=make_keycode_map()), \
-         patch("wel.output_power_set_mode") as handler:
+    with patch("welpy.app.bindings.build", return_value=build), \
+         patch("welpy.app.build_keycode_map",
+               return_value=make_keycode_map()), \
+         patch("welpy.app.output_power_set_mode") as handler:
         built = wel.setup()
         trigger(built, lib.welpy_output_power_mgr_set_mode, "PWR_DATA")
     handler.assert_called_once_with(built, "PWR_DATA")
@@ -5152,7 +4977,7 @@ def test_layer_commit_moves_bucket():
     ls.layer_surface.current.layer = 2  # TOP
     monitor.layers[wel.Layer.BOTTOM].append(ls)
 
-    with patch("wel.arrange_layers"):
+    with patch("welpy.app.arrange_layers"):
         wel.layer_surface_commit(server, ls, None)
 
     assert ls not in monitor.layers[wel.Layer.BOTTOM]
@@ -5170,7 +4995,7 @@ def test_layer_commit_skips_content():
     ls.layer_surface.current.committed = 0
     ls.layer_surface.surface.mapped = True
 
-    with patch("wel.arrange_layers") as arrange:
+    with patch("welpy.app.arrange_layers") as arrange:
         wel.layer_surface_commit(server, ls, None)
 
     arrange.assert_not_called()
@@ -5183,7 +5008,7 @@ def test_layer_unmap_clears_focus():
     monitor = make_monitor()
     ls = make_layer_surface(monitor=monitor, focused=True)
 
-    with patch("wel.arrange_layers"), patch("wel.focus_client"):
+    with patch("welpy.app.arrange_layers"), patch("welpy.app.focus_client"):
         wel.layer_surface_unmap(server, ls, None)
 
     assert ls.focused is False
@@ -5199,7 +5024,8 @@ def test_layer_unmap_refocuses_client():
         monitors=[monitor], active_monitor=monitor, clients=[client])
     ls = make_layer_surface(monitor=monitor, focused=True)
 
-    with patch("wel.arrange_layers"), patch("wel.focus_client") as focus:
+    with patch("welpy.app.arrange_layers"), \
+         patch("welpy.app.focus_client") as focus:
         wel.layer_surface_unmap(server, ls, None)
 
     focus.assert_called_once_with(server, client)
@@ -5221,7 +5047,8 @@ def test_layer_unmap_refocuses_monitor():
         clients=[selected_client, monitor_client])
     ls = make_layer_surface(monitor=monitor, focused=True)
 
-    with patch("wel.arrange_layers"), patch("wel.focus_client") as focus:
+    with patch("welpy.app.arrange_layers"), \
+         patch("welpy.app.focus_client") as focus:
         wel.layer_surface_unmap(server, ls, None)
 
     focus.assert_called_once_with(server, monitor_client)
@@ -5234,7 +5061,8 @@ def test_layer_unmap_unfocused():
     server = make_server(monitors=[monitor])
     ls = make_layer_surface(monitor=monitor, focused=False)
 
-    with patch("wel.arrange_layers"), patch("wel.focus_client") as focus:
+    with patch("welpy.app.arrange_layers"), \
+         patch("welpy.app.focus_client") as focus:
         wel.layer_surface_unmap(server, ls, None)
 
     focus.assert_not_called()
@@ -5250,7 +5078,7 @@ def test_layer_cleanup_removes():
     h = MagicMock()
     ls.listeners.append(h)
 
-    with patch("wel.arrange_layers"):
+    with patch("welpy.app.arrange_layers"):
         wel.layer_surface_cleanup(server, ls, None)
 
     h.remove.assert_called_once()
@@ -5392,7 +5220,7 @@ def test_lock_surface_orphan_logged(caplog):
         "struct wlr_session_lock_surface_v1 *": lock_surface,
     }.get(type_str, ("CAST", type_str, val))
 
-    with caplog.at_level(logging.WARNING, logger="wel"):
+    with caplog.at_level(logging.WARNING, logger="welpy.app"):
         wel.lock_surface_new(server, "DATA")
 
     assert "unknown screen" in caplog.text
@@ -5538,7 +5366,8 @@ def test_cursor_button_locked():
     event.time_msec = 7
     event.state = server.lib.WL_POINTER_BUTTON_STATE_PRESSED
 
-    with patch("wel.focus_client") as focus, patch("wel.client_at") as at:
+    with patch("welpy.app.focus_client") as focus, \
+         patch("welpy.app.client_at") as at:
         wel.cursor_button(server, "BUTTON_DATA")
 
     action.assert_not_called()
@@ -5560,10 +5389,12 @@ def test_lock_surfaces_reconfigured():
         session_lock=make_session_lock(surfaces=[ls]))
     server.ffi.addressof.side_effect = lambda obj, *args: ("ADDR", obj, *args)
 
-    with patch("wel.apply_hierarchy"), patch("wel.apply_visibility"), \
-         patch("wel.apply_tree"), patch("wel.arrange_layers"), \
-         patch("wel.apply_geometry"), patch("wel.apply_focus"), \
-         patch("wel.monitor_box", return_value=wel.Rect(10, 20, 300, 200)):
+    with patch("welpy.app.apply_hierarchy"), \
+         patch("welpy.app.apply_visibility"), \
+         patch("welpy.app.apply_tree"), patch("welpy.app.arrange_layers"), \
+         patch("welpy.app.apply_geometry"), patch("welpy.app.apply_focus"), \
+         patch("welpy.app.monitor_box",
+               return_value=wel.Rect(10, 20, 300, 200)):
         wel.update_monitors(server)
 
     server.lib.wlr_scene_node_set_position.assert_any_call(
@@ -5584,9 +5415,10 @@ def test_lock_surfaces_pruned():
         monitors=[remaining], active_monitor=remaining, locked=True,
         session_lock=session_lock)
 
-    with patch("wel.apply_hierarchy"), patch("wel.apply_visibility"), \
-         patch("wel.apply_tree"), patch("wel.arrange_layers"), \
-         patch("wel.apply_geometry"), patch("wel.apply_focus"):
+    with patch("welpy.app.apply_hierarchy"), \
+         patch("welpy.app.apply_visibility"), \
+         patch("welpy.app.apply_tree"), patch("welpy.app.arrange_layers"), \
+         patch("welpy.app.apply_geometry"), patch("welpy.app.apply_focus"):
         wel.update_monitors(server)
 
     assert ls not in session_lock.surfaces
@@ -5627,7 +5459,7 @@ def test_arrange_layers_shrinks_area():
         usable.height = 570
     server.lib.wlr_scene_layer_surface_v1_configure.side_effect = configure
 
-    with patch("wel.monitor_box", return_value=wel.Rect(0, 0, 800, 600)):
+    with patch("welpy.app.monitor_box", return_value=wel.Rect(0, 0, 800, 600)):
         wel.arrange_layers(server, monitor)
 
     assert monitor.window_area == wel.Rect(0, 30, 800, 570)
@@ -5647,7 +5479,7 @@ def test_popup_new_layer_owner():
         ls.layer_surface.surface)
     _stage_popup(server)
 
-    with patch("wel.monitor_box",
+    with patch("welpy.app.monitor_box",
                return_value=wel.Rect(0, 0, 800, 600)):
         wel.popup_new(server, "DATA")
         trigger(server, server.lib.welpy_surface_commit, "COMMIT")
@@ -5739,8 +5571,8 @@ def test_begin_dragging_floats():
     server.lib.wlr_scene_node_at.return_value = node
 
     seed = wel.Rect(0, 0, 100, 80)
-    with patch("wel.client_outer_rect", return_value=seed), \
-         patch("wel.apply_geometry"):
+    with patch("welpy.app.client_outer_rect", return_value=seed), \
+         patch("welpy.app.apply_geometry"):
         wel.begin_dragging_client(server)
 
     assert client.floating_geom == seed
@@ -5761,8 +5593,9 @@ def test_begin_dragging_drops_leaf():
     node.parent = a.scene_tree
     server.lib.wlr_scene_node_at.return_value = node
 
-    with patch("wel.client_outer_rect", return_value=wel.Rect(0, 0, 100, 80)), \
-         patch("wel.apply_geometry"):
+    with patch("welpy.app.client_outer_rect",
+               return_value=wel.Rect(0, 0, 100, 80)), \
+         patch("welpy.app.apply_geometry"):
         wel.begin_dragging_client(server)
 
     assert m.active_workspace.root.children == [b]
@@ -5783,8 +5616,9 @@ def test_begin_resizing_drops_leaf():
     node.parent = a.scene_tree
     server.lib.wlr_scene_node_at.return_value = node
 
-    with patch("wel.client_outer_rect", return_value=wel.Rect(0, 0, 100, 80)), \
-         patch("wel.apply_geometry"):
+    with patch("welpy.app.client_outer_rect",
+               return_value=wel.Rect(0, 0, 100, 80)), \
+         patch("welpy.app.apply_geometry"):
         wel.begin_resizing_client(server)
 
     assert m.active_workspace.root.children == [b]
@@ -5799,7 +5633,7 @@ def test_client_commit_initial_tiled():
     toplevel.base.initial_commit = True
     client = make_client(toplevel=toplevel, workspace=workspace)
 
-    with patch("wel.apply_geometry") as apply_geom:
+    with patch("welpy.app.apply_geometry") as apply_geom:
         wel.client_commit(server, client, None)
 
     apply_geom.assert_not_called()
@@ -5819,7 +5653,7 @@ def test_client_commit_initial_floating():
         workspace=workspace,
     )
 
-    with patch("wel.apply_geometry") as apply_geom:
+    with patch("welpy.app.apply_geometry") as apply_geom:
         wel.client_commit(server, client, None)
 
     apply_geom.assert_not_called()
@@ -5835,7 +5669,7 @@ def test_client_commit_initial_unassigned():
     toplevel.base.initial_commit = True
     client = make_client(toplevel=toplevel, workspace=None)
 
-    with patch("wel.apply_geometry") as apply_geom:
+    with patch("welpy.app.apply_geometry") as apply_geom:
         wel.client_commit(server, client, None)
 
     apply_geom.assert_not_called()
@@ -5853,7 +5687,7 @@ def test_client_unmap_arranges():
     b = make_client(workspace=m.active_workspace)
     server = make_server(monitors=[m], active_monitor=m, clients=[a, b])
 
-    with patch("wel.apply_geometry") as apply_geom:
+    with patch("welpy.app.apply_geometry") as apply_geom:
         wel.client_unmap(server, a, None)
 
     apply_geom.assert_called_once_with(server, m)
@@ -5883,7 +5717,7 @@ def test_client_unmap_drops_leaf():
     m.active_workspace.root = flat_tree(a, b)
     server = make_server(monitors=[m], active_monitor=m, clients=[a, b])
 
-    with patch("wel.focus_client"), patch("wel.apply_geometry"):
+    with patch("welpy.app.focus_client"), patch("welpy.app.apply_geometry"):
         wel.client_unmap(server, a, None)
 
     assert m.active_workspace.root.children == [b]
@@ -5894,7 +5728,7 @@ def test_client_unmap_orphan():
     client = make_client(workspace=None)
     server = make_server(clients=[client])
 
-    with patch("wel.apply_geometry") as apply_geom:
+    with patch("welpy.app.apply_geometry") as apply_geom:
         wel.client_unmap(server, client, None)
 
     apply_geom.assert_not_called()
@@ -5908,7 +5742,7 @@ def test_client_unmap_stale():
     client = make_client(workspace=m.active_workspace)
     server = make_server(clients=[client])
 
-    with patch("wel.apply_geometry") as apply_geom:
+    with patch("welpy.app.apply_geometry") as apply_geom:
         wel.client_unmap(server, client, None)
 
     apply_geom.assert_not_called()
@@ -5919,7 +5753,7 @@ def test_monitor_new_updates():
     picked up and orphans are adopted."""
     server = make_server()
 
-    with patch("wel.update_monitors") as upd:
+    with patch("welpy.app.update_monitors") as upd:
         wel.monitor_new(server, "OUTPUT_DATA")
 
     upd.assert_called_once_with(server)
@@ -5931,7 +5765,7 @@ def test_monitor_cleanup_removes():
     monitor = make_monitor(scene_output="SO")
     server = make_server(monitors=[monitor])
 
-    with patch("wel.update_monitors") as upd:
+    with patch("welpy.app.update_monitors") as upd:
         wel.monitor_cleanup(server, monitor, None)
 
     assert monitor not in server.monitors
@@ -5945,10 +5779,10 @@ def test_setup_layout_change_updates():
     _, lib, *_ = build
     lib.WL_SEAT_CAPABILITY_POINTER = 1
     lib.WL_SEAT_CAPABILITY_KEYBOARD = 2
-    with patch("wel.bindings.build", return_value=build), \
-         patch("wel.build_keycode_map",
+    with patch("welpy.app.bindings.build", return_value=build), \
+         patch("welpy.app.build_keycode_map",
                return_value=make_keycode_map()), \
-         patch("wel.update_monitors") as upd:
+         patch("welpy.app.update_monitors") as upd:
         server = wel.setup()
         trigger(server, lib.welpy_output_layout_change, "LAYOUT_DATA")
 
@@ -5961,7 +5795,7 @@ def test_monitor_request_state_updates():
     server = make_server()
     monitor = make_monitor(output="OUT", scene_output="SO")
 
-    with patch("wel.update_monitors") as upd:
+    with patch("welpy.app.update_monitors") as upd:
         wel.monitor_request_state(server, monitor, "RS_DATA")
 
     upd.assert_called_once_with(server)
@@ -5970,22 +5804,11 @@ def test_monitor_request_state_updates():
 # --- override / load_config ------------------------------------------------
 
 
-def test_override_form1_replaces(monkeypatch):
-    """@wel.override on a fresh function installs it at wel.<name>."""
-    monkeypatch.setattr(wel, "modkey", wel.modkey)
-
-    @wel.override
-    def modkey(_orig, _server):
-        return 0x99
-
-    assert wel.modkey(MagicMock()) == 0x99
-
-
 def test_override_form1_chains_original(monkeypatch):
     """The previous function is passed in as the first argument."""
     monkeypatch.setattr(wel, "modkey", wel.modkey)
 
-    @wel.override
+    @welpy.override(wel.modkey)
     def modkey(orig, server):
         return orig(server) | 0xFF
 
@@ -5995,11 +5818,11 @@ def test_override_form1_chains_original(monkeypatch):
 
 
 def test_override_form2_wl(monkeypatch):
-    """@wel.override(target) installs at the target's home, even when the
+    """@welpy.override(target) installs at the target's home, even when the
     new function has a different local name."""
     monkeypatch.setattr(wel, "modkey", wel.modkey)
 
-    @wel.override(wel.modkey)
+    @welpy.override(wel.modkey)
     def renamed(_orig, _server):
         return 0x123
 
@@ -6007,11 +5830,11 @@ def test_override_form2_wl(monkeypatch):
 
 
 def test_override_form2_bindings(monkeypatch):
-    """@wel.override reaches outside wel: targeting bindings.build installs
+    """@welpy.override reaches outside wel: targeting bindings.build installs
     the replacement in bindings, not in wel."""
     monkeypatch.setattr(bindings, "build", bindings.build)
 
-    @wel.override(bindings.build)
+    @welpy.override(bindings.build)
     def build(_orig):
         return "stub"
 
@@ -6025,11 +5848,11 @@ def test_override_chain_composes(monkeypatch):
     form-2 find the previous wrapper at wel.<name>."""
     monkeypatch.setattr(wel, "modkey", wel.modkey)
 
-    @wel.override
+    @welpy.override(wel.modkey)
     def modkey(orig, server):
         return orig(server) + 1
 
-    @wel.override(wel.modkey)
+    @welpy.override(wel.modkey)
     def newer(orig, server):
         return orig(server) * 10
 
@@ -6040,11 +5863,11 @@ def test_override_chain_composes(monkeypatch):
 
 
 def test_autostart_overridable(monkeypatch):
-    """@wel.override on `autostart` lets config swap the launched programs."""
+    """@welpy.override on `autostart` lets config swap the launched programs."""
     monkeypatch.setattr(wel, "autostart", wel.autostart)
     calls = []
 
-    @wel.override
+    @welpy.override(wel.autostart)
     def autostart(_orig, server):
         calls.append(server)
 
@@ -6052,19 +5875,11 @@ def test_autostart_overridable(monkeypatch):
     assert calls == ["SERVER"]
 
 
-def test_override_unknown_name():
-    """Form 1 against a name not on wel: error hints at the explicit form."""
-    with pytest.raises(AttributeError, match=r"@wel\.override\("):
-        @wel.override
-        def nonexistent_function(_orig):
-            pass
-
-
 def test_override_non_callable():
     """Non-callable argument: explicit TypeError, not a confusing
     AttributeError on `__module__`."""
     with pytest.raises(TypeError, match="expects a function"):
-        wel.override(None)
+        welpy.override(None)
 
 
 def test_override_callable_no_name():
@@ -6072,19 +5887,7 @@ def test_override_callable_no_name():
     AttributeError names the missing attribute clearly."""
     partial = functools.partial(lambda x: x)
     with pytest.raises(AttributeError, match="__name__"):
-        wel.override(partial)
-
-
-def test_override_form2_moved_target():
-    """Form 2 with a target detached from its supposed home silently
-    degrades to form 1. This pins the limitation: the decorator can't
-    distinguish a fresh form-1 function from a misused form-2 target."""
-    def fake(_orig):
-        pass
-    fake.__module__ = "wel"
-    fake.__name__ = "definitely_not_a_real_wl_attribute"
-    with pytest.raises(AttributeError, match=r"@wel\.override\("):
-        wel.override(fake)
+        welpy.override(partial)
 
 
 def test_load_config_missing(tmp_path):
@@ -6098,8 +5901,8 @@ def test_load_config_runs(tmp_path, monkeypatch):
     monkeypatch.setattr(wel, "_test_marker", None, raising=False)
     config = tmp_path / "config.py"
     config.write_text(dedent("""\
-        import wel
-        wel._test_marker = 'ran'
+        import welpy.app
+        welpy.app._test_marker = 'ran'
     """))
     wel.load_config(config)
     assert wel._test_marker == "ran"
@@ -6112,9 +5915,9 @@ def test_load_config_sys_path(tmp_path, monkeypatch):
     monkeypatch.setattr(sys, "path", list(sys.path))
     monkeypatch.setattr(sys, "modules", dict(sys.modules))
     (tmp_path / "sibling_ext.py").write_text(dedent("""\
-        import wel
+        import welpy.app
 
-        @wel.override
+        @welpy.override(welpy.app.modkey)
         def modkey(_orig, _server):
             return 0xDEAD
     """))
@@ -6131,8 +5934,8 @@ def test_load_config_sys_path(tmp_path, monkeypatch):
 def test_setup_workspaces_orphaned():
     """Setup creates 10 orphaned workspaces named "1".."9", "10"."""
     build = make_bindings()
-    with patch("wel.bindings.build", return_value=build), \
-         patch("wel.build_keycode_map",
+    with patch("welpy.app.bindings.build", return_value=build), \
+         patch("welpy.app.build_keycode_map",
                return_value=make_keycode_map()):
         server = wel.setup()
     assert [w.name for w in server.workspaces] == [
@@ -6552,7 +6355,7 @@ def test_move_client_moves_leaf():
         workspaces=[ws1, ws2], monitors=[monitor], active_monitor=monitor,
         clients=[client])
 
-    with patch("wel.apply_geometry"), patch("wel.apply_focus"):
+    with patch("welpy.app.apply_geometry"), patch("welpy.app.apply_focus"):
         wel.move_client_to_workspace(server, "2")
 
     assert ws1.root.children == []
@@ -7103,10 +6906,10 @@ def test_extws_urgent_state():
 def test_setup_extws():
     """wel.setup() builds an ext_workspace ext on the server."""
     build = make_bindings()
-    with patch("wel.bindings.build", return_value=build), \
-         patch("wel.build_keycode_map",
+    with patch("welpy.app.bindings.build", return_value=build), \
+         patch("welpy.app.build_keycode_map",
                return_value=make_keycode_map()), \
-         patch("wel.ext_workspace.create") as create:
+         patch("welpy.app.ext_workspace.create") as create:
         server = wel.setup()
 
     create.assert_called_once_with(
@@ -7125,7 +6928,7 @@ def test_xwayland_new_unmanaged():
     xsurface.override_redirect = True
     server.ffi.cast.return_value = xsurface
 
-    with patch("wel.unmanaged_new") as unmanaged:
+    with patch("welpy.app.unmanaged_new") as unmanaged:
         wel.x11_surface_new(server, "DATA")
 
     unmanaged.assert_called_once_with(server, xsurface)
@@ -7153,7 +6956,7 @@ def test_xwayland_associate_map():
     server.ffi.cast.return_value = xsurface
     wel.x11_surface_new(server, "DATA")
 
-    with patch("wel.client_map") as mapped:
+    with patch("welpy.app.client_map") as mapped:
         trigger(server, server.lib.welpy_xwayland_surface_associate, None)
         trigger(server, server.lib.welpy_surface_map, "MAP")
 
@@ -7326,7 +7129,7 @@ def test_xwayland_close():
     """Closing the focused X11 window routes to the X11 close call."""
     server = make_server()
     client = make_x11_client()
-    with patch("wel.top_client", return_value=client):
+    with patch("welpy.app.top_client", return_value=client):
         wel.close_window(server)
     server.lib.wlr_xwayland_surface_close.assert_called_once_with(
         client.xsurface)
@@ -7345,7 +7148,7 @@ def test_xwayland_map_front():
     server = make_server(clients=[old])
     fresh = make_x11_client(scene_tree=None)
 
-    with patch("wel.focus_client"):
+    with patch("welpy.app.focus_client"):
         wel.client_map(server, fresh, None)
 
     assert server.clients[0] is fresh
@@ -7356,7 +7159,7 @@ def test_xwayland_map_scene():
     server = make_server()
     client = make_x11_client(scene_tree=None)
 
-    with patch("wel.focus_client"):
+    with patch("welpy.app.focus_client"):
         wel.client_map(server, client, None)
 
     server.lib.wlr_scene_subsurface_tree_create.assert_called_once_with(
@@ -7382,7 +7185,7 @@ def test_xwayland_activate_urgent():
     focus."""
     server = make_server()
     client = make_x11_client()
-    with patch("wel.mark_urgent") as mark:
+    with patch("welpy.app.mark_urgent") as mark:
         wel.x11_request_activate(server, client)
     mark.assert_called_once_with(server, client)
 
@@ -7412,11 +7215,11 @@ def test_main_display_before_autostart(monkeypatch):
     seen = {}
     def record(_server):
         seen["display"] = os.environ["DISPLAY"]
-    with patch("wel.setup", return_value=server), \
-         patch("wel.load_config"), \
-         patch("wel.install_signals"), \
-         patch("wel.teardown"), \
-         patch("wel.autostart", side_effect=record):
+    with patch("welpy.app.setup", return_value=server), \
+         patch("welpy.app.load_config"), \
+         patch("welpy.app.install_signals"), \
+         patch("welpy.app.teardown"), \
+         patch("welpy.app.autostart", side_effect=record):
         wel.main()
 
     assert seen["display"] == ":4"
@@ -7426,7 +7229,7 @@ def test_close_window_xdg():
     """Closing a focused Wayland window still routes to xdg send_close."""
     server = make_server()
     client = make_client()
-    with patch("wel.top_client", return_value=client):
+    with patch("welpy.app.top_client", return_value=client):
         wel.close_window(server)
     server.lib.wlr_xdg_toplevel_send_close.assert_called_once_with(
         client.toplevel)
@@ -7453,7 +7256,7 @@ def test_unmanaged_associate_map():
     xsurface = MagicMock()
     wel.unmanaged_new(server, xsurface)
 
-    with patch("wel.unmanaged_map") as mapped:
+    with patch("welpy.app.unmanaged_map") as mapped:
         trigger(server, server.lib.welpy_xwayland_surface_associate, None)
         trigger(server, server.lib.welpy_surface_map, "MAP")
 
@@ -7485,7 +7288,7 @@ def test_unmanaged_map_focus():
     server.lib.wlr_xwayland_surface_override_redirect_wants_focus \
         .return_value = True
 
-    with patch("wel.apply_focus") as focus:
+    with patch("welpy.app.apply_focus") as focus:
         wel.unmanaged_map(server, um, None)
 
     assert server.unmanaged_focus is um
@@ -7523,7 +7326,7 @@ def test_unmanaged_unmap_restores():
     um = make_unmanaged(scene_tree=MagicMock())
     server.unmanaged_focus = um
 
-    with patch("wel.apply_focus") as focus:
+    with patch("welpy.app.apply_focus") as focus:
         wel.unmanaged_unmap(server, um, None)
 
     server.lib.wlr_scene_node_destroy.assert_called_once()
@@ -7539,7 +7342,7 @@ def test_unmanaged_unmap_unfocused():
     server.unmanaged_focus = other
     um = make_unmanaged(scene_tree=MagicMock())
 
-    with patch("wel.apply_focus") as focus:
+    with patch("welpy.app.apply_focus") as focus:
         wel.unmanaged_unmap(server, um, None)
 
     focus.assert_not_called()
@@ -7568,7 +7371,7 @@ def test_unmanaged_focus_defers():
     um = make_unmanaged()
     server.unmanaged_focus = um
 
-    with patch("wel.top_client") as top:
+    with patch("welpy.app.top_client") as top:
         wel.apply_focus(server)
 
     top.assert_not_called()
@@ -7583,7 +7386,7 @@ def test_xwayland_hints_urgent():
     client = make_x11_client()
     server.lib.welpy_xwayland_surface_is_urgent.return_value = True
 
-    with patch("wel.mark_urgent") as mark:
+    with patch("welpy.app.mark_urgent") as mark:
         wel.x11_set_hints(server, client)
 
     mark.assert_called_once_with(server, client)
@@ -7595,7 +7398,7 @@ def test_xwayland_hints_premap():
     client = make_x11_client(scene_tree=None)
     server.lib.welpy_xwayland_surface_is_urgent.return_value = True
 
-    with patch("wel.mark_urgent") as mark:
+    with patch("welpy.app.mark_urgent") as mark:
         wel.x11_set_hints(server, client)
 
     mark.assert_not_called()

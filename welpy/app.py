@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import enum
-import functools
 import importlib.util
 import logging
 import os
@@ -15,11 +14,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-import bindings
-import ext_workspace
-import layout
-import libinput
-from layout import Rect
+from . import bindings
+from . import ext_workspace
+from . import layout
+from . import libinput
+from .layout import Rect
 
 
 logger = logging.getLogger(__name__)
@@ -271,8 +270,6 @@ def load_config(path=None) -> None:
         logger.info("no config found at %s", path)
         return
     logger.info("loading config from %s", path)
-    # Alias so config's `import wel` finds us instead of a second instance.
-    sys.modules.setdefault("wel", sys.modules[__name__])
     # Enable loading modules from the config's directory
     sys.path.append(str(path.parent))
     spec = importlib.util.spec_from_file_location("welpy_config", path)
@@ -2807,38 +2804,3 @@ def change_vt(server: Server, n: int) -> None:
     backends, where there is no session to act on."""
     if server.session != server.ffi.NULL:
         server.lib.wlr_session_change_vt(server.session, n)
-
-
-def override(arg):
-    """Replace a function, injecting the previous version as the first argument
-    so overrides can chain. Used as ``@wel.override`` (replaces ``wel.<name>``)
-    or ``@wel.override(target)`` (replaces ``target`` wherever it lives)."""
-    if not callable(arg):
-        raise TypeError(
-            f"@wel.override expects a function; got {type(arg).__name__}")
-    home = sys.modules.get(arg.__module__)
-    if home is not None and getattr(home, arg.__name__, None) is arg:
-        return lambda fn: _install(home, arg.__name__, arg, fn)
-    wl_module = sys.modules[__name__]
-    if not hasattr(wl_module, arg.__name__):
-        raise AttributeError(
-            f"wel has no attribute {arg.__name__!r}; for targets outside wel, "
-            f"use the explicit form: @wel.override(<module>.{arg.__name__})")
-    return _install(
-        wl_module, arg.__name__, getattr(wl_module, arg.__name__), arg)
-
-
-def _install(module, name, target, fn):
-    """Install `fn` at `module.name`, with `target` curried as first arg."""
-    @functools.wraps(fn)
-    def wrapper(*args, **kwargs):
-        return fn(target, *args, **kwargs)
-    # Rewrite so a later @wel.override(wrapper) routes here, not to fn's
-    # original module.
-    wrapper.__module__ = module.__name__
-    setattr(module, name, wrapper)
-    return wrapper
-
-
-if __name__ == "__main__":
-    main()

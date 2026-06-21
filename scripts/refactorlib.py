@@ -17,7 +17,7 @@ def extract_defs(src: str, names: list[str]) -> str:
     lines = src.split("\n")
     spans = sorted(_span(nodes[name]) for name in names)
     blocks = ["\n".join(lines[start - 1:end]) for start, end in spans]
-    return "\n\n".join(blocks) + "\n"
+    return "\n\n\n".join(blocks) + "\n"  # two blank lines between top-level defs
 
 
 def delete_defs(src: str, names: list[str]) -> str:
@@ -99,6 +99,7 @@ def test_extract_source_order():
         "@deco\n"
         "def alpha(x):\n"
         "    return x\n"
+        "\n"
         "\n"
         "def beta():\n"
         "    return 2\n"

@@ -181,14 +181,27 @@ Each box below is one commit. **Gate after every box**: `pytest` green +
 3. Move the module's tests into its mirror file; re-point its `wel.X` refs (the
    Phase-1 alias) → `module.X`; switch any `@wel.override` to the target form.
 
-- [ ] **Phase 1 — packageize**: `git mv wel.py welpy/app.py` wholesale (Phase 2 peels
-  modules off it); move the other flat files (`bindings`/`layout`/`ext_workspace`/
-  `libinput`) into `welpy/`, imports → relative; lift `override`/`_install` into
-  `__init__.py`; add `__main__.py` (`from welpy.app import main; main()`); drop the
-  `load_config` `sys.modules["wel"]` alias hack; add `pyproject.toml`; create `tests/`
-  (`__init__.py` + `helpers.py`) and move `tests.py` in, aliasing `from welpy import
-  app as wel` so its `wel.*` refs keep resolving until Phase 2 migrates them per
-  module. No code moves between modules yet.
+**Mechanical-first per box** (used for Phase 1; reuse where it helps): drive the
+deterministic copy/replace/remove from a temporary `scripts/phase<N>.py` over the
+shared `scripts/refactorlib.py` — AST `extract_defs`/`delete_defs` by **symbol name**
+(a *move* = extract + delete; spans inferred, never hardcoded) + count-checked literal
+`replace`s for the few text edits (imports etc. hardcoded inline, not parsed), so the
+pass self-verifies. The driver is **read-only on the repo**, staging to
+`/tmp/welpy-<box>/`; review the staged diff, copy back (**no `git mv`** — rename
+detection preserves history), then finish with surgical content-addressed edits for the
+judgment-only changes. `scripts/` is `pylint`-ignored and removed at landing.
+
+- [x] **Phase 1 — packageize** (shipped): renamed `wel.py` → `welpy/app.py` (copy +
+  git rename-detect, **no `git mv`**; Phase 2 peels modules off it); moved the other
+  flat files (`bindings`/`layout`/`ext_workspace`/`libinput`) into `welpy/`, imports →
+  relative; lifted `override`/`_install` into `__init__.py`; added `__main__.py`
+  (`from welpy.app import main; main()`); dropped the `load_config`
+  `sys.modules["wel"]` alias hack; added `pyproject.toml`; created `tests/`
+  (`__init__.py` + `helpers.py`) and moved `tests.py` → `tests/test_app.py`. Per the
+  spec-literal scope, the coupled changes landed now: **target-only `override`**, and
+  test refs split — `wel.X` attribute refs ride `from welpy import app as wel`, but the
+  281 `patch("wel.X")` strings became canonical `patch("welpy.app.X")`. No code moves
+  between modules yet.
 - [ ] `model.py`
 - [ ] `geometry.py`
 - [ ] `focus.py`
@@ -244,14 +257,40 @@ spec._
   dependency via injected callbacks (`on_activate`/`on_assign`). **Why:** keeps the
   import graph acyclic. **How to apply:** a new module needing core behavior takes a
   callback or stays a pure leaf, rather than importing the compositor.
-- **(Decisions)** `welpy.override` is target-only (`@welpy.override(module.hook)`);
-  the bare `@wel.override` form was dropped because it installs into
-  `sys.modules["wel"]` by name and silently fails once a hook moves out of `wel.py`,
-  whereas the target form resolves `target.__module__`.
-- **(Decisions)** the compositor launches via `python -m welpy` (`welpy/__main__.py`);
-  canonical package identity removed the `load_config`
-  `sys.modules.setdefault("wel", ...)` double-import alias hack that `wel.py`-as-script
-  needed.
 - **(Decisions)** the split was a bottom-up (leaves-first) extraction so each new
   module referenced only already-extracted modules, never `wel` — no import cycle
   formed mid-split.
+
+## Log
+
+_Refactor-only working notes — observations from doing the boxes, for whoever resumes.
+**Not** durable project context (that's `MEMORY.md`), and **not** promoted at landing
+(unlike *To Remember*); deleted with this spec._
+
+**Phase 1 (packageize) — done in the working tree (uncommitted), green:** 469 tests
+pass (472 − 3 deleted override tests), `pylint .` 10/10, `import welpy.app` +
+`welpy.override` ok; the six moved files show as git renames (history preserved). The
+target-only `override` and `python -m welpy` decisions shipped here and are already in
+`MEMORY.md` (so they were dropped from *To Remember* above).
+
+- Mechanical pass = `scripts/phase1.py` over `scripts/refactorlib.py`
+  (`extract_defs`/`delete_defs`/`truncate_at`/`replace`, count-asserted; `refactorlib`
+  has its own `pytest` self-tests). Re-running reproduces the *semantic* state only —
+  the line-wraps are manual finishing, not in the driver.
+- Two driver bugs caught at the gate, fixed in `phase1.py`: (1) **don't drop `import
+  functools`** — its `functools.partial` use is in the *kept*
+  `test_override_callable_no_name`, not the deleted `test_override_unknown_name`; an
+  import's last use is decided by the enclosing def, not grep line-proximity. (2)
+  `patch("wel.` missed one `patch(` whose `"wel.apply_geometry"` string wraps to its own
+  line — fixed with an explicit `"wel.apply_geometry"` replace (matching bare `"wel.`
+  would also rewrite a docstring).
+- Count substrings on the **pristine** source before any `delete_defs` (deleting first
+  undercounts). Pinned for a re-run: `patch("wel.` ×281, `wel.override` ×16,
+  `logger="wel"` ×1; 12 harness builders → `tests/helpers.py`; 3 obsolete override
+  tests removed (472→469).
+- The alias→canonical rename pushes ~27 `with patch(...)` lines past 80
+  (`patch("welpy.app.X")` is +6 chars); wrap them in the surgical pass. The pre-existing
+  100+ char lines stay clean — pylint exempts any line with a trailing `# pylint:` pragma.
+- Deferred to **Final** (not done): `tests/test_app.py` still has the docstring
+  `"""Unit tests for wel.py."""`; `AGENTS.md` still shows the bare `@wel.override` form,
+  `pytest tests.py`, and `wel.py`/`tests.py` in its file list.

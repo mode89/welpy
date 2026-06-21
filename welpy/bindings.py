@@ -24,8 +24,8 @@ from types import SimpleNamespace
 
 import cffi
 
-import ext_workspace
-import libinput
+from . import ext_workspace
+from . import libinput
 
 
 logger = logging.getLogger(__name__)
