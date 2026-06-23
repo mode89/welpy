@@ -212,7 +212,7 @@ judgment-only changes. `scripts/` is `pylint`-ignored and removed at landing.
 - [x] `windows.py` — extracted (green + reviewed clean)
 - [x] `xwayland.py` — extracted (green + reviewed clean)
 - [x] `layer_shell.py` — extracted (green + reviewed clean)
-- [ ] `session_lock.py`
+- [x] `session_lock.py` — extracted (green + reviewed clean)
 - [ ] `output.py`
 - [ ] `input.py`
 - [ ] `commands.py`
@@ -472,3 +472,39 @@ clean — no blocking issues, no nits.
   logger patches, no mock-var-shadow, no R0801 disables. `# --- layer-shell ---` stays in
   `tests/test_app.py` because setup tests remain. Only the existing pragma-exempt long line
   in `tests/test_app.py` remains unchanged.
+
+**Phase 2 (module carving) — box 7 `session_lock.py` — done (green, reviewed clean):**
+carved via `scripts/phase2_session_lock.py`. Manifest = 9 functions written **top-down**
+(entry → surface lifecycle → teardown → update/create helpers): `lock_new`,
+`lock_surface_new`, `lock_surface_destroy`, `lock_unlock`, `lock_destroy`, `destroy_lock`,
+`update_lock_background`, `update_lock_surfaces`, `create_lock_background`; 4
+`session_lock.X` qualifications in the `app.py` remainder (`setup()` ×2 + `update_monitors`
+×2); 11 subject-tests + `_stage_lock_new` → `tests/test_session_lock.py`.
+`welpy/session_lock.py` 152 lines; `app.py` 1233 lines (was 1369). Gate: 469 pass, pylint
+10/10, `import welpy.session_lock` clean. Reviewed clean — byte-identical bodies, no nits.
+
+- SPEC deps were accurate: `(model, geometry, focus)` only, plus own `logger`
+  (`lock_surface_new` warns). Moved bodies were already qualified at HEAD, so the move
+  needed zero in-body call edits — a true byte-identical relocation.
+- Extracted **before** `output.py` per the cross-handler constraint: `update_monitors`
+  (still in `app.py`, migrates to `output` in box 8) calls `update_lock_background`/
+  `update_lock_surfaces`, now qualified `session_lock.X` — the safe app→session_lock
+  forward edge, no cycle.
+- Two bridge-only model types: `SessionLock` + `LockSurface` became app-unused after the
+  move but are still reached via `tests/helpers.make_session_lock` through the Phase-1
+  `wel.X` bridge, so `app.py` keeps `SessionLock = model.SessionLock` /
+  `LockSurface = model.LockSurface` (dropped from the by-name import to avoid W0611).
+- **Mock-var-shadow recurred as a plain local-var shadow** (not a `patch(...) as` local):
+  6 moved tests had a local `session_lock = make_session_lock(...)` that, after the import,
+  shadows `from welpy import session_lock` (W0621) and breaks the module calls. Pass-2
+  renamed the local to `sess_lock` (assignment + `session_lock=sess_lock` kwarg value +
+  body uses), leaving module-level `session_lock.X` calls intact. The shadow gotcha
+  generalizes to **any** same-named local, not just mock vars.
+- **Subject rule, `update_monitors`-driven tests:** `test_lock_surfaces_reconfigured`/
+  `_pruned` drive `update_monitors` (a staying fn) and only assert the lock effect, so they
+  **stay** in `tests/test_app.py` and will travel with `update_monitors` in box 8 —
+  consequence: `update_lock_*` get no dedicated mirror-file test (covered indirectly). The
+  `# --- session lock ---` header stays (locked-state + update_monitors tests remain).
+- Implementer deviation from PLAN (gate-caught, justified): moving the sole `logging` user
+  (`test_lock_surface_orphan_logged`) out of `test_app.py` orphaned its `import logging`
+  there — removed per the surgical-changes orphan rule (PLAN's Pass-2 didn't predict it).
