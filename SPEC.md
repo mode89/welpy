@@ -215,7 +215,7 @@ judgment-only changes. `scripts/` is `pylint`-ignored and removed at landing.
 - [x] `session_lock.py` — extracted (green + reviewed clean)
 - [x] `output.py` — extracted (green + reviewed clean)
 - [x] `input.py` — extracted (green + reviewed clean)
-- [ ] `commands.py`
+- [x] `commands.py` — extracted (green + reviewed clean); all handler boxes done
 - [ ] **Final**: `welpy/app.py` now holds only lifecycle + the keybinding table; drop
   the transitional `from welpy import app as wel` test alias; update `AGENTS.md` (file
   list, launch cmd, override model, test naming/location) and `MEMORY.md` override
@@ -590,3 +590,39 @@ back-edge audit held.**
   one-test-file-per-source-module layout for the pre-existing flat module. Orphaned the
   `libinput` import in `test_app.py` → removed.
 - `change_vt` moved untested (no test exists) — acceptable for a pure move.
+
+**Phase 2 (module carving) — box 10 `commands.py` — done (green, reviewed clean). LAST
+handler box; `app.py` now matches its SPEC target (lifecycle + keybinding table only).**
+Carved via `scripts/phase2_commands.py`. Manifest = 12 user-facing command functions,
+top-down: `focus_direction`, `move_direction`, `group_window`, `cycle_layout`,
+`toggle_fullscreen`, `toggle_floating`, `close_window`, `view_workspace`,
+`view_previous_workspace`, `move_client_to_workspace`, `assign_workspace_to_monitor`,
+`move_active_workspace_to_monitor`. 43 command-subject tests → `tests/test_commands.py`;
+13 `test_extws_*` + 5 exclusive helpers → NEW `tests/test_ext_workspace.py`.
+`welpy/commands.py` 225 lines; `app.py` 420 lines (was 631). Test split: test_app 102 +
+test_commands 43 + test_ext_workspace 13 = conserved (469 total). Gate: 469 pass, pylint
+10/10, `import welpy.commands` clean. Reviewed clean — byte-identical bodies, no nits.
+
+- **Forward edge `app → commands`** via `key_bindings`/`modkey`/`setup`; `commands.py`
+  imports neither `app` nor `input`. Back-edge audit clean: zero command body references
+  any lifecycle fn. The `mod+shift+e` quit binding maps `terminate` **directly in the
+  `key_bindings` table** (not via a command), so no `commands → app` edge.
+- Deps = `(model, geometry, focus, layout, ext_workspace)` — wider than SPEC's
+  `(model, geometry, focus)` (`layout`/`ext_workspace` verified sinks); no logger.
+- After the move `from . import focus` became app-orphaned (every `focus.*` use was
+  inside a moved body) → removed. Model bridges added: `Monitor = model.Monitor`,
+  `X11Client = model.X11Client`.
+- `app.py` residual = exactly `{main, load_config, setup, install_signals, autostart,
+  spawn, teardown, terminate, renderer_lost}` + `modkey`/`key_bindings` + imports/bridges,
+  matching the SPEC app.py target — this gates Final.
+- ext_workspace-test placement was a **user decision** (box-9 libinput precedent): the 13
+  `test_extws_*` call `ext_workspace.create/destroy/publish/activate/...` directly
+  (subject = `welpy/ext_workspace.py`, a pre-existing Phase-1 leaf module), so they + their
+  5 exclusive helpers (`make_extws_server`/`make_extws`/`bind_extws_client`/`extws_group`/
+  `extws_handle`) go to a new `tests/test_ext_workspace.py`. `test_setup_extws` STAYS
+  (subject = `wel.setup()`; patches `welpy.app.ext_workspace.create` at the app boundary).
+  Header imports `MagicMock` only (no `patch`/`ANY` in moved bodies). Orphaned
+  `ext_workspace`/`geometry` imports removed from `test_app.py`.
+- `assign_workspace_to_monitor` moved untested (no direct test pre-existed; exercised via
+  the staying `test_setup_extws` callback wiring) — acceptable (box-9 `change_vt`
+  precedent).
