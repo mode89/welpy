@@ -2,9 +2,26 @@ Wayland compositor written in Python on top of wlroots.
 
 ## Files
 
-- `welpy/`: the compositor package (`app.py` lifecycle + keybindings, `model.py` data model, then `geometry`/`focus`/`windows`/`xwayland`/`layer_shell`/`session_lock`/`output`/`input`/`commands` handler modules, plus `bindings`/`layout`/`ext_workspace`/`libinput`).
-- `tests/`: unit tests, one `test_<module>.py` per source module + shared `helpers.py`.
+- `welpy/`: the compositor package.
+  - `app.py`: compositor lifecycle (`main`/`setup`/`teardown`/…) + the `key_bindings`/`modkey` table.
+  - `model.py`: data model — window/screen state dataclasses, layout constants, shared client-lookup queries (`clients_in`/`clients_visible`/`client_monitor`).
+  - `geometry.py`: window sizing/placement/borders + tiling-tree & layer-shell arrangement.
+  - `focus.py`: focus policy + pointer hit-testing.
+  - `windows.py`: xdg-shell window/popup lifecycle.
+  - `xwayland.py`: X11 + override-redirect surfaces.
+  - `layer_shell.py`: layer-shell surface lifecycle.
+  - `session_lock.py`: screen-lock lifecycle.
+  - `output.py`: monitor/output band — the `update_monitors` render orchestrator.
+  - `input.py`: cursor/pointer/drag/keyboard/seat handling.
+  - `commands.py`: the user-facing keybinding actions.
+  - `bindings.py`: inline cffi bindings to wlroots (plumbing; see Bindings).
+  - `layout.py`: pure tiling-tree operations; no compositor imports.
+  - `ext_workspace.py`: ext-workspace-v1 protocol glue; a callback-driven leaf.
+  - `libinput.py`: libinput device configuration.
+- `tests/`: unit tests mirroring source + shared `helpers.py`.
 - `TODO.md`: planned features, ordered by priority.
+
+The `welpy/` modules layer as an acyclic DAG `model → geometry → focus → windows → xwayland → layer_shell → session_lock → output → input → commands → app`: a module imports only earlier ones, so don't add a back-edge.
 
 ## Customization
 
@@ -25,7 +42,7 @@ Users customize welpy from `~/.config/welpy/config.py`, run at startup before th
 
 Run with `pytest`.
 
-Name tests `test_<system>_<scenario>`, where `<system>` is 1-2 words for the subsystem under test and `<scenario>` is 1-2 words for the specific case. Each source module `welpy/<m>.py` has a mirror `tests/test_<m>.py`; shared builders live in `tests/helpers.py`.
+Name tests `test_<system>_<scenario>`, where `<system>` is 1-2 words for the subsystem under test and `<scenario>` is 1-2 words for the specific case. Each source module `welpy/<m>.py` has a mirror `tests/test_<m>.py` (except `layout` and `bindings`, exercised within `tests/test_app.py`); shared builders live in `tests/helpers.py`.
 
 ## Linting
 
