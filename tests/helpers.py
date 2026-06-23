@@ -206,6 +206,15 @@ def make_layer_surface(**kwargs):
     })
 
 
+def make_session_lock(**kwargs):
+    """Build a SessionLock, filling fields the test doesn't care about."""
+    return wel.SessionLock(**{
+        "lock": MagicMock(name="lock"), "tree": MagicMock(name="tree"),
+        "surfaces": [], "listeners": [],
+        **kwargs,
+    })
+
+
 def trigger(server, signal_accessor, data):
     """Invoke the callback registered with `listen` for this wlroots signal,
     simulating wlroots firing the event with `data`."""

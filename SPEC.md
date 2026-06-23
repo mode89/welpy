@@ -72,7 +72,7 @@ Each entry: module — *(deps)* — contents.
   - decoration: `decoration_new`, `apply_decoration`
   - layer geometry: `arrange_layers`, `place_in_layer_bucket`
   - client-geometry queries: `client_surface/geometry/wants_*/layer/outer_rect`, `init_floating_geom`, `float_client`
-- `focus.py` — *(model, geometry)*
+- `focus.py` — *(model, geometry, layout, ext_workspace)*
   - focus policy: `focus_client`, `apply_focus`, `focus_lock`, `focus_unmanaged`
   - queries: `top_client`, `recent_tiled_leaf`, `client_for_surface`, `focused_tiled/container`, `grabbed_client`
   - pointer focus / hit-testing: `surface_at`, `client_at`, `forward_pointer_motion`, `rebase_pointer`
@@ -208,7 +208,7 @@ judgment-only changes. `scripts/` is `pylint`-ignored and removed at landing.
   between modules yet.
 - [x] `model.py` — extracted (green + reviewed clean)
 - [x] `geometry.py` — extracted (green + reviewed clean)
-- [ ] `focus.py`
+- [x] `focus.py` — extracted (green + reviewed clean)
 - [ ] `windows.py`
 - [ ] `xwayland.py`
 - [ ] `layer_shell.py`
@@ -361,3 +361,35 @@ the by-name imports; 5 `wel.X`→`model.X` test repoints; a few +6-char lines wr
 Now an `AGENTS.md` rule: qualify customization points (override-hook functions **and**
 tunable constants); **types** stay by-name and re-export as `wel.X` for the test bridge.
 Remaining boxes: import model **types** by-name, read model **constants** qualified.
+
+**Phase 2 (module carving) — box 3 `focus.py` — done (green, reviewed clean):** carved
+via `scripts/phase2_focus.py`. Manifest = 14 functions written **top-down** in three
+bands (focus policy / focus+tile queries / pointer hit-testing); 60 `focus.X`
+qualifications in the `app.py` remainder; 27 subject-tests → `tests/test_focus.py`.
+`welpy/focus.py` 290 lines; `app.py` 1901 lines (was 2175). Gate: 469 pass, pylint
+10/10, `import welpy.focus` clean.
+
+- **Deps wider than the first-pass Module map** (now corrected to `(model, geometry,
+  layout, ext_workspace)`): `recent_tiled_leaf`/`focused_container` call `layout.*`,
+  `apply_focus` calls `ext_workspace.publish`. Both extras are verified leaves/sinks
+  (neither imports `app`/`focus`), so the DAG holds — a doc imprecision, not a redesign.
+  `focus.py` also needs its own `logger = logging.getLogger(__name__)` (`grabbed_client`
+  warns).
+- **Mock-var-shadow landmine** (now a durable `MEMORY.md` Gotcha, so Final won't re-
+  derive): adding `from welpy import focus` to `test_app.py` shadowed 19 pre-existing
+  `patch(...) as focus:` locals — pylint W0621, plus `UnboundLocalError` in the 5
+  `test_focus_direction_*` tests that also call the real `focus.focus_client(...)` for
+  setup. Renamed every mock var to the patched symbol (`as focus_client`/`apply_focus`);
+  the `as focus,` comma form needed a separate fix. The driver can't do this — it's
+  Pass-2 (analogous to box-2's `geometry`→`apply_geom`).
+- Test-move details: `make_session_lock` promoted to `tests/helpers.py` (used by 2 moved
+  + 10 staying lock tests); `test_xwayland_for_surface` moved by the **subject rule**
+  (action is `client_for_surface`, box-2 `test_xwayland_set_*` precedent); the single
+  `patch("welpy.app.logger")` (in `test_grabbed_client_multiple`) repointed to
+  `welpy.focus.logger` only on the moved content (`n=1`), not the many staying
+  `welpy.app.logger` patches.
+- Line-wraps were 12, not the ~2 predicted: the +`focus.` qualifier kept app.py sites
+  ≤80, but the `"welpy.app.X"`→`"welpy.focus.X"` test-patch strings (+2 chars) pushed 12
+  past 80. 2 inline `# pylint: disable=duplicate-code` (R0801) per policy. No `_private`
+  rename (all 14 names already public). The orphaned `# --- apply_focus ---` header was
+  removed now (not deferred to Final, unlike box-2's stale headers).

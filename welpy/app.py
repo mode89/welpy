@@ -13,6 +13,7 @@ from pathlib import Path
 
 from . import bindings
 from . import ext_workspace
+from . import focus
 from . import geometry
 from . import layout
 from . import libinput
@@ -286,7 +287,7 @@ def seat_set_cursor(server: Server, data) -> None:
     # Reject background apps (any client can ask) and keep our own image while
     # a mouse drag owns the cursor.
     focused = lib.welpy_seat_pointer_focused_client(server.seat)
-    if grabbed_client(server) is not None or event.seat_client != focused:
+    if focus.grabbed_client(server) is not None or event.seat_client != focused:
         return
     lib.wlr_cursor_set_surface(
         server.cursor.cursor, event.surface,
@@ -386,7 +387,7 @@ def renderer_lost(server: Server) -> None:
 
 def close_window(server: Server) -> None:
     """Ask the focused app to close its window."""
-    client = top_client(server, server.active_monitor)
+    client = focus.top_client(server, server.active_monitor)
     if client is None:
         return
     if isinstance(client, X11Client):
@@ -549,7 +550,7 @@ def update_monitors(server: Server) -> None:
         geometry.apply_geometry(server, m)
     update_lock_background(server)
     update_lock_surfaces(server)
-    apply_focus(server)
+    focus.apply_focus(server)
     if server.ext_workspace is not None:
         ext_workspace.publish(server)
 
@@ -619,7 +620,7 @@ def client_map(server: Server, client: Client, _data) -> None:
     if workspace is not None and workspace.fullscreen is not None:
         geometry.set_fullscreen(server, workspace, None)
     # A new tiled window joins next to the focused one.
-    target = top_client(server, monitor)
+    target = focus.top_client(server, monitor)
     server.clients.insert(0, client)
     if geometry.client_wants_float(client) and monitor is not None:
         client.floating_geom = geometry.init_floating_geom(client)
@@ -632,13 +633,13 @@ def client_map(server: Server, client: Client, _data) -> None:
     if geometry.client_wants_fullscreen(client) and workspace is not None:
         # Honor a pre-map or initial-commit fullscreen request.
         geometry.set_fullscreen(server, workspace, client)
-    focus_client(server, client)
+    focus.focus_client(server, client)
     geometry.apply_hierarchy(server)
     geometry.apply_visibility(server)
     geometry.apply_tree(server)
     if monitor is not None:
         geometry.apply_geometry(server, monitor)
-    apply_focus(server)
+    focus.apply_focus(server)
     # The decoration request may have arrived before the initial configure;
     # now that the surface is initialized, set_mode is safe.
     geometry.apply_decoration(server)
@@ -670,12 +671,12 @@ def client_unmap(server: Server, client: Client, _data) -> None:
     geometry.apply_hierarchy(server)
     geometry.apply_visibility(server)
     if successor is None:
-        successor = top_client(server, monitor)
+        successor = focus.top_client(server, monitor)
     if successor is not None:
-        focus_client(server, successor)
+        focus.focus_client(server, successor)
     if monitor is not None and monitor in server.monitors:
         geometry.apply_geometry(server, monitor)
-    apply_focus(server)
+    focus.apply_focus(server)
 
 
 def client_request_fullscreen(
@@ -693,7 +694,7 @@ def client_request_fullscreen(
             geometry.set_fullscreen(server, workspace, None)
         geometry.apply_tree(server)
         geometry.apply_geometry(server, monitor)
-        apply_focus(server)
+        focus.apply_focus(server)
 
 
 def client_request_maximize(server: Server, client: Client, _data) -> None:
@@ -710,7 +711,7 @@ def client_request_activate(server: Server, data) -> None:
     the window just shows an urgent border until the user focuses it."""
     event = server.ffi.cast(
         "struct wlr_xdg_activation_v1_request_activate_event *", data)
-    client = client_for_surface(server, event.surface)
+    client = focus.client_for_surface(server, event.surface)
     if client is not None:
         mark_urgent(server, client)
 
@@ -718,7 +719,7 @@ def client_request_activate(server: Server, data) -> None:
 def mark_urgent(server: Server, client: Client) -> None:
     """Flag a window as wanting attention: it shows an urgent border until the
     user focuses it. No-op if it already has focus."""
-    focused = client_for_surface(
+    focused = focus.client_for_surface(
         server, server.seat.keyboard_state.focused_surface)
     if client is focused:
         return
@@ -883,7 +884,7 @@ def unmanaged_map(server: Server, um: Unmanaged, _data) -> None:
     lib.wlr_scene_node_raise_to_top(ffi.addressof(um.scene_tree.node))
     if lib.wlr_xwayland_surface_override_redirect_wants_focus(xsurface):
         server.unmanaged_focus = um
-        apply_focus(server)
+        focus.apply_focus(server)
 
 
 def unmanaged_configure(server: Server, um: Unmanaged, data) -> None:
@@ -907,7 +908,7 @@ def unmanaged_unmap(server: Server, um: Unmanaged, _data) -> None:
         um.scene_tree = None
     if server.unmanaged_focus is um:
         server.unmanaged_focus = None
-        apply_focus(server)
+        focus.apply_focus(server)
 
 
 def unmanaged_cleanup(server: Server, um: Unmanaged, _data) -> None:
@@ -1056,7 +1057,7 @@ def layer_surface_commit(server: Server, ls: LayerSurface, _data) -> None:
                 geometry.arrange_layers(server, monitor)
                 geometry.apply_tree(server)
                 geometry.apply_geometry(server, monitor)
-                apply_focus(server)
+                focus.apply_focus(server)
 
 
 def layer_surface_unmap(server: Server, ls: LayerSurface, _data) -> None:
@@ -1066,12 +1067,12 @@ def layer_surface_unmap(server: Server, ls: LayerSurface, _data) -> None:
     if ls.monitor is not None:
         geometry.arrange_layers(server, ls.monitor)
     if was_focused:
-        top = top_client(server, ls.monitor)
+        top = focus.top_client(server, ls.monitor)
         if top is not None:
-            focus_client(server, top)
+            focus.focus_client(server, top)
     if ls.monitor is not None:
         geometry.apply_geometry(server, ls.monitor)
-    apply_focus(server)
+    focus.apply_focus(server)
 
 
 def layer_surface_cleanup(
@@ -1120,7 +1121,7 @@ def lock_new(server: Server, data) -> None:
             lambda _data: lock_destroy(server)),
     ])
     lib.wlr_session_lock_v1_send_locked(lock)
-    apply_focus(server)
+    focus.apply_focus(server)
 
 
 def lock_surface_new(server: Server, data) -> None:
@@ -1148,7 +1149,7 @@ def lock_surface_new(server: Server, data) -> None:
     ls.listeners.append(
         listen(lib.welpy_session_lock_surface_destroy(lock_surface),
             lambda _data: lock_surface_destroy(server, ls)))
-    apply_focus(server)
+    focus.apply_focus(server)
 
 
 def lock_surface_destroy(server: Server, ls: LockSurface) -> None:
@@ -1158,7 +1159,7 @@ def lock_surface_destroy(server: Server, ls: LockSurface) -> None:
     ls.listeners.clear()
     if server.session_lock is not None and ls in server.session_lock.surfaces:
         server.session_lock.surfaces.remove(ls)
-    apply_focus(server)
+    focus.apply_focus(server)
 
 
 def lock_unlock(server: Server) -> None:
@@ -1193,7 +1194,7 @@ def destroy_lock(server: Server, unlocked: bool) -> None:
         server.locked = False
         lib.wlr_scene_node_set_enabled(
             lib.welpy_scene_rect_node(server.lock_background), False)
-    apply_focus(server)
+    focus.apply_focus(server)
 
 
 def update_lock_background(server: Server) -> None:
@@ -1223,210 +1224,11 @@ def update_lock_surfaces(server: Server) -> None:
                 ls.lock_surface, box.width, box.height)
 
 
-def focus_client(server: Server, client: Client) -> None:
-    """Mark `client` as most-recently-focused. The actual focus effects
-    are emitted by apply_focus at the handler boundary."""
-    previous = top_client(server, server.active_monitor)
-    client.focus_order = (previous.focus_order if previous else 0) + 1
-
-
-def apply_focus(server: Server) -> None: # pylint: disable=too-many-branches
-    """Reconcile keyboard focus and focus indicators to match current state.
-    Picks the highest-priority TOP/OVERLAY shell surface that asks for the
-    keyboard, else the most-recently-focused window on the selected screen,
-    and emits only the effects needed to converge wlroots onto that target."""
-    ffi, lib = server.ffi, server.lib
-    none = lib.ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_NONE
-
-    if server.locked:
-        # The locker owns the keyboard; windows and shell surfaces can't.
-        focus_lock(server)
-        return
-
-    if server.unmanaged_focus is not None:
-        focus_unmanaged(server)
-        return
-
-    def qualifies(ls):
-        return (ls.layer_surface.surface.mapped
-                and ls.layer_surface.current.keyboard_interactive != none)
-
-    # Prefer the currently-focused layer surface if it still qualifies, so
-    # arranging an unrelated screen doesn't steal the keyboard from it.
-    target_ls = next((
-        ls for m in server.monitors
-        for bucket in m.layers.values()
-        for ls in bucket
-        if ls.focused and qualifies(ls)), None)
-    if target_ls is None:
-        for m in server.monitors:
-            for layer in (Layer.OVERLAY, Layer.TOP):
-                for ls in reversed(m.layers[layer]):
-                    if qualifies(ls):
-                        target_ls = ls
-                        break
-                if target_ls is not None:
-                    break
-            if target_ls is not None:
-                break
-
-    target_client = (top_client(server, server.active_monitor)
-                     if target_ls is None else None)
-    target_surface = (
-        target_ls.layer_surface.surface if target_ls is not None
-        else geometry.client_surface(target_client) if target_client is not None
-        else None)
-
-    # ls.focused is a cache of what apply_focus last picked.
-    for m in server.monitors:
-        for bucket in m.layers.values():
-            for ls in bucket:
-                ls.focused = ls is target_ls
-
-    current_surface = server.seat.keyboard_state.focused_surface
-    if current_surface == ffi.NULL:
-        current_surface = None
-    current_client = client_for_surface(server, current_surface)
-
-    if target_client is not None and target_client.urgent:
-        target_client.urgent = False
-        if server.ext_workspace is not None:
-            ext_workspace.publish(server)
-
-    if (current_client is not None
-            and current_client is not target_client):
-        geometry.set_activated(server, current_client, False)
-        geometry.set_border_color(
-            server, current_client, model.BORDER_COLOR_INACTIVE)
-
-    if target_client is not None and target_client is not current_client:
-        lib.wlr_scene_node_raise_to_top(
-            ffi.addressof(target_client.scene_tree.node))
-        geometry.set_activated(server, target_client, True)
-        geometry.set_border_color(
-            server, target_client, model.BORDER_COLOR_ACTIVE)
-
-    if target_surface != current_surface:
-        if target_surface is None:
-            lib.wlr_seat_keyboard_clear_focus(server.seat)
-        else:
-            kb_group = lib.welpy_keyboard_group_keyboard(
-                server.keyboard_group.group)
-            lib.wlr_seat_keyboard_notify_enter(
-                server.seat, target_surface,
-                kb_group.keycodes, kb_group.num_keycodes,
-                ffi.addressof(kb_group, "modifiers"))
-
-    # Re-point pointer focus after the scene changed without mouse motion,
-    # so events don't hit a now-hidden window; a drag keeps its own focus.
-    if grabbed_client(server) is None:
-        forward_pointer_motion(server, 0)
-
-
-def focus_lock(server: Server) -> None:
-    """While locked, route the keyboard to the lock surface on the active
-    screen so the user can type their password, and nowhere else."""
-    ffi, lib = server.ffi, server.lib
-    surface = None
-    if server.session_lock is not None and server.session_lock.surfaces:
-        ls = next(
-            (s for s in server.session_lock.surfaces
-             if s.monitor is server.active_monitor),
-            server.session_lock.surfaces[0])
-        surface = ls.lock_surface.surface
-    current = server.seat.keyboard_state.focused_surface
-    if current == ffi.NULL:
-        current = None
-    if surface != current:
-        if surface is None:
-            lib.wlr_seat_keyboard_clear_focus(server.seat)
-        else:
-            kb = lib.welpy_keyboard_group_keyboard(server.keyboard_group.group)
-            lib.wlr_seat_keyboard_notify_enter(
-                server.seat, surface,
-                kb.keycodes, kb.num_keycodes, ffi.addressof(kb, "modifiers"))
-
-
-def focus_unmanaged(server: Server) -> None:
-    """While an override-redirect surface holds focus, keep the keyboard on it
-    so a stray reflow can't yank focus away and dismiss the menu."""
-    ffi, lib = server.ffi, server.lib
-    surface = server.unmanaged_focus.xsurface.surface
-    current = server.seat.keyboard_state.focused_surface
-    if current == ffi.NULL:
-        current = None
-    if surface != current:
-        kb = lib.welpy_keyboard_group_keyboard(server.keyboard_group.group)
-        lib.wlr_seat_keyboard_notify_enter(
-            server.seat, surface,
-            kb.keycodes, kb.num_keycodes, ffi.addressof(kb, "modifiers"))
-
-
-def grabbed_client(server: Server):
-    """Return the window currently being mouse-dragged, or None."""
-    grabbed = [c for c in server.clients if c.grab is not None]
-    if len(grabbed) > 1:
-        logger.warning("multiple windows grabbed: %d", len(grabbed))
-    return grabbed[0] if grabbed else None
-
-
-def top_client(server: Server, monitor):
-    """The most-recently-focused visible window on `monitor`, or None."""
-    return max(
-        (c for c in model.clients_visible(server, monitor)
-         if c.scene_tree is not None),
-        key=lambda c: c.focus_order, default=None)
-
-
-def recent_tiled_leaf(root):
-    """The most-recently-focused window in `root`'s tile tree, or None when the
-    tree is empty -- the anchor a new tile attaches next to."""
-    return max(
-        layout.leaves(root), key=lambda c: c.focus_order, default=None)
-
-
-def client_for_surface(server: Server, surface):
-    """The mapped window backing `surface`, or None."""
-    if surface is None or surface == server.ffi.NULL:
-        return None
-    return next((
-        c for c in server.clients
-        if c.scene_tree is not None
-        and geometry.client_surface(c) == surface), None)
-
-
-def focused_tiled(server: Server):
-    """The active screen's focused window when it's a tiled tree leaf with no
-    fullscreen over it -- the precondition for the tree keybinds, else None."""
-    monitor = server.active_monitor
-    if monitor is None or monitor.active_workspace is None:
-        return None
-    if monitor.active_workspace.fullscreen is not None:
-        return None
-    client = top_client(server, monitor)
-    if client is None or client.floating_geom is not None:
-        return None
-    return client
-
-
-def focused_container(server: Server):
-    """The focused window with its screen and the container holding it, or None
-    when no tiled window is focused or it isn't in the tree."""
-    client = focused_tiled(server)
-    if client is None:
-        return None
-    monitor = server.active_monitor
-    found = layout.container_of(monitor.active_workspace.root, client)
-    if found is None:
-        return None
-    return monitor, client, found[0]
-
-
 def focus_direction(server: Server, direction: layout.Direction) -> None:
     """Shift focus to the tiled window structurally adjacent in `direction` on
     the current screen, landing on a group's most-recently-focused window.
     No-op at an edge, on a float, or while fullscreen."""
-    client = focused_tiled(server)
+    client = focus.focused_tiled(server)
     if client is None:
         return
     monitor = server.active_monitor
@@ -1434,28 +1236,28 @@ def focus_direction(server: Server, direction: layout.Direction) -> None:
         monitor.active_workspace.root, client, direction)
     if not candidates:
         return
-    focus_client(server, max(candidates, key=lambda c: c.focus_order))
-    apply_focus(server)
+    focus.focus_client(server, max(candidates, key=lambda c: c.focus_order))
+    focus.apply_focus(server)
 
 
 def move_direction(server: Server, direction: layout.Direction) -> None:
     """Relocate the focused window one step in `direction` within the tiled
     tree -- reorder, pop out of its group, or descend into an adjacent one.
     No-op at an edge, on a float, or while fullscreen."""
-    client = focused_tiled(server)
+    client = focus.focused_tiled(server)
     if client is None:
         return
     monitor = server.active_monitor
     layout.move(monitor.active_workspace.root, client, direction)
     geometry.apply_geometry(server, monitor)
-    apply_focus(server)
+    focus.apply_focus(server)
 
 
 def group_window(server: Server) -> None:
     """Wrap the focused window in its own group, split along the window's long
     side so the group has room to grow (mod+v). No-op when the window has no
     siblings to split off from."""
-    found = focused_container(server)
+    found = focus.focused_container(server)
     if found is None:
         return
     monitor, client, parent = found
@@ -1469,19 +1271,19 @@ def group_window(server: Server) -> None:
     )
     layout.wrap(monitor.active_workspace.root, client, axis)
     geometry.apply_geometry(server, monitor)
-    apply_focus(server)
+    focus.apply_focus(server)
 
 
 def cycle_layout(server: Server) -> None:
     """Flip the focused window's split between side-by-side and stacked
     (mod+e)."""
-    found = focused_container(server)
+    found = focus.focused_container(server)
     if found is None:
         return
     monitor, _, parent = found
     layout.cycle_layout(parent)
     geometry.apply_geometry(server, monitor)
-    apply_focus(server)
+    focus.apply_focus(server)
 
 
 def toggle_fullscreen(server: Server) -> None:
@@ -1489,7 +1291,7 @@ def toggle_fullscreen(server: Server) -> None:
     Exiting restores the prior floating geometry if there was one, else
     re-tiles."""
     monitor = server.active_monitor
-    client = top_client(server, monitor) if monitor is not None else None
+    client = focus.top_client(server, monitor) if monitor is not None else None
     if client is not None:
         workspace = monitor.active_workspace
         if workspace.fullscreen is client:
@@ -1498,14 +1300,14 @@ def toggle_fullscreen(server: Server) -> None:
             geometry.set_fullscreen(server, workspace, client)
         geometry.apply_tree(server)
         geometry.apply_geometry(server, monitor)
-        apply_focus(server)
+        focus.apply_focus(server)
 
 
 def toggle_floating(server: Server) -> None:
     """Flip the focused window between tiled and floating. No-op while it
     is fullscreen."""
     monitor = server.active_monitor
-    client = top_client(server, monitor) if monitor is not None else None
+    client = focus.top_client(server, monitor) if monitor is not None else None
     if (client is not None
             and monitor.active_workspace.fullscreen is not client):
         workspace = monitor.active_workspace
@@ -1514,10 +1316,10 @@ def toggle_floating(server: Server) -> None:
         else:
             client.floating_geom = None
             layout.insert_sibling(
-                workspace.root, recent_tiled_leaf(workspace.root), client)
+                workspace.root, focus.recent_tiled_leaf(workspace.root), client)
         geometry.apply_tree(server)
         geometry.apply_geometry(server, monitor)
-        apply_focus(server)
+        focus.apply_focus(server)
 
 
 def view_workspace(server: Server, name: str) -> None:
@@ -1542,7 +1344,7 @@ def view_workspace(server: Server, name: str) -> None:
     geometry.apply_tree(server)
     for m in server.monitors:
         geometry.apply_geometry(server, m)
-    apply_focus(server)
+    focus.apply_focus(server)
     if server.ext_workspace is not None:
         ext_workspace.publish(server)
 
@@ -1561,7 +1363,7 @@ def move_client_to_workspace(server: Server, name: str) -> None:
         (w for w in server.workspaces if w.name == name), None)
     if target is None or server.active_monitor is None:
         return
-    client = top_client(server, server.active_monitor)
+    client = focus.top_client(server, server.active_monitor)
     if client is None or client.workspace is target:
         return
     source = client.workspace
@@ -1575,14 +1377,14 @@ def move_client_to_workspace(server: Server, name: str) -> None:
         if source is not None:
             layout.remove(source.root, client)
         layout.insert_sibling(
-            target.root, recent_tiled_leaf(target.root), client)
+            target.root, focus.recent_tiled_leaf(target.root), client)
     client.workspace = target
     geometry.apply_hierarchy(server)
     geometry.apply_visibility(server)
     geometry.apply_tree(server)
     for m in server.monitors:
         geometry.apply_geometry(server, m)
-    apply_focus(server)
+    focus.apply_focus(server)
     if server.ext_workspace is not None:
         ext_workspace.publish(server)
 
@@ -1597,7 +1399,7 @@ def assign_workspace_to_monitor(
     geometry.apply_tree(server)
     for m in server.monitors:
         geometry.apply_geometry(server, m)
-    apply_focus(server)
+    focus.apply_focus(server)
     if server.ext_workspace is not None:
         ext_workspace.publish(server)
 
@@ -1620,47 +1422,9 @@ def move_active_workspace_to_monitor(
     geometry.apply_tree(server)
     for m in server.monitors:
         geometry.apply_geometry(server, m)
-    apply_focus(server)
+    focus.apply_focus(server)
     if server.ext_workspace is not None:
         ext_workspace.publish(server)
-
-
-def surface_at(server: Server, lx: float, ly: float):
-    """The `(surface, sx, sy)` under a layout point, or `(None, 0, 0)`.
-    Resolves the deepest scene buffer node at that point back to its
-    wlr_surface and surface-local coordinates."""
-    ffi, lib = server.ffi, server.lib
-    nx = ffi.new("double *")
-    ny = ffi.new("double *")
-    node = lib.wlr_scene_node_at(
-        ffi.addressof(server.scene.tree.node), lx, ly, nx, ny)
-    if node == ffi.NULL or node.type != lib.WLR_SCENE_NODE_BUFFER:
-        return None, 0, 0
-    scene_surface = lib.wlr_scene_surface_try_from_buffer(
-        lib.wlr_scene_buffer_from_node(node))
-    if scene_surface == ffi.NULL:
-        return None, 0, 0
-    return scene_surface.surface, nx[0], ny[0]
-
-
-def client_at(server: Server, lx: float, ly: float):
-    """Find the window covering the given layout point, or None. Walks up
-    from the deepest scene node at that point to whichever ancestor tree we
-    own as a window's root."""
-    ffi, lib = server.ffi, server.lib
-    nx = ffi.new("double *")
-    ny = ffi.new("double *")
-    node = lib.wlr_scene_node_at(
-        ffi.addressof(server.scene.tree.node), lx, ly, nx, ny)
-    if node == ffi.NULL:
-        return None
-    tree = node.parent
-    while tree != ffi.NULL:
-        for client in server.clients:
-            if client.scene_tree == tree:
-                return client
-        tree = tree.node.parent
-    return None
 
 
 def create_cursor(server: Server) -> Cursor:
@@ -1732,7 +1496,7 @@ def process_pointer_motion(server: Server, device, delta, unaccel,
     lib.wlr_relative_pointer_manager_v1_send_relative_motion(
         server.relative_pointer_mgr, server.seat,
         time_msec * 1000, dx, dy, *unaccel)
-    if grabbed := grabbed_client(server):
+    if grabbed := focus.grabbed_client(server):
         lib.wlr_cursor_move(server.cursor.cursor, device, dx, dy)
         drag_client(server, grabbed)
         return
@@ -1740,7 +1504,7 @@ def process_pointer_motion(server: Server, device, delta, unaccel,
     if moved is None:
         return  # locked: client got the raw delta; cursor + focus stay put
     lib.wlr_cursor_move(server.cursor.cursor, device, *moved)
-    forward_pointer_motion(server, time_msec)
+    focus.forward_pointer_motion(server, time_msec)
 
 
 def apply_pointer_constraint(server: Server, dx: float, dy: float):
@@ -1772,7 +1536,7 @@ def confine_delta(server: Server, constraint, dx: float, dy: float):
     A no-op unless the cursor is currently over the constrained surface."""
     ffi, lib = server.ffi, server.lib
     cur = server.cursor.cursor
-    surface, sx, sy = surface_at(server, cur.x, cur.y)
+    surface, sx, sy = focus.surface_at(server, cur.x, cur.y)
     if surface is None or surface != constraint.surface:
         return dx, dy
     x_out, y_out = ffi.new("double *"), ffi.new("double *")
@@ -1829,7 +1593,7 @@ def constraint_warp_to_hint(server: Server, constraint) -> None:
     hx, hy = ffi.new("double *"), ffi.new("double *")
     if not lib.welpy_constraint_cursor_hint(constraint, hx, hy):
         return
-    client = client_for_surface(server, constraint.surface)
+    client = focus.client_for_surface(server, constraint.surface)
     if client is None or client.content_tree is None:
         return
     ox, oy = ffi.new("int *"), ffi.new("int *")
@@ -1838,62 +1602,24 @@ def constraint_warp_to_hint(server: Server, constraint) -> None:
         return
     lib.wlr_cursor_warp(
         server.cursor.cursor, ffi.NULL, ox[0] + hx[0], oy[0] + hy[0])
-    forward_pointer_motion(server, 0)
-
-
-def forward_pointer_motion(server: Server, time_msec: int) -> None:
-    """Forward a pointer move to whatever surface sits under the cursor so
-    apps see hovers and tooltips."""
-    lib = server.lib
-    cur = server.cursor.cursor
-    surface, sx, sy = surface_at(server, cur.x, cur.y)
-    if surface is None:
-        # Restore the default image so a cursor a client set earlier doesn't
-        # linger once the pointer leaves it for the background.
-        lib.wlr_cursor_set_xcursor(
-            cur, server.cursor.xcursor_manager, b"default")
-        lib.wlr_seat_pointer_clear_focus(server.seat)
-    else:
-        lib.wlr_seat_pointer_notify_enter(server.seat, surface, sx, sy)
-        lib.wlr_seat_pointer_notify_motion(server.seat, time_msec, sx, sy)
-
-
-def rebase_pointer(server: Server, time_msec: int) -> None:
-    """Re-point pointer focus at the surface now under the cursor before a
-    click or scroll is dispatched, so the event reaches the right window when
-    the scene changed under a still cursor (e.g. a window grew into
-    fullscreen). A no-op when focus already matches, so a scroll in place
-    doesn't emit a spurious motion."""
-    ffi, lib = server.ffi, server.lib
-    cur = server.cursor.cursor
-    surface, sx, sy = surface_at(server, cur.x, cur.y)
-    focused = server.seat.pointer_state.focused_surface
-    if focused == ffi.NULL:
-        focused = None
-    if surface == focused:
-        return
-    if surface is None:
-        lib.wlr_seat_pointer_clear_focus(server.seat)
-    else:
-        lib.wlr_seat_pointer_notify_enter(server.seat, surface, sx, sy)
-        lib.wlr_seat_pointer_notify_motion(server.seat, time_msec, sx, sy)
+    focus.forward_pointer_motion(server, 0)
 
 
 def cursor_button(server: Server, data) -> None:
     """Fires on mouse-button press/release."""
     ffi, lib = server.ffi, server.lib
     event = ffi.cast("struct wlr_pointer_button_event *", data)
-    grabbed = grabbed_client(server)
+    grabbed = focus.grabbed_client(server)
     if event.state == lib.WL_POINTER_BUTTON_STATE_PRESSED and not server.locked:
         if grabbed is not None:
             return  # drag in progress consumes further presses
-        client = client_at(
+        client = focus.client_at(
             server, server.cursor.cursor.x, server.cursor.cursor.y)
         if client is not None:
             monitor = model.client_monitor(client)
             if monitor is not None:
                 server.active_monitor = monitor
-            focus_client(server, client)
+            focus.focus_client(server, client)
         kb = lib.welpy_keyboard_group_keyboard(server.keyboard_group.group)
         mods = lib.wlr_keyboard_get_modifiers(kb)
         action = lookup_binding(server, mods, event.button)
@@ -1902,14 +1628,14 @@ def cursor_button(server: Server, data) -> None:
             return  # action self-reconciles
     elif grabbed is not None:
         grabbed.grab = None
-        forward_pointer_motion(server, event.time_msec)
+        focus.forward_pointer_motion(server, event.time_msec)
         return  # release ended the drag, not the app's click
     # Land the button on whatever is under the cursor now, not on a surface
     # left focused before the scene last changed.
-    rebase_pointer(server, event.time_msec)
+    focus.rebase_pointer(server, event.time_msec)
     lib.wlr_seat_pointer_notify_button(
         server.seat, event.time_msec, event.button, event.state)
-    apply_focus(server)
+    focus.apply_focus(server)
 
 
 def cursor_axis(server: Server, data) -> None:
@@ -1917,8 +1643,8 @@ def cursor_axis(server: Server, data) -> None:
     scroll."""
     ffi, lib = server.ffi, server.lib
     event = ffi.cast("struct wlr_pointer_axis_event *", data)
-    if grabbed_client(server) is None:
-        rebase_pointer(server, event.time_msec)
+    if focus.grabbed_client(server) is None:
+        focus.rebase_pointer(server, event.time_msec)
     lib.wlr_seat_pointer_notify_axis(
         server.seat, event.time_msec, event.orientation, event.delta,
         event.delta_discrete, event.source, event.relative_direction)
@@ -1935,7 +1661,7 @@ def begin_dragging_client(server: Server) -> None:
     cursor->window offset so motion can preserve it and the drag doesn't
     snap the window under the pointer."""
     cur = server.cursor.cursor
-    client = client_at(server, cur.x, cur.y)
+    client = focus.client_at(server, cur.x, cur.y)
     if client is not None:
         monitor = model.client_monitor(client)
         workspace = client.workspace
@@ -1949,14 +1675,14 @@ def begin_dragging_client(server: Server) -> None:
         geometry.apply_tree(server)
         if monitor is not None:
             geometry.apply_geometry(server, monitor)
-        apply_focus(server)
+        focus.apply_focus(server)
 
 
 def begin_resizing_client(server: Server) -> None:
     """Switch to drag-to-resize on the window under the cursor. The top-left
     stays put; cursor delta is added to the original size."""
     cur = server.cursor.cursor
-    client = client_at(server, cur.x, cur.y)
+    client = focus.client_at(server, cur.x, cur.y)
     if client is not None:
         monitor = model.client_monitor(client)
         workspace = client.workspace
@@ -1970,7 +1696,7 @@ def begin_resizing_client(server: Server) -> None:
         geometry.apply_tree(server)
         if monitor is not None:
             geometry.apply_geometry(server, monitor)
-        apply_focus(server)
+        focus.apply_focus(server)
 
 
 def drag_client(server: Server, grabbed: Client) -> None:
@@ -2145,7 +1871,7 @@ def keyboard_modifiers(server: Server, _data) -> None:
                           or not server.session_lock.surfaces):
         # A real lock surface needs modifiers; without one, only stale app
         # focus could receive them.
-        focus_lock(server)
+        focus.focus_lock(server)
         return
     kb_group = lib.welpy_keyboard_group_keyboard(server.keyboard_group.group)
     lib.wlr_seat_keyboard_notify_modifiers(
