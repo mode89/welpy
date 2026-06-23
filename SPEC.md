@@ -214,7 +214,7 @@ judgment-only changes. `scripts/` is `pylint`-ignored and removed at landing.
 - [x] `layer_shell.py` — extracted (green + reviewed clean)
 - [x] `session_lock.py` — extracted (green + reviewed clean)
 - [x] `output.py` — extracted (green + reviewed clean)
-- [ ] `input.py`
+- [x] `input.py` — extracted (green + reviewed clean)
 - [ ] `commands.py`
 - [ ] **Final**: `welpy/app.py` now holds only lifecycle + the keybinding table; drop
   the transitional `from welpy import app as wel` test alias; update `AGENTS.md` (file
@@ -543,3 +543,50 @@ clean. Reviewed clean — byte-identical bodies, no nits.
 - Two justified my-move orphan-import removals (gate-caught, beyond PLAN's Pass-2): `import
   time` in `app.py` (only `monitor_render` used it) and `make_layer_surface` in
   `tests/test_app.py` (only the moved `test_monitor_cleanup_destroys_layers` used it).
+
+**Phase 2 (module carving) — box 9 `input.py` — done (green, reviewed clean):** carved via
+`scripts/phase2_input.py`. Manifest = 29 functions written **top-down** across 4 bands
+(cursor / pointer+constraints / drag / keyboard+bindings / seat). 73 subject-tests →
+`tests/test_input.py`; 5 libinput tests → NEW `tests/test_libinput.py`. `welpy/input.py`
+466 lines; `app.py` 631 lines (was 1075). Test split: test_app 158 + test_input 73 +
+test_libinput 5 = 236 (conserved). Gate: 469 pass, pylint 10/10, `import welpy.input`
+clean. Reviewed clean — byte-identical bodies, no nits. **Largest, most cycle-prone box;
+back-edge audit held.**
+
+- **`key_bindings`/`modkey` STAYED in `app.py`** per the Caveats rule (they reference
+  `commands` + lifecycle, sit at DAG top; moving them = `app`↔`input` cycle). The DAG
+  hinges on this plus `lookup_binding` resolving bindings via the **`server.bindings`
+  field** (not the module-level table), so `input.py` imports neither `app` nor
+  `commands`. Confirmed zero refs to `key_bindings`/`modkey`/`commands.`/`spawn`/
+  `terminate`/`setup` in any moved body.
+- Deps = `(model, geometry, focus)` + `libinput` (leaf sink) + `layout.Rect` + own
+  `logger`; wider than SPEC's `(model, geometry, focus)` (box-3/4 pattern). `bindings`
+  module NOT imported — only the `server.bindings` field is read.
+- **Module name `input` shadows the `input` builtin** → pylint W0622 redefined-builtin on
+  `from . import input` (and `from welpy import (... input)`); a
+  `# pylint: disable=redefined-builtin` pragma on that import line is required (verified)
+  in `app.py`, `tests/test_input.py`, AND `tests/test_app.py`. No source/test local named
+  `input`/`cursor`/`seat`/`keyboard` collided, so no `_server`-style rename this box.
+- Substring traps defused by **longest-prefix-first** replace ordering:
+  `cursor_motion_absolute` before `cursor_motion`, `seat_set_primary_selection` before
+  `seat_set_selection`, `create_keyboard_group` vs `create_cursor`. 26
+  `welpy.app.build_keycode_map` patch strings in STAYING setup tests repointed to
+  `welpy.input.build_keycode_map`.
+- **First *layout*-module bridge**: `Rect = layout.Rect` (prior bridges were model
+  types/constants). `Rect` became app-unused after the move but is read via `wel.Rect`
+  by 5 test files, so the by-name `from .layout import Rect` was replaced with the
+  bridge rather than removed. Model bridges added: `Cursor`/`Grab`/`KeyboardGroup`/
+  `PointerConstraint = model.X`; `Client`/`libinput` dropped entirely (no `wel.` ref).
+- **6 staying tests legitimately call moved `input.X` fns** (subject rule): 3
+  lock-suppression (`test_keyboard_modifiers_locked`/`_key_locked`/
+  `test_cursor_button_locked`, subject = lock behavior) + 3 tree-invariant
+  (`test_begin_dragging_floats`/`_drops_leaf`, `test_begin_resizing_drops_leaf`,
+  subject = float/leaf invariants) — so `tests/test_app.py` now imports `input` too
+  (PLAN predicted none would be needed).
+- libinput-test placement was a **user decision** overriding PLAN: the 5
+  `test_libinput_*` call `libinput.configure` directly (subject = `libinput.configure`
+  in `welpy/libinput.py`, a pre-existing Phase-1 module, NOT a carved `input` fn), so by
+  the strict subject rule they go to a new `tests/test_libinput.py`, finishing the
+  one-test-file-per-source-module layout for the pre-existing flat module. Orphaned the
+  `libinput` import in `test_app.py` → removed.
+- `change_vt` moved untested (no test exists) — acceptable for a pure move.
