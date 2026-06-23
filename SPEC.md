@@ -79,7 +79,7 @@ Each entry: module — *(deps)* — contents.
 - `output.py` — *(model, geometry, focus, session_lock, ext_workspace)*
   - `monitor_new/render/cleanup/request_state`, `update_monitors`, `output_power_set_mode`, `monitor_force_paint`, `client_holds_paint`, `client_rendered`
   - (`update_monitors` calls `session_lock.update_lock_*` and `ext_workspace.publish`)
-- `windows.py` — *(model, geometry, focus)*
+- `windows.py` — *(model, geometry, focus, layout, ext_workspace)*
   - xdg lifecycle: `client_new/commit/map/unmap`, `client_request_fullscreen/maximize/activate`, `mark_urgent`, `client_cleanup`, `create_window_scene`
   - popups: `popup_new`, `_popup_owner`
 - `xwayland.py` — *(model, geometry, focus, windows)*
@@ -209,7 +209,7 @@ judgment-only changes. `scripts/` is `pylint`-ignored and removed at landing.
 - [x] `model.py` — extracted (green + reviewed clean)
 - [x] `geometry.py` — extracted (green + reviewed clean)
 - [x] `focus.py` — extracted (green + reviewed clean)
-- [ ] `windows.py`
+- [x] `windows.py` — extracted (green + reviewed clean)
 - [ ] `xwayland.py`
 - [ ] `layer_shell.py`
 - [ ] `session_lock.py`
@@ -393,3 +393,33 @@ qualifications in the `app.py` remainder; 27 subject-tests → `tests/test_focus
   past 80. 2 inline `# pylint: disable=duplicate-code` (R0801) per policy. No `_private`
   rename (all 14 names already public). The orphaned `# --- apply_focus ---` header was
   removed now (not deferred to Final, unlike box-2's stale headers).
+
+**Phase 2 (module carving) — box 4 `windows.py` — done (green, reviewed clean):** carved
+via `scripts/phase2_windows.py`. Manifest = 12 functions written **top-down** (xdg
+lifecycle then popups: `client_new`…`create_window_scene`, `popup_new`, `_popup_owner`);
+10 `windows.X` qualifications in the `app.py` remainder (incl. 3 `setup()` listener-wiring
+sites); 55 subject-tests → `tests/test_windows.py`. `welpy/windows.py` 273 lines; `app.py`
+1642 lines (was 1901). Gate: 469 pass, pylint 10/10, `import welpy.windows` clean.
+Reviewed clean — no blocking issues, no nits.
+
+- **Deps wider than the first-pass Module map** (now corrected to `(model, geometry,
+  focus, layout, ext_workspace)`): `client_map`/`client_unmap` call `layout.*`,
+  `mark_urgent` calls `ext_workspace.publish` — same understatement as box 3. Both extras
+  are verified sinks, DAG holds. No `logger` needed (no body logs).
+- `_popup_owner` stays `_`-prefixed: sole caller is `popup_new` (same module), so the
+  cross-module W0212 carve-rename gotcha doesn't fire.
+- Driver ran clean — every count-assert matched first try, no substring collisions (the
+  12 names are long/distinct; no wlroots C-call suffix clash).
+- **Test-header imports the driver/plan under-specified** (caught as first-run
+  `NameError`s, fixed in Pass-2): moved tests need `layout` (bare `layout.Container`),
+  plus helpers `flat_tree`/`trigger` — none patch strings, so the "no real `model.`/
+  `focus.` use" audit missed them. Lesson for remaining boxes: audit moved-test bodies
+  for **bare type/helper refs**, not just the patched-symbol qualifications. The planned
+  `call` import was unused (0 uses in moved bodies) — dropped (W0611).
+- Pass-2 was small: 1 line-wrap (app.py xwayland `client_request_fullscreen` call site),
+  2 inline `# pylint: disable=duplicate-code` (R0801), `popup_new`'s `consider-using-in`
+  pragma rode along. `_stage_popup` (moving-only helper) traveled to the mirror file.
+  Removed the orphaned `# --- apply_decoration ---` header — **resolves a box-2 Final
+  deferral** (the other box-2 stale header, `# --- configure tracking ---`, remains).
+- `app.py` shrank 259 lines, not the ~430 the source span (`558–986`) suggested — that
+  span interleaves non-moved functions, so only ~260 lines belonged to the 12.
