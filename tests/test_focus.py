@@ -3,7 +3,7 @@ queries, and pointer-focus hit-testing."""
 
 from unittest.mock import MagicMock, patch
 
-from welpy import app as wel, focus, model
+from welpy import focus, model
 from tests.helpers import (
     make_server, make_client, make_x11_client, make_monitor, make_workspace,
     make_cursor, make_layer_surface, make_session_lock,
@@ -68,7 +68,7 @@ def test_apply_focus_shell():
     ls = make_layer_surface(monitor=monitor)
     ls.layer_surface.surface.mapped = True
     ls.layer_surface.current.keyboard_interactive = 1
-    monitor.layers[wel.Layer.OVERLAY].append(ls)
+    monitor.layers[model.Layer.OVERLAY].append(ls)
 
     focus.apply_focus(server)
 
@@ -91,7 +91,7 @@ def test_apply_focus_releases():
     ls = make_layer_surface(monitor=monitor)
     ls.layer_surface.surface.mapped = True
     ls.layer_surface.current.keyboard_interactive = 1
-    monitor.layers[wel.Layer.OVERLAY].append(ls)
+    monitor.layers[model.Layer.OVERLAY].append(ls)
 
     focus.apply_focus(server)
 
@@ -197,11 +197,11 @@ def test_apply_focus_sticky():
     focused = make_layer_surface(monitor=m1, focused=True)
     focused.layer_surface.surface.mapped = True
     focused.layer_surface.current.keyboard_interactive = 1
-    m1.layers[wel.Layer.OVERLAY].append(focused)
+    m1.layers[model.Layer.OVERLAY].append(focused)
     contender = make_layer_surface(monitor=m2)
     contender.layer_surface.surface.mapped = True
     contender.layer_surface.current.keyboard_interactive = 1
-    m2.layers[wel.Layer.OVERLAY].append(contender)
+    m2.layers[model.Layer.OVERLAY].append(contender)
 
     focus.apply_focus(server)
 
@@ -217,11 +217,11 @@ def test_apply_focus_priority():
     top = make_layer_surface(monitor=monitor)
     top.layer_surface.surface.mapped = True
     top.layer_surface.current.keyboard_interactive = 1
-    monitor.layers[wel.Layer.TOP].append(top)
+    monitor.layers[model.Layer.TOP].append(top)
     overlay = make_layer_surface(monitor=monitor)
     overlay.layer_surface.surface.mapped = True
     overlay.layer_surface.current.keyboard_interactive = 1
-    monitor.layers[wel.Layer.OVERLAY].append(overlay)
+    monitor.layers[model.Layer.OVERLAY].append(overlay)
 
     focus.apply_focus(server)
 
@@ -247,7 +247,7 @@ def test_apply_focus_pointer_grab():
     otherwise performs, so the grab keeps its captured surface."""
     idle = make_server()
     dragging = make_server(
-        clients=[make_client(grab=wel.Grab("move", 0, 0))])
+        clients=[make_client(grab=model.Grab("move", 0, 0))])
 
     with patch("welpy.focus.forward_pointer_motion") as fwd_idle:
         focus.apply_focus(idle)
@@ -278,7 +278,7 @@ def test_focus_lock_keyboard():
     screen so the user can type their password."""
     monitor = make_monitor()
     lock_surface = MagicMock(name="lock_surface")
-    ls = wel.LockSurface(
+    ls = model.LockSurface(
         lock_surface=lock_surface, monitor=monitor,
         scene_tree=MagicMock(), listeners=[])
     session_lock = make_session_lock(surfaces=[ls])
@@ -320,8 +320,8 @@ def test_xwayland_for_surface():
 def test_grabbed_client_multiple():
     """Only one window should be grabbed at a time; if two are, log a warning
     so the inconsistency doesn't go silent."""
-    a = make_client(grab=wel.Grab("move", 0, 0))
-    b = make_client(grab=wel.Grab("move", 0, 0))
+    a = make_client(grab=model.Grab("move", 0, 0))
+    b = make_client(grab=model.Grab("move", 0, 0))
     server = make_server(clients=[a, b])
 
     with patch("welpy.focus.logger") as log:

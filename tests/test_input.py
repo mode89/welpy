@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 import cffi
 
 from welpy import (  # pylint: disable=redefined-builtin
-    app as wel, input, model)
+    input, layout, model)
 from tests.helpers import (
     make_server, make_client, make_x11_client, make_cursor,
     make_keyboard_group, make_monitor, make_workspace,
@@ -162,8 +162,8 @@ def test_cursor_motion_grab_skips():
     """While dragging a window the pointer is captured -- motion isn't
     forwarded to surfaces."""
     client = make_client(
-        grab=wel.Grab("move", 0, 0),
-        floating_geom=wel.Rect(0, 0, 100, 100),
+        grab=model.Grab("move", 0, 0),
+        floating_geom=layout.Rect(0, 0, 100, 100),
     )
     server = make_server(
         clients=[client], cursor=make_cursor(xcursor_manager="X"))
@@ -178,8 +178,8 @@ def test_cursor_motion_drags():
     """Motion during a grab repositions the grabbed window so it stays pinned
     to the cursor at the captured offset."""
     grabbed = make_client(
-        grab=wel.Grab("move", 10, 20),
-        floating_geom=wel.Rect(0, 0, 100, 100),
+        grab=model.Grab("move", 10, 20),
+        floating_geom=layout.Rect(0, 0, 100, 100),
     )
     server = make_server(
         clients=[grabbed], cursor=make_cursor(xcursor_manager="X"))
@@ -190,15 +190,15 @@ def test_cursor_motion_drags():
 
     server.lib.wlr_scene_node_set_position.assert_called_once_with(
         server.ffi.addressof.return_value, 190, 280)
-    assert grabbed.floating_geom == wel.Rect(190, 280, 100, 100)
+    assert grabbed.floating_geom == layout.Rect(190, 280, 100, 100)
 
 
 def test_cursor_motion_resizes():
     """Motion during a resize grab moves the bottom-right corner by the
     cursor delta; top-left stays fixed."""
     grabbed = make_client(
-        grab=wel.Grab("resize", 200, 200),
-        floating_geom=wel.Rect(100, 150, 100, 100),
+        grab=model.Grab("resize", 200, 200),
+        floating_geom=layout.Rect(100, 150, 100, 100),
     )
     grabbed.scene_tree.node.x = 100
     grabbed.scene_tree.node.y = 150
@@ -210,16 +210,16 @@ def test_cursor_motion_resizes():
     with patch("welpy.geometry.resize_client") as rc:
         input.cursor_motion(server, "MOTION_DATA")
 
-    rc.assert_called_once_with(server, grabbed, wel.Rect(100, 150, 300, 200))
-    assert grabbed.floating_geom == wel.Rect(100, 150, 300, 200)
+    rc.assert_called_once_with(server, grabbed, layout.Rect(100, 150, 300, 200))
+    assert grabbed.floating_geom == layout.Rect(100, 150, 300, 200)
 
 
 def test_cursor_motion_resize_min():
     """Resize clamps width/height to at least 1px so the window can't
     collapse to a degenerate zero-size rect."""
     grabbed = make_client(
-        grab=wel.Grab("resize", 200, 200),
-        floating_geom=wel.Rect(100, 150, 100, 100),
+        grab=model.Grab("resize", 200, 200),
+        floating_geom=layout.Rect(100, 150, 100, 100),
     )
     grabbed.scene_tree.node.x = 100
     grabbed.scene_tree.node.y = 150
@@ -231,7 +231,7 @@ def test_cursor_motion_resize_min():
     with patch("welpy.geometry.resize_client") as rc:
         input.cursor_motion(server, "MOTION_DATA")
 
-    rc.assert_called_once_with(server, grabbed, wel.Rect(100, 150, 1, 1))
+    rc.assert_called_once_with(server, grabbed, layout.Rect(100, 150, 1, 1))
 
 
 def test_cursor_button_binding():
@@ -303,7 +303,7 @@ def test_cursor_button_active_monitor():
 
 def test_cursor_button_release_ends():
     """Releasing the mouse button clears the active grab."""
-    client = make_client(grab=wel.Grab("move", 0, 0))
+    client = make_client(grab=model.Grab("move", 0, 0))
     server = make_server(
         clients=[client], cursor=make_cursor(xcursor_manager="X"))
     event = server.ffi.cast.return_value
@@ -317,7 +317,7 @@ def test_cursor_button_release_ends():
 def test_cursor_button_release_pointer():
     """Ending a drag re-points the pointer at whatever is now under the
     cursor, since focus was frozen on the grabbed window during the drag."""
-    client = make_client(grab=wel.Grab("move", 0, 0))
+    client = make_client(grab=model.Grab("move", 0, 0))
     server = make_server(
         clients=[client], cursor=make_cursor(xcursor_manager="X"))
     event = server.ffi.cast.return_value
@@ -415,7 +415,7 @@ def test_cursor_button_consumes():
 def test_cursor_button_release_consumed():
     """Releasing to end a drag isn't forwarded; the app never saw the
     press, so it shouldn't see the release."""
-    client = make_client(grab=wel.Grab("move", 0, 0))
+    client = make_client(grab=model.Grab("move", 0, 0))
     server = make_server(
         clients=[client], cursor=make_cursor(xcursor_manager="X"))
     event = server.ffi.cast.return_value
@@ -465,7 +465,7 @@ def test_cursor_axis_rebases():
 def test_cursor_axis_grab():
     """While a window is being dragged, a scroll must not re-point focus off
     the grabbed window."""
-    client = make_client(grab=wel.Grab("move", 0, 0))
+    client = make_client(grab=model.Grab("move", 0, 0))
     server = make_server(
         clients=[client], cursor=make_cursor(xcursor_manager="X"))
 
@@ -510,7 +510,7 @@ def test_constraint_activates():
     server.lib.WLR_POINTER_CONSTRAINT_V1_LOCKED = "LOCKED"
     server.seat.pointer_state.focused_surface = "SURF"
     constraint = MagicMock(name="constraint", type="CONFINED")
-    server.constraints = [wel.PointerConstraint(constraint=constraint,
+    server.constraints = [model.PointerConstraint(constraint=constraint,
                                                 listeners=[])]
     server.lib.wlr_pointer_constraints_v1_constraint_for_surface.\
         return_value = constraint
@@ -528,7 +528,7 @@ def test_constraint_deactivates():
     server = make_server(cursor=make_cursor(xcursor_manager="X"))
     old = MagicMock(name="old_constraint")
     server.active_constraint = old
-    server.constraints = [wel.PointerConstraint(constraint=old, listeners=[])]
+    server.constraints = [model.PointerConstraint(constraint=old, listeners=[])]
     server.seat.pointer_state.focused_surface = server.ffi.NULL
 
     input.cursor_motion(server, "D")
@@ -545,7 +545,7 @@ def test_constraint_locked_pins():
     server.lib.WLR_POINTER_CONSTRAINT_V1_LOCKED = "LOCKED"
     server.seat.pointer_state.focused_surface = "SURF"
     constraint = MagicMock(name="constraint", type="LOCKED")
-    server.constraints = [wel.PointerConstraint(constraint=constraint,
+    server.constraints = [model.PointerConstraint(constraint=constraint,
                                                 listeners=[])]
     server.lib.wlr_pointer_constraints_v1_constraint_for_surface.\
         return_value = constraint
@@ -566,7 +566,7 @@ def test_constraint_confined_clamps():
     server.lib.WLR_POINTER_CONSTRAINT_V1_LOCKED = "LOCKED"
     server.seat.pointer_state.focused_surface = "SURF"
     constraint = MagicMock(name="constraint", type="CONFINED", surface="SURF")
-    server.constraints = [wel.PointerConstraint(constraint=constraint,
+    server.constraints = [model.PointerConstraint(constraint=constraint,
                                                 listeners=[])]
     server.lib.wlr_pointer_constraints_v1_constraint_for_surface.\
         return_value = constraint
@@ -590,8 +590,8 @@ def test_constraint_grab_skips():
     """During a move/resize drag, constraints aren't enforced -- the drag owns
     the pointer."""
     client = make_client(
-        grab=wel.Grab("move", 0, 0),
-        floating_geom=wel.Rect(0, 0, 100, 100))
+        grab=model.Grab("move", 0, 0),
+        floating_geom=layout.Rect(0, 0, 100, 100))
     server = make_server(
         clients=[client], cursor=make_cursor(xcursor_manager="X"))
     server.seat.pointer_state.focused_surface = "SURF"
@@ -623,7 +623,7 @@ def test_constraint_destroy_clears():
     client's hint so the pointer reappears where the app expects."""
     server = make_server(cursor=make_cursor(xcursor_manager="X"))
     constraint = MagicMock(name="constraint")
-    record = wel.PointerConstraint(
+    record = model.PointerConstraint(
         constraint=constraint, listeners=[MagicMock(name="handle")])
     server.constraints = [record]
     server.active_constraint = constraint
@@ -642,7 +642,7 @@ def test_constraint_deactivate_destroys():
     on the new one -- no dangling reference, no double-activate."""
     server = make_server(cursor=make_cursor(xcursor_manager="X"))
     old = MagicMock(name="old")
-    old_record = wel.PointerConstraint(
+    old_record = model.PointerConstraint(
         constraint=old, listeners=[MagicMock(name="handle")])
     server.constraints = [old_record]
     server.active_constraint = old
@@ -713,11 +713,11 @@ def test_begin_dragging_offset():
     server.lib.wlr_scene_node_at.return_value = node
 
     with patch("welpy.geometry.client_outer_rect",
-               return_value=wel.Rect(100, 150, 200, 200)), \
+               return_value=layout.Rect(100, 150, 200, 200)), \
          patch("welpy.geometry.apply_geometry"):
         input.begin_dragging_client(server)
 
-    assert client.grab == wel.Grab("move", 20, 50)
+    assert client.grab == model.Grab("move", 20, 50)
 
 
 def test_begin_dragging_empty():
@@ -744,11 +744,11 @@ def test_begin_resizing_anchor():
     server.lib.wlr_scene_node_at.return_value = node
 
     with patch("welpy.geometry.client_outer_rect",
-               return_value=wel.Rect(100, 150, 300, 200)), \
+               return_value=layout.Rect(100, 150, 300, 200)), \
          patch("welpy.geometry.apply_geometry"):
         input.begin_resizing_client(server)
 
-    assert client.grab == wel.Grab("resize", 200, 200)
+    assert client.grab == model.Grab("resize", 200, 200)
 
 
 def test_begin_resizing_empty():
@@ -767,8 +767,8 @@ def test_xwayland_drag_move():
     server's window coordinates follow the scene node."""
     server = make_server(cursor=make_cursor(xcursor_manager="X"))
     client = make_x11_client(
-        grab=wel.Grab("move", 10, 20),
-        floating_geom=wel.Rect(0, 0, 204, 154),
+        grab=model.Grab("move", 10, 20),
+        floating_geom=layout.Rect(0, 0, 204, 154),
         inner_size=(200, 150),
     )
     server.cursor.cursor.x = 200.0
@@ -1162,7 +1162,8 @@ def test_seat_set_cursor_grab():
     image, so set-cursor requests are ignored until the drag ends."""
     client = MagicMock(name="seat_client")
     grabbing = make_client(
-        grab=wel.Grab("move", 0, 0), floating_geom=wel.Rect(0, 0, 100, 100))
+        grab=model.Grab("move", 0, 0),
+        floating_geom=layout.Rect(0, 0, 100, 100))
     server = make_server(
         clients=[grabbing],
         cursor=make_cursor(cursor=MagicMock(), xcursor_manager="XMGR"))

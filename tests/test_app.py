@@ -1,4 +1,4 @@
-"""Unit tests for wel.py."""
+"""Unit tests for welpy.app: compositor lifecycle + the keybinding table."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ import pytest
 
 import welpy
 from welpy import (  # pylint: disable=redefined-builtin
-    app as wel, bindings, focus, input, layout, windows)
+    app, bindings, focus, input, layout, model, windows)
 from tests.helpers import (
     make_server, make_bindings, make_client, make_x11_client, make_unmanaged,
     make_monitor, make_workspace, flat_tree, make_cursor,
@@ -35,7 +35,7 @@ def test_setup_seat_caps():
     with patch("welpy.app.bindings.build", return_value=build), \
          patch("welpy.input.build_keycode_map",
                return_value=make_keycode_map()):
-        wel.setup()
+        app.setup()
 
     lib.wlr_seat_set_capabilities.assert_called_once_with(
         lib.wlr_seat_create.return_value, 3)
@@ -49,7 +49,7 @@ def test_setup_keycode():
     with patch("welpy.app.bindings.build", return_value=build), \
          patch("welpy.input.build_keycode_map",
                return_value=make_keycode_map()) as bm:
-        server = wel.setup()
+        server = app.setup()
 
     bm.assert_called_once_with(lib, ffi, server.keyboard_group.keymap)
     assert server.keycode == make_keycode_map()
@@ -60,7 +60,7 @@ def test_modkey_super():
     server = MagicMock()
     server.lib.WLR_MODIFIER_LOGO = 0x40
 
-    assert wel.modkey(server) == 0x40
+    assert app.modkey(server) == 0x40
 
 
 def test_setup_bindings():
@@ -77,7 +77,7 @@ def test_setup_bindings():
     with patch("welpy.app.bindings.build", return_value=build), \
          patch("welpy.input.build_keycode_map",
                return_value=make_keycode_map()):
-        server = wel.setup()
+        server = app.setup()
 
     assert server.bindings
     for key, action in server.bindings.items():
@@ -94,7 +94,7 @@ def test_setup_clipboard_managers():
     with patch("welpy.app.bindings.build", return_value=build), \
          patch("welpy.input.build_keycode_map",
                return_value=make_keycode_map()):
-        server = wel.setup()
+        server = app.setup()
 
     lib.wlr_primary_selection_v1_device_manager_create.assert_called_once_with(
         server.display)
@@ -114,7 +114,7 @@ def test_setup_dmabuf_integrated():
     with patch("welpy.app.bindings.build", return_value=build), \
          patch("welpy.input.build_keycode_map",
                return_value=make_keycode_map()):
-        server = wel.setup()
+        server = app.setup()
 
     lib.wlr_drm_create.assert_called_once_with(server.display, server.renderer)
     lib.wlr_linux_dmabuf_v1_create_with_renderer.assert_called_once_with(
@@ -132,7 +132,7 @@ def test_setup_no_drm_fd():
     with patch("welpy.app.bindings.build", return_value=build), \
          patch("welpy.input.build_keycode_map",
                return_value=make_keycode_map()):
-        server = wel.setup()
+        server = app.setup()
 
     lib.wlr_renderer_init_wl_shm.assert_called_once_with(
         server.renderer, server.display)
@@ -151,7 +151,7 @@ def test_setup_syncobj_timeline():
     with patch("welpy.app.bindings.build", return_value=build), \
          patch("welpy.input.build_keycode_map",
                return_value=make_keycode_map()):
-        server = wel.setup()
+        server = app.setup()
 
     lib.wlr_linux_drm_syncobj_manager_v1_create.assert_called_once_with(
         server.display, 1, 7)
@@ -167,7 +167,7 @@ def test_setup_no_timeline():
     with patch("welpy.app.bindings.build", return_value=build), \
          patch("welpy.input.build_keycode_map",
                return_value=make_keycode_map()):
-        wel.setup()
+        app.setup()
 
     lib.wlr_linux_drm_syncobj_manager_v1_create.assert_not_called()
 
@@ -183,7 +183,7 @@ def test_setup_xwayland_failure():
          patch("welpy.input.build_keycode_map",
                return_value=make_keycode_map()), \
          pytest.raises(RuntimeError, match="XWayland"):
-        wel.setup()
+        app.setup()
 
 
 def test_setup_renderer_lost_listener():
@@ -195,7 +195,7 @@ def test_setup_renderer_lost_listener():
          patch("welpy.input.build_keycode_map",
                return_value=make_keycode_map()), \
          patch("welpy.app.renderer_lost") as handler:
-        server = wel.setup()
+        server = app.setup()
         trigger(server, lib.welpy_renderer_lost_signal, "LOST")
 
     handler.assert_called_once_with(server)
@@ -212,7 +212,7 @@ def test_renderer_lost_recreates():
     new_renderer = lib.wlr_renderer_autocreate.return_value
     new_allocator = lib.wlr_allocator_autocreate.return_value
 
-    wel.renderer_lost(server)
+    app.renderer_lost(server)
 
     old_handle.remove.assert_called_once_with()
     lib.wlr_compositor_set_renderer.assert_called_once_with(
@@ -235,7 +235,7 @@ def test_teardown_order():
     unmap/screen-destroy, then the display."""
     server = make_server()
 
-    wel.teardown(server)
+    app.teardown(server)
 
     names = [c[0] for c in server.lib.mock_calls]
     expected = [
@@ -261,7 +261,7 @@ def test_teardown_detach():
     manager.attach_mock(
         server.lib.wl_display_destroy_clients, "destroy_clients")
 
-    wel.teardown(server)
+    app.teardown(server)
 
     assert manager.mock_calls[:2] == [
         call.remove(),
@@ -324,7 +324,7 @@ def test_setup_popup_listener():
          patch("welpy.input.build_keycode_map",
                return_value=make_keycode_map()), \
          patch("welpy.windows.popup_new") as handler:
-        built = wel.setup()
+        built = app.setup()
         trigger(built, lib.welpy_xdg_shell_new_popup, "POPUP_DATA")
     handler.assert_called_once_with(built, "POPUP_DATA")
 
@@ -340,7 +340,7 @@ def test_setup_decoration_managers():
     with patch("welpy.app.bindings.build", return_value=build), \
          patch("welpy.input.build_keycode_map",
                return_value=make_keycode_map()):
-        wel.setup()
+        app.setup()
 
     lib.wlr_server_decoration_manager_set_default_mode.assert_called_once_with(
         lib.wlr_server_decoration_manager_create.return_value,
@@ -358,7 +358,7 @@ def test_setup_decoration_listener():
          patch("welpy.input.build_keycode_map",
                return_value=make_keycode_map()), \
          patch("welpy.geometry.decoration_new") as handler:
-        built = wel.setup()
+        built = app.setup()
         trigger(built, lib.welpy_xdg_decoration_manager_new, "DECO_DATA")
     handler.assert_called_once_with(built, "DECO_DATA")
 
@@ -371,7 +371,7 @@ def test_install_signals_signums():
     SIGCHLD, and SIGPIPE -- the four signals it cares about."""
     server = make_server()
 
-    wel.install_signals(server)
+    app.install_signals(server)
 
     signums = {c.args[0] for c in server.add_signal.mock_calls}
     assert signums == {
@@ -382,7 +382,7 @@ def test_install_signals_signums():
 def test_install_signals_sigterm():
     """SIGTERM (graceful kill) cleanly stops the display loop."""
     server = make_server()
-    wel.install_signals(server)
+    app.install_signals(server)
     by_signum = {c.args[0]: c.args[1] for c in server.add_signal.mock_calls}
 
     by_signum[signal.SIGTERM](signal.SIGTERM)
@@ -393,7 +393,7 @@ def test_install_signals_sigterm():
 def test_install_signals_sigint():
     """SIGINT (Ctrl-C) cleanly stops the display loop."""
     server = make_server()
-    wel.install_signals(server)
+    app.install_signals(server)
     by_signum = {c.args[0]: c.args[1] for c in server.add_signal.mock_calls}
 
     by_signum[signal.SIGINT](signal.SIGINT)
@@ -405,7 +405,7 @@ def test_install_signals_drain():
     """On SIGCHLD we keep reaping until no more children are ready, so a
     burst of exits doesn't leave zombies behind."""
     server = make_server()
-    wel.install_signals(server)
+    app.install_signals(server)
     by_signum = {c.args[0]: c.args[1] for c in server.add_signal.mock_calls}
 
     # waitpid yields two children, then "no more ready" (pid == 0).
@@ -419,7 +419,7 @@ def test_install_signals_drain():
 def test_install_signals_orphan():
     """A spurious SIGCHLD with no children pending must not raise."""
     server = make_server()
-    wel.install_signals(server)
+    app.install_signals(server)
     by_signum = {c.args[0]: c.args[1] for c in server.add_signal.mock_calls}
 
     with patch("welpy.app.os.waitpid", side_effect=ChildProcessError):
@@ -436,18 +436,18 @@ def test_setup_layers_created():
     ffi, lib, *_ = build
     lib.WL_SEAT_CAPABILITY_POINTER = 1
     lib.WL_SEAT_CAPABILITY_KEYBOARD = 2
-    trees = [MagicMock(name=f"tree_{i}") for i in range(len(wel.Layer))]
+    trees = [MagicMock(name=f"tree_{i}") for i in range(len(model.Layer))]
     lib.wlr_scene_tree_create.side_effect = list(trees)
     with patch("welpy.app.bindings.build", return_value=build), \
          patch("welpy.input.build_keycode_map",
                return_value=make_keycode_map()):
-        server = wel.setup()
+        server = app.setup()
 
     scene_root = ffi.addressof.return_value
     assert lib.wlr_scene_tree_create.call_args_list == [
-        call(scene_root) for _ in wel.Layer
+        call(scene_root) for _ in model.Layer
     ]
-    assert server.layers == dict(zip(wel.Layer, trees))
+    assert server.layers == dict(zip(model.Layer, trees))
 
 
 def test_client_unmap_unselected():
@@ -891,7 +891,7 @@ def test_setup_layer_shell():
     with patch("welpy.app.bindings.build", return_value=build), \
          patch("welpy.input.build_keycode_map",
                return_value=make_keycode_map()):
-        server = wel.setup()
+        server = app.setup()
 
     lib.wlr_layer_shell_v1_create.assert_called_once_with(
         lib.wl_display_create.return_value, 5)
@@ -909,7 +909,7 @@ def test_setup_layer_listener():
          patch("welpy.input.build_keycode_map",
                return_value=make_keycode_map()), \
          patch("welpy.layer_shell.layer_surface_new") as handler:
-        built = wel.setup()
+        built = app.setup()
         trigger(built, lib.welpy_layer_shell_new_surface, "LS_DATA")
     handler.assert_called_once_with(built, "LS_DATA")
 
@@ -923,7 +923,7 @@ def test_setup_session_lock():
     with patch("welpy.app.bindings.build", return_value=build), \
          patch("welpy.input.build_keycode_map",
                return_value=make_keycode_map()):
-        wel.setup()
+        app.setup()
 
     lib.wlr_session_lock_manager_v1_create.assert_called_once_with(
         lib.wl_display_create.return_value)
@@ -940,7 +940,7 @@ def test_setup_lock_listener():
          patch("welpy.input.build_keycode_map",
                return_value=make_keycode_map()), \
          patch("welpy.session_lock.lock_new") as handler:
-        built = wel.setup()
+        built = app.setup()
         trigger(built, lib.welpy_session_lock_mgr_new_lock, "LOCK_DATA")
     handler.assert_called_once_with(built, "LOCK_DATA")
 
@@ -955,7 +955,7 @@ def test_setup_pointer_constraints():
     with patch("welpy.app.bindings.build", return_value=build), \
          patch("welpy.input.build_keycode_map",
                return_value=make_keycode_map()):
-        wel.setup()
+        app.setup()
 
     lib.wlr_pointer_constraints_v1_create.assert_called_once_with(
         lib.wl_display_create.return_value)
@@ -974,7 +974,7 @@ def test_setup_constraint_listener():
          patch("welpy.input.build_keycode_map",
                return_value=make_keycode_map()), \
          patch("welpy.input.constraint_new") as handler:
-        built = wel.setup()
+        built = app.setup()
         trigger(built, lib.welpy_pointer_constraints_new_constraint, "C_DATA")
     handler.assert_called_once_with(built, "C_DATA")
 
@@ -990,7 +990,7 @@ def test_setup_set_cursor_listener():
          patch("welpy.input.build_keycode_map",
                return_value=make_keycode_map()), \
          patch("welpy.input.seat_set_cursor") as handler:
-        built = wel.setup()
+        built = app.setup()
         trigger(built, lib.welpy_seat_request_set_cursor, "SC_DATA")
     handler.assert_called_once_with(built, "SC_DATA")
 
@@ -1005,7 +1005,7 @@ def test_setup_output_power():
     with patch("welpy.app.bindings.build", return_value=build), \
          patch("welpy.input.build_keycode_map",
                return_value=make_keycode_map()):
-        wel.setup()
+        app.setup()
 
     lib.wlr_output_power_manager_v1_create.assert_called_once_with(
         lib.wl_display_create.return_value)
@@ -1022,7 +1022,7 @@ def test_setup_output_power_listener():
          patch("welpy.input.build_keycode_map",
                return_value=make_keycode_map()), \
          patch("welpy.output.output_power_set_mode") as handler:
-        built = wel.setup()
+        built = app.setup()
         trigger(built, lib.welpy_output_power_mgr_set_mode, "PWR_DATA")
     handler.assert_called_once_with(built, "PWR_DATA")
 
@@ -1085,7 +1085,7 @@ def test_cursor_button_locked():
     server.lib.wlr_seat_pointer_notify_button.assert_called_once()
 
 
-# --- configure tracking ---------------------------------------------------
+# --- drag / commit / unmap -------------------------------------------------
 
 
 def test_begin_dragging_floats():
@@ -1102,7 +1102,7 @@ def test_begin_dragging_floats():
     node.parent = client.scene_tree
     server.lib.wlr_scene_node_at.return_value = node
 
-    seed = wel.Rect(0, 0, 100, 80)
+    seed = layout.Rect(0, 0, 100, 80)
     with patch("welpy.geometry.client_outer_rect", return_value=seed), \
          patch("welpy.geometry.apply_geometry"):
         input.begin_dragging_client(server)
@@ -1127,7 +1127,7 @@ def test_begin_dragging_drops_leaf():
     server.lib.wlr_scene_node_at.return_value = node
 
     with patch("welpy.geometry.client_outer_rect",
-               return_value=wel.Rect(0, 0, 100, 80)), \
+               return_value=layout.Rect(0, 0, 100, 80)), \
          patch("welpy.geometry.apply_geometry"):
         input.begin_dragging_client(server)
 
@@ -1151,7 +1151,7 @@ def test_begin_resizing_drops_leaf():
     server.lib.wlr_scene_node_at.return_value = node
 
     with patch("welpy.geometry.client_outer_rect",
-               return_value=wel.Rect(0, 0, 100, 80)), \
+               return_value=layout.Rect(0, 0, 100, 80)), \
          patch("welpy.geometry.apply_geometry"):
         input.begin_resizing_client(server)
 
@@ -1183,7 +1183,7 @@ def test_client_commit_initial_floating():
     toplevel.base.initial_commit = True
     client = make_client(
         toplevel=toplevel,
-        floating_geom=wel.Rect(0, 0, 100, 100),
+        floating_geom=layout.Rect(0, 0, 100, 100),
         workspace=workspace,
     )
 
@@ -1295,7 +1295,7 @@ def test_setup_layout_change_updates():
          patch("welpy.input.build_keycode_map",
                return_value=make_keycode_map()), \
          patch("welpy.output.update_monitors") as upd:
-        server = wel.setup()
+        server = app.setup()
         trigger(server, lib.welpy_output_layout_change, "LAYOUT_DATA")
 
     upd.assert_called_once_with(server)
@@ -1306,32 +1306,32 @@ def test_setup_layout_change_updates():
 
 def test_override_form1_chains_original(monkeypatch):
     """The previous function is passed in as the first argument."""
-    monkeypatch.setattr(wel, "modkey", wel.modkey)
+    monkeypatch.setattr(app, "modkey", app.modkey)
 
-    @welpy.override(wel.modkey)
+    @welpy.override(app.modkey)
     def modkey(orig, server):
         return orig(server) | 0xFF
 
     server = MagicMock()
     server.lib.WLR_MODIFIER_LOGO = 0x40
-    assert wel.modkey(server) == 0x40 | 0xFF
+    assert app.modkey(server) == 0x40 | 0xFF
 
 
 def test_override_form2_wl(monkeypatch):
     """@welpy.override(target) installs at the target's home, even when the
     new function has a different local name."""
-    monkeypatch.setattr(wel, "modkey", wel.modkey)
+    monkeypatch.setattr(app, "modkey", app.modkey)
 
-    @welpy.override(wel.modkey)
+    @welpy.override(app.modkey)
     def renamed(_orig, _server):
         return 0x123
 
-    assert wel.modkey(MagicMock()) == 0x123
+    assert app.modkey(MagicMock()) == 0x123
 
 
 def test_override_form2_bindings(monkeypatch):
-    """@welpy.override reaches outside wel: targeting bindings.build installs
-    the replacement in bindings, not in wel."""
+    """@welpy.override reaches outside welpy.app: targeting bindings.build
+    installs the replacement in bindings, not in welpy.app."""
     monkeypatch.setattr(bindings, "build", bindings.build)
 
     @welpy.override(bindings.build)
@@ -1339,39 +1339,39 @@ def test_override_form2_bindings(monkeypatch):
         return "stub"
 
     assert bindings.build() == "stub"
-    assert not hasattr(wel, "build")
+    assert not hasattr(app, "build")
 
 
 def test_override_chain_composes(monkeypatch):
     """Form-1 then form-2 chains correctly: the second wraps the first,
     which wraps the built-in. Exercises the __module__ rewrite that lets
-    form-2 find the previous wrapper at wel.<name>."""
-    monkeypatch.setattr(wel, "modkey", wel.modkey)
+    form-2 find the previous wrapper at welpy.app.<name>."""
+    monkeypatch.setattr(app, "modkey", app.modkey)
 
-    @welpy.override(wel.modkey)
+    @welpy.override(app.modkey)
     def modkey(orig, server):
         return orig(server) + 1
 
-    @welpy.override(wel.modkey)
+    @welpy.override(app.modkey)
     def newer(orig, server):
         return orig(server) * 10
 
     server = MagicMock()
     server.lib.WLR_MODIFIER_LOGO = 5
     # built-in=5; inner adds 1 -> 6; outer multiplies by 10 -> 60.
-    assert wel.modkey(server) == 60
+    assert app.modkey(server) == 60
 
 
 def test_autostart_overridable(monkeypatch):
     """@welpy.override on `autostart` lets config swap the launched programs."""
-    monkeypatch.setattr(wel, "autostart", wel.autostart)
+    monkeypatch.setattr(app, "autostart", app.autostart)
     calls = []
 
-    @welpy.override(wel.autostart)
+    @welpy.override(app.autostart)
     def autostart(_orig, server):
         calls.append(server)
 
-    wel.autostart("SERVER")
+    app.autostart("SERVER")
     assert calls == ["SERVER"]
 
 
@@ -1392,26 +1392,26 @@ def test_override_callable_no_name():
 
 def test_load_config_missing(tmp_path):
     """Absent config file is a silent no-op."""
-    wel.load_config(tmp_path / "nonexistent.py")
+    app.load_config(tmp_path / "nonexistent.py")
 
 
 def test_load_config_runs(tmp_path, monkeypatch):
     """The loader executes the file's top-level code."""
     # pylint: disable=protected-access,no-member
-    monkeypatch.setattr(wel, "_test_marker", None, raising=False)
+    monkeypatch.setattr(app, "_test_marker", None, raising=False)
     config = tmp_path / "config.py"
     config.write_text(dedent("""\
         import welpy.app
         welpy.app._test_marker = 'ran'
     """))
-    wel.load_config(config)
-    assert wel._test_marker == "ran"
+    app.load_config(config)
+    assert app._test_marker == "ran"
 
 
 def test_load_config_sys_path(tmp_path, monkeypatch):
     """Sibling files are importable as top-level modules after load, and
-    overrides defined in them land on the running wel module."""
-    monkeypatch.setattr(wel, "modkey", wel.modkey)
+    overrides defined in them land on the running welpy.app module."""
+    monkeypatch.setattr(app, "modkey", app.modkey)
     monkeypatch.setattr(sys, "path", list(sys.path))
     monkeypatch.setattr(sys, "modules", dict(sys.modules))
     (tmp_path / "sibling_ext.py").write_text(dedent("""\
@@ -1424,8 +1424,8 @@ def test_load_config_sys_path(tmp_path, monkeypatch):
     (tmp_path / "config.py").write_text(dedent("""\
         import sibling_ext  # noqa: F401
     """))
-    wel.load_config(tmp_path / "config.py")
-    assert wel.modkey(MagicMock()) == 0xDEAD
+    app.load_config(tmp_path / "config.py")
+    assert app.modkey(MagicMock()) == 0xDEAD
 
 
 # --- workspaces: setup -----------------------------------------------------
@@ -1437,7 +1437,7 @@ def test_setup_workspaces_orphaned():
     with patch("welpy.app.bindings.build", return_value=build), \
          patch("welpy.input.build_keycode_map",
                return_value=make_keycode_map()):
-        server = wel.setup()
+        server = app.setup()
     assert [w.name for w in server.workspaces] == [
         "1", "2", "3", "4", "5", "6", "7", "8", "9", "10"]
     assert all(w.monitor is None for w in server.workspaces)
@@ -1467,13 +1467,13 @@ def test_urgent_clears_on_focus():
 
 
 def test_setup_extws():
-    """wel.setup() builds an ext_workspace ext on the server."""
+    """app.setup() builds an ext_workspace ext on the server."""
     build = make_bindings()
     with patch("welpy.app.bindings.build", return_value=build), \
          patch("welpy.input.build_keycode_map",
                return_value=make_keycode_map()), \
          patch("welpy.app.ext_workspace.create") as create:
-        server = wel.setup()
+        server = app.setup()
 
     create.assert_called_once_with(
         server, on_activate=ANY, on_assign=ANY)
@@ -1526,7 +1526,7 @@ def test_main_display_before_autostart(monkeypatch):
          patch("welpy.app.install_signals"), \
          patch("welpy.app.teardown"), \
          patch("welpy.app.autostart", side_effect=record):
-        wel.main()
+        app.main()
 
     assert seen["display"] == ":4"
 

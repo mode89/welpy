@@ -4,7 +4,7 @@ lock-surface placement, unlock/teardown, and crash-safe relock."""
 import logging
 from unittest.mock import MagicMock
 
-from welpy import app as wel, session_lock
+from welpy import model, session_lock
 from tests.helpers import (
     make_server, make_client, make_monitor, make_session_lock,
 )
@@ -59,7 +59,7 @@ def test_lock_pointer_cleared():
 
 def test_lock_grabs_cleared():
     """Locking cancels active window drags so motion goes to the locker."""
-    client = make_client(grab=wel.Grab("move", 1, 2))
+    client = make_client(grab=model.Grab("move", 1, 2))
     server = make_server(clients=[client])
     _stage_lock_new(server)
 
@@ -172,7 +172,7 @@ def test_lock_destroy_locked():
 def test_lock_surface_gone():
     """A destroyed lock surface is dropped and its listeners detached."""
     listener = MagicMock(name="listener")
-    ls = wel.LockSurface(
+    ls = model.LockSurface(
         lock_surface=MagicMock(), monitor=make_monitor(),
         scene_tree=MagicMock(), listeners=[listener])
     sess_lock = make_session_lock(surfaces=[ls])

@@ -2,14 +2,13 @@ Wayland compositor written in Python on top of wlroots.
 
 ## Files
 
-- `wel.py`: entry point.
-- `bindings.py`: inline cffi bindings.
-- `tests.py`: unit tests.
+- `welpy/`: the compositor package (`app.py` lifecycle + keybindings, `model.py` data model, then `geometry`/`focus`/`windows`/`xwayland`/`layer_shell`/`session_lock`/`output`/`input`/`commands` handler modules, plus `bindings`/`layout`/`ext_workspace`/`libinput`).
+- `tests/`: unit tests, one `test_<module>.py` per source module + shared `helpers.py`.
 - `TODO.md`: planned features, ordered by priority.
 
 ## Customization
 
-Users customize welpy from `~/.config/welpy/config.py`, run at startup before the compositor is built, by monkey-patching its modules. `@wel.override` swaps a module-level function, currying the previous version as its first arg so overrides chain.
+Users customize welpy from `~/.config/welpy/config.py`, run at startup before the compositor is built, by monkey-patching its modules. `@welpy.override(module.hook)` swaps a module-level function, currying the previous version as its first arg so overrides chain.
 
 - Module-level functions are the extension surface — keep customizable behavior in one so it stays patchable, not inlined or nested in a closure.
 - Spot new customization points: behavior encoding a user preference, policy, or aesthetic (keybindings, launched apps, colors, focus/placement rules, etc.). Expose what you write as a top-level hook; flag existing inlined cases instead of refactoring them. Trigger: a user would plausibly want to change it.
@@ -24,9 +23,9 @@ Users customize welpy from `~/.config/welpy/config.py`, run at startup before th
 
 ## Testing
 
-Run with `pytest tests.py`.
+Run with `pytest`.
 
-Name tests `test_<system>_<scenario>`, where `<system>` is 1-2 words for the subsystem under test and `<scenario>` is 1-2 words for the specific case.
+Name tests `test_<system>_<scenario>`, where `<system>` is 1-2 words for the subsystem under test and `<scenario>` is 1-2 words for the specific case. Each source module `welpy/<m>.py` has a mirror `tests/test_<m>.py`; shared builders live in `tests/helpers.py`.
 
 ## Linting
 

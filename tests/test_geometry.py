@@ -3,7 +3,7 @@ layer-shell arrangement, and the per-window geometry queries."""
 
 from unittest.mock import MagicMock, call, patch
 
-from welpy import app as wel, geometry, model
+from welpy import geometry, layout, model
 from tests.helpers import (
     make_server, make_client, make_x11_client, make_monitor, make_workspace,
     flat_tree, trigger, make_layer_surface,
@@ -12,7 +12,7 @@ from tests.helpers import (
 
 def test_apply_geometry_single_full():
     """One tiled window fills the whole window area."""
-    m = make_monitor(window_area=wel.Rect(0, 0, 800, 600))
+    m = make_monitor(window_area=layout.Rect(0, 0, 800, 600))
     m.active_workspace = make_workspace(monitor=m)
     a = make_client(workspace=m.active_workspace)
     m.active_workspace.root = flat_tree(a)
@@ -21,13 +21,13 @@ def test_apply_geometry_single_full():
     with patch("welpy.geometry.resize_client") as resize:
         geometry.apply_geometry(server, m)
 
-    resize.assert_called_once_with(server, a, wel.Rect(0, 0, 800, 600))
+    resize.assert_called_once_with(server, a, layout.Rect(0, 0, 800, 600))
 
 
 def test_apply_geometry_row():
     """Three tiled windows in a HORIZONTAL container split the width into three
     equal columns spanning the full height, summing exactly to the area."""
-    m = make_monitor(window_area=wel.Rect(0, 0, 800, 600))
+    m = make_monitor(window_area=layout.Rect(0, 0, 800, 600))
     m.active_workspace = make_workspace(monitor=m)
     a = make_client(workspace=m.active_workspace)
     b = make_client(workspace=m.active_workspace)
@@ -39,17 +39,17 @@ def test_apply_geometry_row():
         geometry.apply_geometry(server, m)
 
     assert resize.call_args_list == [
-        call(server, a, wel.Rect(0, 0, 266, 600)),
-        call(server, b, wel.Rect(266, 0, 267, 600)),
-        call(server, c, wel.Rect(533, 0, 267, 600)),
+        call(server, a, layout.Rect(0, 0, 266, 600)),
+        call(server, b, layout.Rect(266, 0, 267, 600)),
+        call(server, c, layout.Rect(533, 0, 267, 600)),
     ]
 
 
 def test_apply_geometry_other_monitor():
     """apply_geometry only touches clients visible on its monitor."""
-    m1 = make_monitor(window_area=wel.Rect(0, 0, 800, 600))
+    m1 = make_monitor(window_area=layout.Rect(0, 0, 800, 600))
     m1.active_workspace = make_workspace(monitor=m1)
-    m2 = make_monitor(window_area=wel.Rect(0, 0, 800, 600))
+    m2 = make_monitor(window_area=layout.Rect(0, 0, 800, 600))
     m2.active_workspace = make_workspace(monitor=m2)
     a = make_client(workspace=m1.active_workspace)
     b = make_client(workspace=m2.active_workspace)
@@ -60,17 +60,17 @@ def test_apply_geometry_other_monitor():
     with patch("welpy.geometry.resize_client") as resize:
         geometry.apply_geometry(server, m1)
 
-    resize.assert_called_once_with(server, a, wel.Rect(0, 0, 800, 600))
+    resize.assert_called_once_with(server, a, layout.Rect(0, 0, 800, 600))
 
 
 def test_apply_geometry_skips_floating():
     """Floating windows aren't in the tree; the tile path covers tiles only,
     then floats get their own rect."""
-    m = make_monitor(window_area=wel.Rect(0, 0, 800, 600))
+    m = make_monitor(window_area=layout.Rect(0, 0, 800, 600))
     m.active_workspace = make_workspace(monitor=m)
     a = make_client(
         workspace=m.active_workspace,
-        floating_geom=wel.Rect(50, 60, 100, 80),
+        floating_geom=layout.Rect(50, 60, 100, 80),
     )
     b = make_client(workspace=m.active_workspace)
     m.active_workspace.root = flat_tree(b)
@@ -81,15 +81,15 @@ def test_apply_geometry_skips_floating():
 
     # The tile gets the full window area; the float gets its own rect.
     assert resize.call_args_list == [
-        call(server, b, wel.Rect(0, 0, 800, 600)),
-        call(server, a, wel.Rect(50, 60, 100, 80)),
+        call(server, b, layout.Rect(0, 0, 800, 600)),
+        call(server, a, layout.Rect(50, 60, 100, 80)),
     ]
 
 
 def test_apply_geometry_sizes_fullscreen():
     """A fullscreen window is sized to the monitor box; the windows hidden
     behind it are left untouched until fullscreen exits."""
-    m = make_monitor(window_area=wel.Rect(0, 0, 800, 600))
+    m = make_monitor(window_area=layout.Rect(0, 0, 800, 600))
     m.active_workspace = make_workspace(monitor=m)
     fs = make_client(workspace=m.active_workspace)
     m.active_workspace.fullscreen = fs
@@ -98,11 +98,11 @@ def test_apply_geometry_sizes_fullscreen():
     server = make_server(clients=[fs, tile])
 
     with patch("welpy.geometry.monitor_box",
-               return_value=wel.Rect(0, 0, 800, 600)), \
+               return_value=layout.Rect(0, 0, 800, 600)), \
          patch("welpy.geometry.resize_client") as resize:
         geometry.apply_geometry(server, m)
 
-    resize.assert_called_once_with(server, fs, wel.Rect(0, 0, 800, 600))
+    resize.assert_called_once_with(server, fs, layout.Rect(0, 0, 800, 600))
 
 
 def test_apply_geometry_empty():
@@ -124,7 +124,7 @@ def test_apply_geometry_reconciles_float():
     state converges."""
     m = make_monitor()
     m.active_workspace = make_workspace(monitor=m)
-    saved = wel.Rect(10, 20, 300, 200)
+    saved = layout.Rect(10, 20, 300, 200)
     c = make_client(workspace=m.active_workspace, floating_geom=saved)
     server = make_server(clients=[c])
 
@@ -386,16 +386,16 @@ def test_apply_visibility_orphan():
 def test_apply_tree_clients():
     """Each client's scene node is reparented to its layer's tree."""
     a = make_client()
-    b = make_client(floating_geom=wel.Rect(0, 0, 100, 100))
+    b = make_client(floating_geom=layout.Rect(0, 0, 100, 100))
     server = make_server(clients=[a, b])
 
     geometry.apply_tree(server)
 
     node = server.ffi.addressof.return_value
     server.lib.wlr_scene_node_reparent.assert_any_call(
-        node, server.layers[wel.Layer.TILE])
+        node, server.layers[model.Layer.TILE])
     server.lib.wlr_scene_node_reparent.assert_any_call(
-        node, server.layers[wel.Layer.FLOAT])
+        node, server.layers[model.Layer.FLOAT])
 
 
 def test_apply_tree_skips_unmapped():
@@ -413,7 +413,7 @@ def test_apply_tree_idempotent():
     reparented."""
     client = make_client()
     server = make_server(clients=[client])
-    server.ffi.addressof.return_value.parent = server.layers[wel.Layer.TILE]
+    server.ffi.addressof.return_value.parent = server.layers[model.Layer.TILE]
 
     geometry.apply_tree(server)
 
@@ -424,34 +424,34 @@ def test_apply_tree_layer_surface():
     """A layer surface in monitor.layers[TOP] is parented under the TOP
     tree; its popups tree follows."""
     monitor = MagicMock(name="m", fullscreen=None)
-    monitor.layers = {layer: [] for layer in wel.Layer}
+    monitor.layers = {layer: [] for layer in model.Layer}
     ls = MagicMock(name="ls")
-    monitor.layers[wel.Layer.TOP].append(ls)
+    monitor.layers[model.Layer.TOP].append(ls)
     server = make_server(monitors=[monitor])
 
     geometry.apply_tree(server)
 
     node = server.ffi.addressof.return_value
     server.lib.wlr_scene_node_reparent.assert_any_call(
-        node, server.layers[wel.Layer.TOP])
+        node, server.layers[model.Layer.TOP])
 
 
 def test_apply_tree_popups_lifted():
     """A layer surface in BACKGROUND has its popups tree lifted into TOP
     so a bar can't bury them."""
     monitor = MagicMock(name="m", fullscreen=None)
-    monitor.layers = {layer: [] for layer in wel.Layer}
+    monitor.layers = {layer: [] for layer in model.Layer}
     ls = MagicMock(name="ls")
-    monitor.layers[wel.Layer.BACKGROUND].append(ls)
+    monitor.layers[model.Layer.BACKGROUND].append(ls)
     server = make_server(monitors=[monitor])
 
     geometry.apply_tree(server)
 
     node = server.ffi.addressof.return_value
     server.lib.wlr_scene_node_reparent.assert_any_call(
-        node, server.layers[wel.Layer.BACKGROUND])
+        node, server.layers[model.Layer.BACKGROUND])
     server.lib.wlr_scene_node_reparent.assert_any_call(
-        node, server.layers[wel.Layer.TOP])
+        node, server.layers[model.Layer.TOP])
 
 
 def test_resize_client_geometry():
@@ -464,7 +464,7 @@ def test_resize_client_geometry():
     client = make_client(
         toplevel=MagicMock(), scene_tree=MagicMock(), borders=borders)
 
-    geometry.resize_client(server, client, wel.Rect(10, 20, 300, 400))
+    geometry.resize_client(server, client, layout.Rect(10, 20, 300, 400))
 
     server.lib.wlr_scene_node_set_position.assert_any_call(
         server.ffi.addressof.return_value, 10, 20)
@@ -484,7 +484,7 @@ def test_resize_client_tracks():
     borders = tuple(MagicMock() for _ in range(4))
     client = make_client(scene_tree=MagicMock(), borders=borders)
 
-    geometry.resize_client(server, client, wel.Rect(10, 20, 300, 400))
+    geometry.resize_client(server, client, layout.Rect(10, 20, 300, 400))
 
     assert client.pending_serial == 42
 
@@ -500,7 +500,7 @@ def test_resize_client_clips():
         toplevel=toplevel, scene_tree=MagicMock(),
         borders=tuple(MagicMock() for _ in range(4)))
 
-    geometry.resize_client(server, client, wel.Rect(10, 20, 300, 400))
+    geometry.resize_client(server, client, layout.Rect(10, 20, 300, 400))
 
     bw = model.BORDER_WIDTH
     server.ffi.new.assert_any_call(
@@ -522,7 +522,7 @@ def test_resize_client_fullscreen():
     )
     m.active_workspace.fullscreen = client
 
-    geometry.resize_client(server, client, wel.Rect(0, 0, 800, 600))
+    geometry.resize_client(server, client, layout.Rect(0, 0, 800, 600))
 
     server.lib.wlr_xdg_toplevel_set_size.assert_called_once_with(
         client.toplevel, 800, 600)
@@ -548,7 +548,7 @@ def test_borders_resize():
         toplevel=MagicMock(), scene_tree=MagicMock(),
         borders=(top, bottom, left, right))
 
-    geometry.resize_client(server, client, wel.Rect(10, 20, 300, 400))
+    geometry.resize_client(server, client, layout.Rect(10, 20, 300, 400))
 
     bw = model.BORDER_WIDTH
     sizes = server.lib.wlr_scene_rect_set_size.call_args_list
@@ -717,7 +717,7 @@ def test_fullscreen_slot_keeps_float():
     at the same rect; a window that was tiled stays tiled."""
     server = make_server()
     workspace = make_workspace()
-    saved = wel.Rect(50, 60, 304, 204)
+    saved = layout.Rect(50, 60, 304, 204)
     floater = make_client(
         toplevel=MagicMock(),
         scene_tree=MagicMock(),
@@ -800,11 +800,11 @@ def test_arrange_layers_shrinks_area():
     """A surface with exclusive_zone > 0 reserves space; the monitor's
     window_area shrinks accordingly and tiles re-flow."""
     server = make_server()
-    monitor = make_monitor(window_area=wel.Rect(0, 0, 800, 600))
+    monitor = make_monitor(window_area=layout.Rect(0, 0, 800, 600))
     ls = make_layer_surface(monitor=monitor)
     ls.layer_surface.initialized = True
     ls.layer_surface.current.exclusive_zone = 30
-    monitor.layers[wel.Layer.TOP].append(ls)
+    monitor.layers[model.Layer.TOP].append(ls)
 
     def make_box(_type, vals):
         box = MagicMock()
@@ -819,10 +819,10 @@ def test_arrange_layers_shrinks_area():
 
     with patch(
             "welpy.geometry.monitor_box",
-            return_value=wel.Rect(0, 0, 800, 600)):
+            return_value=layout.Rect(0, 0, 800, 600)):
         geometry.arrange_layers(server, monitor)
 
-    assert monitor.window_area == wel.Rect(0, 30, 800, 570)
+    assert monitor.window_area == layout.Rect(0, 30, 800, 570)
 
 
 def test_monitor_box_returns_rect():
@@ -834,7 +834,7 @@ def test_monitor_box_returns_rect():
 
     result = geometry.monitor_box(server, monitor)
 
-    assert result == wel.Rect(10, 20, 800, 600)
+    assert result == layout.Rect(10, 20, 800, 600)
     server.lib.wlr_output_layout_get_box.assert_called_once_with(
         server.output_layout, "OUT", box)
 
@@ -968,7 +968,7 @@ def test_apply_decoration_skips_no_decoration():
 def test_init_floating_geom_centers():
     """init_floating_geom centers the window in its screen's usable area at
     the size the app asked for plus border."""
-    m = make_monitor(window_area=wel.Rect(100, 50, 800, 600))
+    m = make_monitor(window_area=layout.Rect(100, 50, 800, 600))
     m.active_workspace = make_workspace(monitor=m)
     toplevel = MagicMock()
     toplevel.base.geometry.width = 400
@@ -977,7 +977,7 @@ def test_init_floating_geom_centers():
 
     outer_w = 400 + 2 * model.BORDER_WIDTH
     outer_h = 300 + 2 * model.BORDER_WIDTH
-    assert geometry.init_floating_geom(client) == wel.Rect(
+    assert geometry.init_floating_geom(client) == layout.Rect(
         100 + (800 - outer_w) // 2,
         50 + (600 - outer_h) // 2,
         outer_w, outer_h)
@@ -986,7 +986,7 @@ def test_init_floating_geom_centers():
 def test_init_floating_geom_fallback():
     """When the app commits with empty geometry, init_floating_geom picks
     a default size so the window isn't invisibly small."""
-    m = make_monitor(window_area=wel.Rect(0, 0, 800, 600))
+    m = make_monitor(window_area=layout.Rect(0, 0, 800, 600))
     m.active_workspace = make_workspace(monitor=m)
     toplevel = MagicMock()
     toplevel.base.geometry.width = 0
@@ -1003,7 +1003,7 @@ def test_client_layer_tile():
     """A client with no floating_geom and not pinned to any monitor's
     fullscreen slot is tiled."""
     client = make_client(toplevel=MagicMock(), scene_tree=MagicMock())
-    assert geometry.client_layer(client) == wel.Layer.TILE
+    assert geometry.client_layer(client) == model.Layer.TILE
 
 
 def test_client_layer_float():
@@ -1011,9 +1011,9 @@ def test_client_layer_float():
     client = make_client(
         toplevel=MagicMock(),
         scene_tree=MagicMock(),
-        floating_geom=wel.Rect(0, 0, 100, 100),
+        floating_geom=layout.Rect(0, 0, 100, 100),
     )
-    assert geometry.client_layer(client) == wel.Layer.FLOAT
+    assert geometry.client_layer(client) == model.Layer.FLOAT
 
 
 def test_client_layer_fullscreen():
@@ -1022,10 +1022,10 @@ def test_client_layer_fullscreen():
     client = make_client(
         toplevel=MagicMock(),
         scene_tree=MagicMock(),
-        floating_geom=wel.Rect(0, 0, 100, 100),
+        floating_geom=layout.Rect(0, 0, 100, 100),
     )
     client.workspace = make_workspace(fullscreen=client)
-    assert geometry.client_layer(client) == wel.Layer.FULLSCREEN
+    assert geometry.client_layer(client) == model.Layer.FULLSCREEN
 
 
 def test_xwayland_client_geometry():

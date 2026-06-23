@@ -3,7 +3,7 @@ wallpaper, panels, and launchers."""
 
 from unittest.mock import MagicMock, patch
 
-from welpy import app as wel, layer_shell
+from welpy import layer_shell, model
 from tests.helpers import (
     make_server, make_client, make_monitor, make_workspace, make_layer_surface,
 )
@@ -46,7 +46,7 @@ def test_layer_new_assigns_monitor():
     layer_shell.layer_surface_new(server, "DATA")
 
     assert layer_surface.output is monitor.output
-    assert monitor.layers[wel.Layer.BACKGROUND][0].monitor is monitor
+    assert monitor.layers[model.Layer.BACKGROUND][0].monitor is monitor
 
 
 def test_layer_new_buckets():
@@ -58,8 +58,8 @@ def test_layer_new_buckets():
 
     layer_shell.layer_surface_new(server, "DATA")
 
-    assert len(monitor.layers[wel.Layer.TOP]) == 1
-    assert monitor.layers[wel.Layer.BACKGROUND] == []
+    assert len(monitor.layers[model.Layer.TOP]) == 1
+    assert monitor.layers[model.Layer.BACKGROUND] == []
 
 
 def test_layer_new_popups_high():
@@ -72,7 +72,7 @@ def test_layer_new_popups_high():
     layer_shell.layer_surface_new(server, "DATA")
 
     server.lib.wlr_scene_tree_create.assert_called_once_with(
-        server.layers[wel.Layer.OVERLAY])
+        server.layers[model.Layer.OVERLAY])
 
 
 def test_layer_new_popups_low():
@@ -85,7 +85,7 @@ def test_layer_new_popups_low():
     layer_shell.layer_surface_new(server, "DATA")
 
     server.lib.wlr_scene_tree_create.assert_called_once_with(
-        server.layers[wel.Layer.TOP])
+        server.layers[model.Layer.TOP])
 
 
 def test_layer_new_send_enter():
@@ -109,13 +109,13 @@ def test_layer_commit_moves_bucket():
     ls = make_layer_surface(monitor=monitor)
     ls.layer_surface.initial_commit = False
     ls.layer_surface.current.layer = 2  # TOP
-    monitor.layers[wel.Layer.BOTTOM].append(ls)
+    monitor.layers[model.Layer.BOTTOM].append(ls)
 
     with patch("welpy.geometry.arrange_layers"):
         layer_shell.layer_surface_commit(server, ls, None)
 
-    assert ls not in monitor.layers[wel.Layer.BOTTOM]
-    assert ls in monitor.layers[wel.Layer.TOP]
+    assert ls not in monitor.layers[model.Layer.BOTTOM]
+    assert ls in monitor.layers[model.Layer.TOP]
 
 
 def test_layer_commit_skips_content():
@@ -209,7 +209,7 @@ def test_layer_cleanup_removes():
     server = make_server()
     monitor = make_monitor()
     ls = make_layer_surface(monitor=monitor)
-    monitor.layers[wel.Layer.TOP].append(ls)
+    monitor.layers[model.Layer.TOP].append(ls)
     h = MagicMock()
     ls.listeners.append(h)
 
@@ -217,7 +217,7 @@ def test_layer_cleanup_removes():
         layer_shell.layer_surface_cleanup(server, ls, None)
 
     h.remove.assert_called_once()
-    assert ls not in monitor.layers[wel.Layer.TOP]
+    assert ls not in monitor.layers[model.Layer.TOP]
     assert ls.monitor is None
 
 

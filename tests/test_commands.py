@@ -4,7 +4,7 @@ and workspace switching/relocation."""
 
 from unittest.mock import patch
 
-from welpy import app as wel, commands, focus, geometry, layout
+from welpy import commands, focus, geometry, layout, model
 from tests.helpers import (
     make_server, make_client, make_x11_client, make_monitor, make_workspace,
     flat_tree,
@@ -15,7 +15,7 @@ def test_focus_direction_moves():
     """Directional focus shifts to the structurally adjacent tiled window: from
     the left column of a three-column row, RIGHT lands on the middle one."""
     # pylint: disable=duplicate-code
-    m = make_monitor(window_area=wel.Rect(0, 0, 900, 600))
+    m = make_monitor(window_area=layout.Rect(0, 0, 900, 600))
     m.active_workspace = make_workspace(monitor=m)
     a = make_client(workspace=m.active_workspace)
     b = make_client(workspace=m.active_workspace)
@@ -34,7 +34,7 @@ def test_focus_direction_moves():
 def test_focus_direction_edge():
     """Directional focus is a no-op at an edge: nothing lies right of the
     rightmost window."""
-    m = make_monitor(window_area=wel.Rect(0, 0, 900, 600))
+    m = make_monitor(window_area=layout.Rect(0, 0, 900, 600))
     m.active_workspace = make_workspace(monitor=m)
     a = make_client(workspace=m.active_workspace)
     b = make_client(workspace=m.active_workspace)
@@ -75,7 +75,7 @@ def test_focus_direction_floating():
     a = make_client(workspace=m.active_workspace)
     b = make_client(
         workspace=m.active_workspace,
-        floating_geom=wel.Rect(0, 0, 100, 100),
+        floating_geom=layout.Rect(0, 0, 100, 100),
     )
     m.active_workspace.root = flat_tree(a)
     server = make_server(monitors=[m], active_monitor=m, clients=[a, b])
@@ -91,7 +91,7 @@ def test_focus_direction_floating():
 def test_focus_direction_group_mru():
     """Focusing into a neighboring group lands on its most-recently-focused
     window, regardless of where that window sits in the group."""
-    m = make_monitor(window_area=wel.Rect(0, 0, 900, 600))
+    m = make_monitor(window_area=layout.Rect(0, 0, 900, 600))
     m.active_workspace = make_workspace(monitor=m)
     a = make_client(focus_order=1, workspace=m.active_workspace)
     b = make_client(focus_order=2, workspace=m.active_workspace)
@@ -113,7 +113,7 @@ def test_move_direction_moves():
     """mod+shift relocates the focused window one slot that way: from the left
     of a three-column row, RIGHT reorders it past its neighbor."""
     # pylint: disable=duplicate-code
-    m = make_monitor(window_area=wel.Rect(0, 0, 900, 600))
+    m = make_monitor(window_area=layout.Rect(0, 0, 900, 600))
     m.active_workspace = make_workspace(monitor=m)
     a = make_client(workspace=m.active_workspace)
     b = make_client(workspace=m.active_workspace)
@@ -132,7 +132,7 @@ def test_move_direction_moves():
 def test_move_direction_edge():
     """Moving toward an edge is a no-op: nothing lies right of the rightmost
     window, so the tree is unchanged."""
-    m = make_monitor(window_area=wel.Rect(0, 0, 900, 600))
+    m = make_monitor(window_area=layout.Rect(0, 0, 900, 600))
     m.active_workspace = make_workspace(monitor=m)
     a = make_client(workspace=m.active_workspace)
     b = make_client(workspace=m.active_workspace)
@@ -173,7 +173,7 @@ def test_move_direction_floating():
     a = make_client(workspace=m.active_workspace)
     b = make_client(
         workspace=m.active_workspace,
-        floating_geom=wel.Rect(0, 0, 100, 100),
+        floating_geom=layout.Rect(0, 0, 100, 100),
     )
     m.active_workspace.root = flat_tree(a)
     server = make_server(monitors=[m], active_monitor=m, clients=[a, b])
@@ -190,7 +190,7 @@ def test_move_direction_floating():
 def test_move_direction_vertical():
     """mod+shift+j relocates the focused window down a column, exercising the
     vertical move axis."""
-    m = make_monitor(window_area=wel.Rect(0, 0, 600, 900))
+    m = make_monitor(window_area=layout.Rect(0, 0, 600, 900))
     m.active_workspace = make_workspace(monitor=m)
     a = make_client(workspace=m.active_workspace)
     b = make_client(workspace=m.active_workspace)
@@ -232,7 +232,7 @@ def test_group_window_wraps():
 def test_group_window_alone():
     """mod+v is a no-op on a window with no siblings -- there's nothing to
     split it off from, so the tree is unchanged."""
-    m = make_monitor(window_area=wel.Rect(0, 0, 800, 600))
+    m = make_monitor(window_area=layout.Rect(0, 0, 800, 600))
     m.active_workspace = make_workspace(monitor=m)
     a = make_client(workspace=m.active_workspace)
     m.active_workspace.root = flat_tree(a)
@@ -316,7 +316,7 @@ def test_toggle_fullscreen_to_tile():
         commands.toggle_fullscreen(server)
 
     assert m.active_workspace.fullscreen is None
-    assert geometry.client_layer(client) == wel.Layer.TILE
+    assert geometry.client_layer(client) == model.Layer.TILE
 
 
 def test_toggle_fullscreen_to_float():
@@ -324,7 +324,7 @@ def test_toggle_fullscreen_to_float():
     the float; floating_geom is preserved through fullscreen."""
     m = make_monitor()
     m.active_workspace = make_workspace(monitor=m)
-    saved = wel.Rect(10, 20, 300, 200)
+    saved = layout.Rect(10, 20, 300, 200)
     client = make_client(
         workspace=m.active_workspace, floating_geom=saved, focus_order=1)
     m.active_workspace.fullscreen = client
@@ -335,7 +335,7 @@ def test_toggle_fullscreen_to_float():
 
     assert m.active_workspace.fullscreen is None
     assert client.floating_geom == saved
-    assert geometry.client_layer(client) == wel.Layer.FLOAT
+    assert geometry.client_layer(client) == model.Layer.FLOAT
 
 
 def test_toggle_fullscreen_no_focus():
@@ -359,7 +359,7 @@ def test_toggle_floating_to_float():
     server = make_server(monitors=[m], active_monitor=m, clients=[client])
     focus.focus_client(server, client)
 
-    seed = wel.Rect(50, 60, 304, 204)
+    seed = layout.Rect(50, 60, 304, 204)
     with patch("welpy.geometry.client_outer_rect", return_value=seed), \
          patch("welpy.geometry.apply_geometry"):
         commands.toggle_floating(server)
@@ -374,7 +374,7 @@ def test_toggle_floating_to_tile():
     m.active_workspace = make_workspace(monitor=m)
     client = make_client(
         workspace=m.active_workspace,
-        floating_geom=wel.Rect(10, 20, 300, 200),
+        floating_geom=layout.Rect(10, 20, 300, 200),
         focus_order=1,
     )
     server = make_server(monitors=[m], active_monitor=m, clients=[client])
@@ -395,7 +395,7 @@ def test_toggle_floating_drops_leaf():
     server = make_server(monitors=[m], active_monitor=m, clients=[a, b])
     focus.focus_client(server, a)
 
-    seed = wel.Rect(0, 0, 100, 100)
+    seed = layout.Rect(0, 0, 100, 100)
     with patch("welpy.geometry.client_outer_rect", return_value=seed), \
          patch("welpy.geometry.apply_geometry"):
         commands.toggle_floating(server)
@@ -410,7 +410,7 @@ def test_toggle_floating_adds_leaf():
     tiled = make_client(workspace=m.active_workspace, focus_order=1)
     floater = make_client(
         workspace=m.active_workspace,
-        floating_geom=wel.Rect(10, 20, 300, 200),
+        floating_geom=layout.Rect(10, 20, 300, 200),
         focus_order=2,
     )
     m.active_workspace.root = flat_tree(tiled)
@@ -511,7 +511,7 @@ def test_view_workspace_ends_grabs():
     ws1 = make_workspace(name="1", monitor=monitor)
     ws2 = make_workspace(name="2")
     monitor.active_workspace = ws1
-    client = make_client(workspace=ws1, grab=wel.Grab("move", 0, 0))
+    client = make_client(workspace=ws1, grab=model.Grab("move", 0, 0))
     server = make_server(
         workspaces=[ws1, ws2], monitors=[monitor], active_monitor=monitor,
         clients=[client])

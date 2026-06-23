@@ -3,7 +3,7 @@ per-frame paint loop, paint-hold predicates, and output-layout re-flow."""
 
 from unittest.mock import ANY, MagicMock, call, patch
 
-from welpy import app as wel, model, output
+from welpy import layout, model, output
 from tests.helpers import (
     make_server, make_client, make_x11_client, make_monitor,
     make_workspace, make_layer_surface, make_session_lock, trigger,
@@ -37,7 +37,7 @@ def test_lock_surfaces_reconfigured():
     monitor = make_monitor()
     lock_surface = MagicMock(name="lock_surface")
     scene_tree = MagicMock(name="scene_tree")
-    ls = wel.LockSurface(
+    ls = model.LockSurface(
         lock_surface=lock_surface, monitor=monitor,
         scene_tree=scene_tree, listeners=[])
     server = make_server(
@@ -52,7 +52,7 @@ def test_lock_surfaces_reconfigured():
          patch("welpy.geometry.apply_geometry"), \
          patch("welpy.focus.apply_focus"), \
          patch("welpy.geometry.monitor_box",
-               return_value=wel.Rect(10, 20, 300, 200)):
+               return_value=layout.Rect(10, 20, 300, 200)):
         output.update_monitors(server)
 
     server.lib.wlr_scene_node_set_position.assert_any_call(
@@ -65,7 +65,7 @@ def test_lock_surfaces_pruned():
     """A removed screen drops its stale lock surface from lock state."""
     removed = make_monitor()
     remaining = make_monitor()
-    ls = wel.LockSurface(
+    ls = model.LockSurface(
         lock_surface=MagicMock(), monitor=removed,
         scene_tree=MagicMock(), listeners=[])
     session_lock = make_session_lock(surfaces=[ls])
@@ -253,7 +253,7 @@ def test_monitor_cleanup_destroys_layers():
     monitor = make_monitor()
     server = make_server(monitors=[monitor])
     ls = make_layer_surface(monitor=monitor)
-    monitor.layers[wel.Layer.TOP].append(ls)
+    monitor.layers[model.Layer.TOP].append(ls)
 
     output.monitor_cleanup(server, monitor, None)
 
@@ -392,7 +392,7 @@ def test_monitor_render_floating():
     monitor.active_workspace = make_workspace(monitor=monitor)
     a = make_client(
         workspace=monitor.active_workspace,
-        floating_geom=wel.Rect(0, 0, 100, 100),
+        floating_geom=layout.Rect(0, 0, 100, 100),
         pending_serial=5,
     )
     b = make_client(workspace=monitor.active_workspace)
@@ -410,9 +410,9 @@ def test_monitor_render_resizing():
     monitor.active_workspace = make_workspace(monitor=monitor)
     client = make_client(
         workspace=monitor.active_workspace,
-        floating_geom=wel.Rect(0, 0, 100, 100),
+        floating_geom=layout.Rect(0, 0, 100, 100),
         pending_serial=5,
-        grab=wel.Grab("resize", 0, 0),
+        grab=model.Grab("resize", 0, 0),
     )
     server = make_server(clients=[client])
 
@@ -428,9 +428,9 @@ def test_monitor_render_moving():
     monitor.active_workspace = make_workspace(monitor=monitor)
     client = make_client(
         workspace=monitor.active_workspace,
-        floating_geom=wel.Rect(0, 0, 100, 100),
+        floating_geom=layout.Rect(0, 0, 100, 100),
         pending_serial=5,
-        grab=wel.Grab("move", 0, 0),
+        grab=model.Grab("move", 0, 0),
     )
     server = make_server(clients=[client])
 

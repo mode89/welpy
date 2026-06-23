@@ -26,20 +26,6 @@ from .model import (
     Layer, Server, Workspace,
 )
 
-
-Cursor = model.Cursor
-Grab = model.Grab
-KeyboardGroup = model.KeyboardGroup
-LayerSurface = model.LayerSurface
-LockSurface = model.LockSurface
-Monitor = model.Monitor
-PointerConstraint = model.PointerConstraint
-Rect = layout.Rect
-SHELL_LAYERS = model.SHELL_LAYERS
-SessionLock = model.SessionLock
-Unmanaged = model.Unmanaged
-X11Client = model.X11Client
-XdgClient = model.XdgClient
 logger = logging.getLogger(__name__)
 
 

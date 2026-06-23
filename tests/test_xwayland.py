@@ -3,7 +3,7 @@ override-redirect surface lifecycle, X11 requests, and XWayland readiness."""
 
 from unittest.mock import ANY, MagicMock, patch
 
-from welpy import app as wel, xwayland
+from welpy import model, xwayland
 from tests.helpers import (
     make_server, make_x11_client, make_unmanaged, trigger,
 )
@@ -188,7 +188,7 @@ def test_unmanaged_map_position():
     xwayland.unmanaged_map(server, um, None)
 
     server.lib.wlr_scene_subsurface_tree_create.assert_called_once_with(
-        server.layers[wel.Layer.OVERLAY], um.xsurface.surface)
+        server.layers[model.Layer.OVERLAY], um.xsurface.surface)
     server.lib.wlr_scene_node_set_position.assert_called_once_with(ANY, 30, 40)
     assert server.unmanaged_focus is None
 

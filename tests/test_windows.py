@@ -3,7 +3,7 @@ unmap, fullscreen/maximize/activate requests) and transient popup placement."""
 
 from unittest.mock import ANY, MagicMock, patch
 
-from welpy import app as wel, geometry, layout, windows
+from welpy import geometry, layout, model, windows
 from tests.helpers import (
     make_server, make_client, make_monitor, make_workspace, make_layer_surface,
     flat_tree, trigger,
@@ -225,7 +225,7 @@ def test_client_map_subtree():
         windows.client_map(server, client, None)
 
     server.lib.wlr_scene_tree_create.assert_called_once_with(
-        server.layers[wel.Layer.TILE])
+        server.layers[model.Layer.TILE])
     parent, _ = server.lib.wlr_scene_xdg_surface_create.call_args.args
     assert parent is wrapper
     assert client.scene_tree is wrapper
@@ -317,7 +317,7 @@ def test_client_map_to_tile():
         windows.client_map(server, client, None)
 
     server.lib.wlr_scene_tree_create.assert_called_once_with(
-        server.layers[wel.Layer.TILE])
+        server.layers[model.Layer.TILE])
 
 
 def test_client_map_monitor_selected():
@@ -351,7 +351,7 @@ def test_client_map_monitor_none():
 def test_client_map_floats_dialog():
     """A window opened as a child of another window (a dialog) lands in the
     FLOAT layer instead of joining the tiling layout."""
-    m = make_monitor(window_area=wel.Rect(0, 0, 800, 600))
+    m = make_monitor(window_area=layout.Rect(0, 0, 800, 600))
     m.active_workspace = make_workspace(monitor=m)
     server = make_server(monitors=[m], active_monitor=m)
     toplevel = MagicMock()
@@ -364,12 +364,12 @@ def test_client_map_floats_dialog():
          patch("welpy.geometry.apply_geometry"):
         windows.client_map(server, client, None)
 
-    assert geometry.client_layer(client) == wel.Layer.FLOAT
+    assert geometry.client_layer(client) == model.Layer.FLOAT
 
 
 def test_client_map_no_parent():
     """A regular (unparented) window still joins the tiling layout."""
-    m = make_monitor(window_area=wel.Rect(0, 0, 800, 600))
+    m = make_monitor(window_area=layout.Rect(0, 0, 800, 600))
     m.active_workspace = make_workspace(monitor=m)
     server = make_server(monitors=[m], active_monitor=m)
     client = make_client(scene_tree=None)
@@ -378,13 +378,13 @@ def test_client_map_no_parent():
          patch("welpy.geometry.apply_geometry"):
         windows.client_map(server, client, None)
 
-    assert geometry.client_layer(client) == wel.Layer.TILE
+    assert geometry.client_layer(client) == model.Layer.TILE
 
 
 def test_client_map_adds_leaf():
     """A mapped tiled window joins the workspace tree right after the window
     that was focused when it appeared."""
-    m = make_monitor(window_area=wel.Rect(0, 0, 800, 600))
+    m = make_monitor(window_area=layout.Rect(0, 0, 800, 600))
     m.active_workspace = make_workspace(monitor=m)
     old = make_client(workspace=m.active_workspace, focus_order=1)
     m.active_workspace.root = flat_tree(old)
@@ -436,7 +436,7 @@ def test_client_unmap_refocuses():
 def test_client_unmap_ends_grab():
     """Unmapping a window in the middle of a drag clears its grab state so
     the user isn't left invisibly dragging a closed window."""
-    client = make_client(grab=wel.Grab("move", 10, 20))
+    client = make_client(grab=model.Grab("move", 10, 20))
     server = make_server(clients=[client])
 
     windows.client_unmap(server, client, "DATA")
@@ -490,7 +490,7 @@ def test_client_unmap_float_fallback():
     m.active_workspace.root = flat_tree(a, b)
     f = make_client(
         focus_order=3, workspace=m.active_workspace,
-        floating_geom=wel.Rect(0, 0, 100, 100))
+        floating_geom=layout.Rect(0, 0, 100, 100))
     server = make_server(monitors=[m], active_monitor=m, clients=[a, b, f])
 
     with patch("welpy.geometry.apply_geometry"), \
@@ -540,7 +540,7 @@ def test_request_fullscreen_keeps_float():
     server = make_server()
     m = make_monitor()
     m.active_workspace = make_workspace(monitor=m)
-    saved = wel.Rect(10, 20, 300, 200)
+    saved = layout.Rect(10, 20, 300, 200)
     client = make_client(
         toplevel=MagicMock(),
         scene_tree=MagicMock(),
@@ -578,7 +578,7 @@ def test_request_fullscreen_to_tile():
         windows.client_request_fullscreen(server, client, None)
 
     assert m.active_workspace.fullscreen is None
-    assert geometry.client_layer(client) == wel.Layer.TILE
+    assert geometry.client_layer(client) == model.Layer.TILE
 
 
 def test_request_fullscreen_to_float():
@@ -588,7 +588,7 @@ def test_request_fullscreen_to_float():
     server = make_server()
     m = make_monitor()
     m.active_workspace = make_workspace(monitor=m)
-    saved = wel.Rect(10, 20, 300, 200)
+    saved = layout.Rect(10, 20, 300, 200)
     client = make_client(
         toplevel=MagicMock(),
         scene_tree=MagicMock(),
@@ -605,7 +605,7 @@ def test_request_fullscreen_to_float():
 
     assert m.active_workspace.fullscreen is None
     assert client.floating_geom == saved
-    assert geometry.client_layer(client) == wel.Layer.FLOAT
+    assert geometry.client_layer(client) == model.Layer.FLOAT
 
 
 def test_request_fullscreen_pre_map():
@@ -813,7 +813,7 @@ def test_popup_new_unconstrain():
     server = make_server(monitors=[m], clients=[owner])
     popup, _ = _stage_popup(server, owner=owner)
     with patch("welpy.geometry.monitor_box",
-               return_value=wel.Rect(10, 20, 800, 600)):
+               return_value=layout.Rect(10, 20, 800, 600)):
         windows.popup_new(server, "DATA")
         trigger(server, server.lib.welpy_surface_commit, "COMMIT")
 
@@ -874,13 +874,13 @@ def test_popup_new_layer_owner():
     ls.scene_tree.node.x = 0
     ls.scene_tree.node.y = 0
     ls.layer_surface.surface = MagicMock(name="ls_surface")
-    monitor.layers[wel.Layer.TOP].append(ls)
+    monitor.layers[model.Layer.TOP].append(ls)
     server.lib.wlr_surface_get_root_surface.return_value = (
         ls.layer_surface.surface)
     _stage_popup(server)
 
     with patch("welpy.geometry.monitor_box",
-               return_value=wel.Rect(0, 0, 800, 600)):
+               return_value=layout.Rect(0, 0, 800, 600)):
         windows.popup_new(server, "DATA")
         trigger(server, server.lib.welpy_surface_commit, "COMMIT")
 

@@ -3,7 +3,7 @@ helper to deliver a wlroots event to its registered callback."""
 
 from unittest.mock import MagicMock
 
-from welpy import app as wel, layout
+from welpy import layout, model
 
 
 def make_server(**kwargs):
@@ -12,7 +12,7 @@ def make_server(**kwargs):
         ffi=kwargs.get("ffi"), lib=kwargs.get("lib"))
     seat = kwargs.get("seat") or MagicMock(name="seat")
     seat.keyboard_state.focused_surface = ffi.NULL
-    return wel.Server(**{
+    return model.Server(**{
         "ffi": ffi, "lib": lib, "seat": seat,
         "listen": listen,
         "add_signal": add_signal,
@@ -35,7 +35,7 @@ def make_server(**kwargs):
         "workspaces": [], "previous_workspace": MagicMock(name="prev_ws"),
         "ext_workspace": MagicMock(name="ext_workspace"),
         "layers": {layer: MagicMock(name=layer.name.lower())
-                   for layer in wel.Layer},
+                   for layer in model.Layer},
         "lock_background": MagicMock(name="lock_background"),
         "session_lock": None, "locked": False, "unmanaged_focus": None,
         "keycode": {}, "bindings": {}, "passthrough": False,
@@ -82,7 +82,7 @@ def make_client(**kwargs):
         toplevel.requested.fullscreen = False
         toplevel.parent = None
     kwargs["toplevel"] = toplevel
-    return wel.XdgClient(**{
+    return model.XdgClient(**{
         "scene_tree": MagicMock(),
         "content_tree": MagicMock(),
         "borders": tuple(MagicMock() for _ in range(4)),
@@ -104,7 +104,7 @@ def make_x11_client(**kwargs):
         xsurface.parent = None
         xsurface.override_redirect = False
     kwargs["xsurface"] = xsurface
-    return wel.X11Client(**{
+    return model.X11Client(**{
         "scene_tree": MagicMock(),
         "content_tree": MagicMock(),
         "borders": tuple(MagicMock() for _ in range(4)),
@@ -123,7 +123,7 @@ def make_unmanaged(**kwargs):
     if isinstance(xsurface, MagicMock):
         xsurface.override_redirect = True
     kwargs["xsurface"] = xsurface
-    return wel.Unmanaged(**{
+    return model.Unmanaged(**{
         "scene_tree": None,
         "listeners": [],
         **kwargs,
@@ -132,10 +132,10 @@ def make_unmanaged(**kwargs):
 
 def make_monitor(**kwargs):
     """Build a Monitor, filling fields the test doesn't care about."""
-    return wel.Monitor(**{
+    return model.Monitor(**{
         "output": MagicMock(), "scene_output": MagicMock(),
-        "layers": {layer: [] for layer in wel.SHELL_LAYERS},
-        "window_area": wel.Rect(0, 0, 800, 600),
+        "layers": {layer: [] for layer in model.SHELL_LAYERS},
+        "window_area": layout.Rect(0, 0, 800, 600),
         "active_workspace": None,
         "frame_timer": MagicMock(name="frame_timer"),
         "listeners": [],
@@ -145,7 +145,7 @@ def make_monitor(**kwargs):
 
 def make_workspace(**kwargs):
     """Build a Workspace, filling fields the test doesn't care about."""
-    return wel.Workspace(**{
+    return model.Workspace(**{
         "name": "1",
         "monitor": None,
         "fullscreen": None,
@@ -162,7 +162,7 @@ def flat_tree(*clients):
 
 def make_cursor(**kwargs):
     """Build a Cursor, filling fields the test doesn't care about."""
-    return wel.Cursor(**{
+    return model.Cursor(**{
         "cursor": MagicMock(), "xcursor_manager": MagicMock(),
         "listeners": [],
         **kwargs,
@@ -171,7 +171,7 @@ def make_cursor(**kwargs):
 
 def make_keyboard_group(**kwargs):
     """Build a KeyboardGroup, filling fields the test doesn't care about."""
-    return wel.KeyboardGroup(**{
+    return model.KeyboardGroup(**{
         "group": MagicMock(), "keymap": MagicMock(),
         "xkb_context": MagicMock(), "listeners": [],
         **kwargs,
@@ -193,7 +193,7 @@ def make_keycode_map():
 
 def make_layer_surface(**kwargs):
     """Build a LayerSurface, filling fields the test doesn't care about."""
-    return wel.LayerSurface(**{
+    return model.LayerSurface(**{
         "layer_surface": MagicMock(),
         "scene_layer": MagicMock(),
         "scene_tree": MagicMock(),
@@ -208,7 +208,7 @@ def make_layer_surface(**kwargs):
 
 def make_session_lock(**kwargs):
     """Build a SessionLock, filling fields the test doesn't care about."""
-    return wel.SessionLock(**{
+    return model.SessionLock(**{
         "lock": MagicMock(name="lock"), "tree": MagicMock(name="tree"),
         "surfaces": [], "listeners": [],
         **kwargs,
