@@ -213,7 +213,7 @@ judgment-only changes. `scripts/` is `pylint`-ignored and removed at landing.
 - [x] `xwayland.py` — extracted (green + reviewed clean)
 - [x] `layer_shell.py` — extracted (green + reviewed clean)
 - [x] `session_lock.py` — extracted (green + reviewed clean)
-- [ ] `output.py`
+- [x] `output.py` — extracted (green + reviewed clean)
 - [ ] `input.py`
 - [ ] `commands.py`
 - [ ] **Final**: `welpy/app.py` now holds only lifecycle + the keybinding table; drop
@@ -508,3 +508,38 @@ carved via `scripts/phase2_session_lock.py`. Manifest = 9 functions written **to
 - Implementer deviation from PLAN (gate-caught, justified): moving the sole `logging` user
   (`test_lock_surface_orphan_logged`) out of `test_app.py` orphaned its `import logging`
   there — removed per the surgical-changes orphan rule (PLAN's Pass-2 didn't predict it).
+
+**Phase 2 (module carving) — box 8 `output.py` — done (green, reviewed clean):** carved
+via `scripts/phase2_output.py`. Manifest = 9 functions written **top-down** (orchestrator
+first): `update_monitors`, `monitor_new`, `monitor_render`, `monitor_request_state`,
+`monitor_cleanup`, `output_power_set_mode`, `monitor_force_paint`, `client_holds_paint`,
+`client_rendered`; 3 `output.X` qualifications in the `app.py` remainder (all `setup()`
+listener-wiring sites); 34 subject-tests → `tests/test_output.py`. `welpy/output.py` 177
+lines; `app.py` 1075 lines (was 1197). Gate: 469 pass, pylint 10/10, `import welpy.output`
+clean. Reviewed clean — byte-identical bodies, no nits.
+
+- Deps confirmed = `(model, geometry, focus, session_lock, ext_workspace)` + pre-existing
+  sinks `bindings`/`layout` (`layout.Rect`) + own `logger`. Moved bodies were already
+  qualified at HEAD → byte-identical relocation (like box 7). Extracted **after**
+  `session_lock` so `update_monitors → session_lock.update_lock_*` is the safe forward edge.
+- **First *constant* bridge**: `SHELL_LAYERS` became app-unused after the move but is read
+  by `tests/helpers.py` via `wel.SHELL_LAYERS`, so `app.py` adds `SHELL_LAYERS =
+  model.SHELL_LAYERS` next to the type bridges (also `XdgClient = model.XdgClient`). Key
+  distinction: `SHELL_LAYERS` is a **structural** constant (the fixed layer-order tuple),
+  not a user-tunable customization point, so it's read **by-name** in `output.py` (matching
+  `geometry.py`) — NOT qualified `model.X`. The qualify-constants rule applies only to
+  tunables (`BORDER_*`, `WORKSPACE_NAMES`, scales); structural constants stay by-name and
+  bridge like types.
+- No source-side shadow: `setup()` locals are `output_layout`/`output_power_mgr` (the only
+  bare `output` local lives inside the moving `monitor_new`), so unlike boxes 5–7 no
+  `<mod>_server` rename.
+- **Box-7's two deferred `update_monitors`-driven lock tests** (`test_lock_surfaces_
+  reconfigured`/`_pruned`) travelled here with `update_monitors` and were repointed
+  `wel.update_monitors`→`output.update_monitors` (keeping `wel.LockSurface`/`wel.Rect`/
+  `make_session_lock` bridge refs) — closing the box-7 subject-rule deferral.
+- The two `wl_list` tests (`test_wl_list_for_each_*`, subject = `bindings.wl_list_for_each`)
+  stay in `tests/test_app.py`; their now-orphaned section header was relabelled
+  `# --- monitor lifecycle ---` → `# --- wl_list iterator ---`.
+- Two justified my-move orphan-import removals (gate-caught, beyond PLAN's Pass-2): `import
+  time` in `app.py` (only `monitor_render` used it) and `make_layer_surface` in
+  `tests/test_app.py` (only the moved `test_monitor_cleanup_destroys_layers` used it).
