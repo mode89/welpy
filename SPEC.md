@@ -210,7 +210,7 @@ judgment-only changes. `scripts/` is `pylint`-ignored and removed at landing.
 - [x] `geometry.py` — extracted (green + reviewed clean)
 - [x] `focus.py` — extracted (green + reviewed clean)
 - [x] `windows.py` — extracted (green + reviewed clean)
-- [ ] `xwayland.py`
+- [x] `xwayland.py` — extracted (green + reviewed clean)
 - [ ] `layer_shell.py`
 - [ ] `session_lock.py`
 - [ ] `output.py`
@@ -423,3 +423,29 @@ Reviewed clean — no blocking issues, no nits.
   deferral** (the other box-2 stale header, `# --- configure tracking ---`, remains).
 - `app.py` shrank 259 lines, not the ~430 the source span (`558–986`) suggested — that
   span interleaves non-moved functions, so only ~260 lines belonged to the 12.
+
+**Phase 2 (module carving) — box 5 `xwayland.py` — done (green, reviewed clean):**
+carved via `scripts/phase2_xwayland.py`. Manifest = 10 functions written **top-down**
+(managed X11 entry/handlers, readiness, then unmanaged lifecycle): `x11_surface_new`,
+`x11_request_configure`, `x11_request_activate`, `x11_set_hints`, `x11_ready`,
+`unmanaged_new`, `unmanaged_map`, `unmanaged_configure`, `unmanaged_unmap`,
+`unmanaged_cleanup`; 2 `xwayland.X` qualifications in the `app.py` remainder (both
+`setup()` listener-wiring sites); 19 subject-tests → `tests/test_xwayland.py`.
+`welpy/xwayland.py` 180 lines; `app.py` 1474 lines (was 1642). Gate: 469 pass,
+pylint 10/10, `import welpy.xwayland` clean. Reviewed clean — no blocking issues, no
+nits.
+
+- SPEC deps were accurate this time: `(model, geometry, focus, windows)` only. No
+  `logger`, no tunable constants, no private helper rename, no wider sink deps.
+- `setup()` already had a local `xwayland` C-object variable; adding `from . import
+  xwayland` would shadow/collide, so Pass-2 renamed the local to `xwayland_server` and
+  updated `Server(..., xwayland=xwayland_server)` plus listener signal references. This
+  is the source-side counterpart of box-3's test mock-var-shadow landmine.
+- `Unmanaged` is no longer used by app logic after the move, but `tests/helpers.py`
+  still reaches it through the Phase-1 bridge (`wel.Unmanaged`). A by-name import trips
+  W0611, so `app.py` preserves the bridge minimally as `Unmanaged = model.Unmanaged`.
+  This may recur as more model types become test/config-bridge-only.
+- Test split was small and clean: no staying test calls moved xwayland functions for
+  setup, no local helper traveled, no logger patches, no mock-var-shadow, no R0801
+  disables. `# --- xwayland (X11 clients) ---` stays in `tests/test_app.py` because
+  xwayland-adjacent cross-module tests remain (`setup`, drag/close/paint/map/front/etc.).
