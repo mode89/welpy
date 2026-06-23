@@ -211,7 +211,7 @@ judgment-only changes. `scripts/` is `pylint`-ignored and removed at landing.
 - [x] `focus.py` — extracted (green + reviewed clean)
 - [x] `windows.py` — extracted (green + reviewed clean)
 - [x] `xwayland.py` — extracted (green + reviewed clean)
-- [ ] `layer_shell.py`
+- [x] `layer_shell.py` — extracted (green + reviewed clean)
 - [ ] `session_lock.py`
 - [ ] `output.py`
 - [ ] `input.py`
@@ -449,3 +449,26 @@ nits.
   setup, no local helper traveled, no logger patches, no mock-var-shadow, no R0801
   disables. `# --- xwayland (X11 clients) ---` stays in `tests/test_app.py` because
   xwayland-adjacent cross-module tests remain (`setup`, drag/close/paint/map/front/etc.).
+
+**Phase 2 (module carving) — box 6 `layer_shell.py` — done (green, reviewed clean):**
+carved via `scripts/phase2_layer_shell.py`. Manifest = 4 functions written **top-down**:
+`layer_surface_new`, `layer_surface_commit`, `layer_surface_unmap`,
+`layer_surface_cleanup`; 1 `layer_shell.X` qualification in the `app.py` remainder
+(`setup()` listener-wiring site); 15 subject defs/tests (incl. `_stage_layer_surface_new`)
+→ `tests/test_layer_shell.py`. `welpy/layer_shell.py` 117 lines; `app.py` 1369 lines
+(was 1474). Gate: 469 pass, pylint 10/10, `import welpy.layer_shell` clean. Reviewed
+clean — no blocking issues, no nits.
+
+- SPEC deps were accurate: `(model, geometry, focus)` only. No `logger`, no tunable
+  constants, no private helper rename, no wider sink deps.
+- Same source-side module/local shadow pattern as box 5: `setup()` already had a local
+  `layer_shell` C-object variable, so Pass-2 renamed it to `layer_shell_server` and kept
+  `Server(..., layer_shell=layer_shell_server)` wired to the C object.
+- Same bridge-only model-type pattern as box 5: after the move, app logic no longer uses
+  `LayerSurface`, but the Phase-1 `wel.LayerSurface` bridge is still needed by tests/config;
+  a by-name import trips W0611, so `app.py` preserves it as `LayerSurface = model.LayerSurface`
+  next to `Unmanaged = model.Unmanaged`.
+- Test split was clean: no staying test calls moved layer-shell functions for setup, no
+  logger patches, no mock-var-shadow, no R0801 disables. `# --- layer-shell ---` stays in
+  `tests/test_app.py` because setup tests remain. Only the existing pragma-exempt long line
+  in `tests/test_app.py` remains unchanged.
