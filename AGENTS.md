@@ -2,19 +2,36 @@ Wayland compositor written in Python on top of wlroots.
 
 ## Files
 
-- `wel.py`: entry point.
-- `bindings.py`: inline cffi bindings.
-- `tests.py`: unit tests.
+- `welpy/`: the compositor package.
+  - `app.py`: compositor lifecycle (`main`/`setup`/`teardown`/…) + the `key_bindings`/`modkey` table.
+  - `model.py`: data model — window/screen state dataclasses, layout constants, shared client-lookup queries (`clients_in`/`clients_visible`/`client_monitor`).
+  - `geometry.py`: window sizing/placement/borders + tiling-tree & layer-shell arrangement.
+  - `focus.py`: focus policy + pointer hit-testing.
+  - `windows.py`: xdg-shell window/popup lifecycle.
+  - `xwayland.py`: X11 + override-redirect surfaces.
+  - `layer_shell.py`: layer-shell surface lifecycle.
+  - `session_lock.py`: screen-lock lifecycle.
+  - `output.py`: monitor/output band — the `reconcile` render orchestrator.
+  - `input.py`: cursor/pointer/drag/keyboard/seat handling.
+  - `commands.py`: the user-facing keybinding actions.
+  - `bindings.py`: inline cffi bindings to wlroots (plumbing; see Bindings).
+  - `layout.py`: pure tiling-tree operations; no compositor imports.
+  - `ext_workspace.py`: ext-workspace-v1 protocol glue; a callback-driven leaf.
+  - `libinput.py`: libinput device configuration.
+- `tests/`: unit tests mirroring source + shared `helpers.py`.
 - `TODO.md`: planned features, ordered by priority.
+
+The `welpy/` modules layer as an acyclic DAG `model → geometry → focus → windows → xwayland → layer_shell → session_lock → output → input → commands → app`: a module imports only earlier ones, so don't add a back-edge.
 
 ## Customization
 
-Users customize welpy from `~/.config/welpy/config.py`, run at startup before the compositor is built, by monkey-patching its modules. `@wel.override` swaps a module-level function, currying the previous version as its first arg so overrides chain.
+Users customize welpy from `~/.config/welpy/config.py`, run at startup before the compositor is built, by monkey-patching its modules. `@welpy.override(module.hook)` swaps a module-level function, currying the previous version as its first arg so overrides chain.
 
 - Module-level functions are the extension surface — keep customizable behavior in one so it stays patchable, not inlined or nested in a closure.
 - Spot new customization points: behavior encoding a user preference, policy, or aesthetic (keybindings, launched apps, colors, focus/placement rules, etc.). Expose what you write as a top-level hook; flag existing inlined cases instead of refactoring them. Trigger: a user would plausibly want to change it.
 - A hook's signature is an API contract: reordering or inserting positional params silently breaks configs and chained overrides. Don't churn it.
 - Hooks are genuine customization points, not every function — don't freeze ordinary helpers.
+- Reference a customization point — an override-hook function or a tunable constant (`BORDER_WIDTH`, `BORDER_COLOR_*`, scales) — **qualified** (`model.BORDER_WIDTH`), never by name (`from .model import BORDER_WIDTH`): a config rebinds the attribute on the symbol's home module, which a qualified read sees but a by-name import — bound in the importer before the config loads — silently ignores. Types/classes stay by-name; configs construct with them, never rebind them.
 
 ## Bindings
 
@@ -23,9 +40,9 @@ Users customize welpy from `~/.config/welpy/config.py`, run at startup before th
 
 ## Testing
 
-Run with `pytest tests.py`.
+Run with `pytest`.
 
-Name tests `test_<system>_<scenario>`, where `<system>` is 1-2 words for the subsystem under test and `<scenario>` is 1-2 words for the specific case.
+Name tests `test_<scenario>`, where `<scenario>` is 1-5 words describing the behavior under test — not the function under test (functions get renamed; scenarios don't). Related cases in a file share a leading prefix so they group together (e.g. `test_map_*`, `test_constraint_*`); the filename already names the module, so don't repeat it. Each source module `welpy/<m>.py` has a mirror `tests/test_<m>.py`; a test lives in the mirror of the module it exercises, and shared builders live in `tests/helpers.py`.
 
 ## Linting
 

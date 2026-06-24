@@ -4,8 +4,9 @@ no compositor state.
 A workspace's windows form an n-ary tree of `Container` nodes; the leaves are
 the windows themselves. Leaves are opaque -- this module only tells a
 `Container` apart from a leaf via `isinstance`, never reading a leaf's fields --
-so it never imports the compositor's `Client`. `wel.py` owns the
-window/workspace side and calls these helpers on each `Workspace.root`.
+so it never imports the compositor's `Client`. The handler modules
+(`commands`/`geometry`/`windows`) own the window/workspace side and call these
+helpers on each `Workspace.root`.
 """
 
 from __future__ import annotations
@@ -156,7 +157,7 @@ def unwrap(root, container):
     parent.children[i:i + 1] = container.children
 
 
-def cycle_layout(container):
+def cycle(container):
     """Flip a container between arranging its windows side by side and
     stacked."""
     container.layout = (
