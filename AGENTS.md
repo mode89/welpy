@@ -14,10 +14,10 @@ Wayland compositor written in Python on top of wlroots.
   - `output.py`: monitor/output band — the `reconcile` render orchestrator.
   - `input.py`: cursor/pointer/drag/keyboard/seat handling.
   - `commands.py`: the user-facing keybinding actions.
-  - `bindings.py`: inline cffi bindings to wlroots (plumbing; see Bindings).
+  - `bindings/`: inline cffi bindings to wlroots, split by feature (plumbing; see Bindings).
   - `layout.py`: pure tiling-tree operations; no compositor imports.
-  - `ext_workspace.py`: ext-workspace-v1 protocol glue; a callback-driven leaf.
-  - `libinput.py`: libinput device configuration.
+  - `ext_workspace.py`: ext-workspace-v1 protocol logic; a callback-driven leaf (bindings in `bindings/ext_workspace.py`).
+  - `libinput.py`: libinput device configuration (bindings in `bindings/libinput.py`).
 - `tests/`: unit tests mirroring source + shared `helpers.py`.
 - `TODO.md`: planned features, ordered by priority.
 
@@ -35,6 +35,7 @@ Users customize welpy from `~/.config/welpy/config.py`, run at startup before th
 
 ## Bindings
 
+- `bindings/` is one cffi compilation unit split across modules. `core` holds the shared cdef (base types) + the `Builder`/compile machinery; `__init__` defines `build`/`wl_list_for_each` (so `welpy.override` targets resolve to the `welpy.bindings` package); each feature module (`render`/`output`/`scene`/`shell`/`xwayland`/`input`/`layer_shell`/`session_lock`/`idle`, plus `ext_workspace`/`libinput` whose run-time logic stays in `welpy/<name>.py`) leads with `contribute(builder)` that appends its `_CDEF`/`_SOURCE`. Struct/type definitions live in `core` (defined once, parsed first); function decls, `#define`s, and `welpy_*` C glue live with their feature. A module needing its own protocol scanner calls `builder.scanner`/`enum_header` in its `contribute`, like `bindings/ext_workspace`.
 - `welpy_*` C helpers are plumbing only — static-inline wrappers, alloc/free for opaque-sized structs, accessors for anonymous struct members. For regular named struct fields, declare the struct in the cdef and access from Python directly. Logic stays in Python.
 - All listeners share one `extern "Python"` trampoline; `listen` routes by listener address.
 
