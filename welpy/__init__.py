@@ -21,7 +21,9 @@ def _install(module, name, target, fn):
     def wrapper(*args, **kwargs):
         return fn(target, *args, **kwargs)
     # Rewrite so a later @welpy.override(wrapper) routes here, not to fn's
-    # original module.
+    # original module/name.
     wrapper.__module__ = module.__name__
+    wrapper.__name__ = name
+    wrapper.__qualname__ = name
     setattr(module, name, wrapper)
     return wrapper

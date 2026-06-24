@@ -601,6 +601,24 @@ def test_override_renamed_function(monkeypatch):
     assert app.modkey(MagicMock()) == 0x123
 
 
+def test_override_chain_after_renamed_function(monkeypatch):
+    """A later override still targets the hook, not the prior function name."""
+    monkeypatch.setattr(app, "modkey", app.modkey)
+    monkeypatch.setattr(app, "renamed", None, raising=False)
+
+    @welpy.override(app.modkey)
+    def renamed(orig, server):
+        return orig(server) + 1
+
+    @welpy.override(app.modkey)
+    def newer(orig, server):
+        return orig(server) * 10
+
+    server = MagicMock()
+    server.lib.WLR_MODIFIER_LOGO = 5
+    assert app.modkey(server) == 60
+
+
 def test_override_cross_module(monkeypatch):
     """@welpy.override reaches outside welpy.app: targeting bindings.build
     installs the replacement in bindings, not in welpy.app."""
