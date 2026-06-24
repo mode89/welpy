@@ -10,7 +10,7 @@ from . import windows
 from .model import Layer, Server, Unmanaged, X11Client
 
 
-def x11_surface_new(server: Server, data) -> None:
+def on_create(server: Server, data) -> None:
     """Fires when an X11 app creates a window. Managed windows get the same
     lifecycle wiring as Wayland ones; override-redirect surfaces (menus,
     tooltips, drag icons) take the lighter unmanaged path."""
@@ -33,11 +33,11 @@ def x11_surface_new(server: Server, data) -> None:
         surface = xsurface.surface
         surface_listeners.extend([
             listen(lib.welpy_surface_map(surface),
-                lambda data: windows.client_map(server, client, data)),
+                lambda data: windows.on_map(server, client, data)),
             listen(lib.welpy_surface_unmap(surface),
-                lambda data: windows.client_unmap(server, client, data)),
+                lambda data: windows.on_unmap(server, client, data)),
             listen(lib.welpy_surface_commit(surface),
-                lambda data: windows.client_commit(server, client, data)),
+                lambda data: windows.on_commit(server, client, data)),
         ])
 
     def on_dissociate(_data):
@@ -49,20 +49,20 @@ def x11_surface_new(server: Server, data) -> None:
         listen(lib.welpy_xwayland_surface_associate(xsurface), on_associate),
         listen(lib.welpy_xwayland_surface_dissociate(xsurface), on_dissociate),
         listen(lib.welpy_xwayland_surface_destroy(xsurface),
-            lambda data: windows.client_cleanup(server, client, data)),
+            lambda data: windows.on_destroy(server, client, data)),
         listen(lib.welpy_xwayland_surface_request_configure(xsurface),
-            lambda data: x11_request_configure(server, client, data)),
+            lambda data: on_request_configure(server, client, data)),
         listen(lib.welpy_xwayland_surface_request_fullscreen(xsurface),
-            lambda data: windows.client_request_fullscreen(
+            lambda data: windows.on_request_fullscreen(
                 server, client, data)),
         listen(lib.welpy_xwayland_surface_request_activate(xsurface),
-            lambda _data: x11_request_activate(server, client)),
+            lambda _data: on_request_activate(server, client)),
         listen(lib.welpy_xwayland_surface_set_hints(xsurface),
-            lambda _data: x11_set_hints(server, client)),
+            lambda _data: on_set_hints(server, client)),
     ])
 
 
-def x11_request_configure(server: Server, client: X11Client, data) -> None:
+def on_request_configure(server: Server, client: X11Client, data) -> None:
     """An X11 app asked for a position/size. Honor it before the window maps
     (its initial geometry); once mapped the layout owns geometry, so reassert
     ours."""
@@ -75,14 +75,14 @@ def x11_request_configure(server: Server, client: X11Client, data) -> None:
         geometry.configure_x11(server, client, *client.inner_size)
 
 
-def x11_request_activate(server: Server, client: X11Client) -> None:
+def on_request_activate(server: Server, client: X11Client) -> None:
     """An X11 app asked for the foreground; show an urgent border instead of
     stealing focus."""
     if client.scene_tree is not None:
         windows.mark_urgent(server, client)
 
 
-def x11_set_hints(server: Server, client: X11Client) -> None:
+def on_set_hints(server: Server, client: X11Client) -> None:
     """An X11 app updated its ICCCM hints; show an urgent border if it set the
     urgency flag while unfocused."""
     if (client.scene_tree is not None
@@ -90,7 +90,7 @@ def x11_set_hints(server: Server, client: X11Client) -> None:
         windows.mark_urgent(server, client)
 
 
-def x11_ready(server: Server) -> None:
+def on_ready(server: Server) -> None:
     """Fires once the embedded X server is up. Point it at our seat and give it
     a default cursor."""
     lib = server.lib
@@ -144,7 +144,7 @@ def unmanaged_map(server: Server, um: Unmanaged, _data) -> None:
     lib.wlr_scene_node_raise_to_top(ffi.addressof(um.scene_tree.node))
     if lib.wlr_xwayland_surface_override_redirect_wants_focus(xsurface):
         server.unmanaged_focus = um
-        focus.apply_focus(server)
+        focus.reconcile(server)
 
 
 def unmanaged_configure(server: Server, um: Unmanaged, data) -> None:
@@ -168,7 +168,7 @@ def unmanaged_unmap(server: Server, um: Unmanaged, _data) -> None:
         um.scene_tree = None
     if server.unmanaged_focus is um:
         server.unmanaged_focus = None
-        focus.apply_focus(server)
+        focus.reconcile(server)
 
 
 def unmanaged_cleanup(server: Server, um: Unmanaged, _data) -> None:

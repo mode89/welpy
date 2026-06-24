@@ -8,7 +8,7 @@ from . import model
 from .model import Layer, LayerSurface, Server
 
 
-def layer_surface_new(server: Server, data) -> None:
+def on_create(server: Server, data) -> None:
     """Fires when an app creates a shell-anchored window (bar, wallpaper,
     launcher). Sets up its scene tree; real geometry lands at first commit."""
     ffi, lib, listen = server.ffi, server.lib, server.listen
@@ -41,16 +41,16 @@ def layer_surface_new(server: Server, data) -> None:
         monitor.layers[layer].append(ls)
         ls.listeners.extend([
             listen(lib.welpy_surface_commit(layer_surface.surface),
-                lambda data: layer_surface_commit(server, ls, data)),
+                lambda data: on_commit(server, ls, data)),
             listen(lib.welpy_surface_unmap(layer_surface.surface),
-                lambda data: layer_surface_unmap(server, ls, data)),
+                lambda data: on_unmap(server, ls, data)),
             listen(lib.welpy_layer_surface_destroy(layer_surface),
-                lambda data: layer_surface_cleanup(server, ls, data)),
+                lambda data: on_destroy(server, ls, data)),
         ])
         lib.wlr_surface_send_enter(layer_surface.surface, monitor.output)
 
 
-def layer_surface_commit(server: Server, ls: LayerSurface, _data) -> None:
+def on_commit(server: Server, ls: LayerSurface, _data) -> None:
     """Fires every time the shell surface commits new state."""
     ffi = server.ffi
     layer_surface = ls.layer_surface
@@ -80,11 +80,11 @@ def layer_surface_commit(server: Server, ls: LayerSurface, _data) -> None:
                     model.SHELL_LAYERS[layer_surface.current.layer])
                 geometry.arrange_layers(server, monitor)
                 geometry.apply_tree(server)
-                geometry.apply_geometry(server, monitor)
-                focus.apply_focus(server)
+                geometry.reconcile(server, monitor)
+                focus.reconcile(server)
 
 
-def layer_surface_unmap(server: Server, ls: LayerSurface, _data) -> None:
+def on_unmap(server: Server, ls: LayerSurface, _data) -> None:
     """Fires when the shell surface stops showing; reclaims its space."""
     was_focused = ls.focused
     ls.focused = False
@@ -93,13 +93,13 @@ def layer_surface_unmap(server: Server, ls: LayerSurface, _data) -> None:
     if was_focused:
         top = focus.top_client(server, ls.monitor)
         if top is not None:
-            focus.focus_client(server, top)
+            focus.bump_focus_order(server, top)
     if ls.monitor is not None:
-        geometry.apply_geometry(server, ls.monitor)
-    focus.apply_focus(server)
+        geometry.reconcile(server, ls.monitor)
+    focus.reconcile(server)
 
 
-def layer_surface_cleanup(
+def on_destroy(
         server: Server, ls: LayerSurface, _data) -> None:
     """Fires when a shell surface is destroyed (app close, output gone)."""
     ffi, lib = server.ffi, server.lib

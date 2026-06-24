@@ -22,10 +22,10 @@ def test_focus_direction_moves():
     c = make_client(workspace=m.active_workspace)
     m.active_workspace.root = flat_tree(a, b, c)
     server = make_server(monitors=[m], active_monitor=m, clients=[a, b, c])
-    focus.focus_client(server, a)
+    focus.bump_focus_order(server, a)
 
-    with patch("welpy.focus.apply_focus"), \
-         patch("welpy.focus.focus_client") as focus_client:
+    with patch("welpy.focus.reconcile"), \
+         patch("welpy.focus.bump_focus_order") as focus_client:
         commands.focus_direction(server, layout.Direction.RIGHT)
 
     focus_client.assert_called_once_with(server, b)
@@ -40,10 +40,10 @@ def test_focus_direction_edge():
     b = make_client(workspace=m.active_workspace)
     m.active_workspace.root = flat_tree(a, b)
     server = make_server(monitors=[m], active_monitor=m, clients=[a, b])
-    focus.focus_client(server, b)
+    focus.bump_focus_order(server, b)
 
-    with patch("welpy.focus.apply_focus"), \
-         patch("welpy.focus.focus_client") as focus_client:
+    with patch("welpy.focus.reconcile"), \
+         patch("welpy.focus.bump_focus_order") as focus_client:
         commands.focus_direction(server, layout.Direction.RIGHT)
 
     focus_client.assert_not_called()
@@ -58,10 +58,10 @@ def test_focus_direction_fullscreen():
     m.active_workspace.root = flat_tree(a, b)
     m.active_workspace.fullscreen = a
     server = make_server(monitors=[m], active_monitor=m, clients=[a, b])
-    focus.focus_client(server, a)
+    focus.bump_focus_order(server, a)
 
-    with patch("welpy.focus.apply_focus"), \
-         patch("welpy.focus.focus_client") as focus_client:
+    with patch("welpy.focus.reconcile"), \
+         patch("welpy.focus.bump_focus_order") as focus_client:
         commands.focus_direction(server, layout.Direction.RIGHT)
 
     focus_client.assert_not_called()
@@ -79,10 +79,10 @@ def test_focus_direction_floating():
     )
     m.active_workspace.root = flat_tree(a)
     server = make_server(monitors=[m], active_monitor=m, clients=[a, b])
-    focus.focus_client(server, b)
+    focus.bump_focus_order(server, b)
 
-    with patch("welpy.focus.apply_focus"), \
-         patch("welpy.focus.focus_client") as focus_client:
+    with patch("welpy.focus.reconcile"), \
+         patch("welpy.focus.bump_focus_order") as focus_client:
         commands.focus_direction(server, layout.Direction.LEFT)
 
     focus_client.assert_not_called()
@@ -100,10 +100,10 @@ def test_focus_direction_group_mru():
     m.active_workspace.root = layout.Container(
         layout.ContainerLayout.HORIZONTAL, [a, inner])
     server = make_server(monitors=[m], active_monitor=m, clients=[a, b, c])
-    focus.focus_client(server, a)
+    focus.bump_focus_order(server, a)
 
-    with patch("welpy.focus.apply_focus"), \
-         patch("welpy.focus.focus_client") as focus_client:
+    with patch("welpy.focus.reconcile"), \
+         patch("welpy.focus.bump_focus_order") as focus_client:
         commands.focus_direction(server, layout.Direction.RIGHT)
 
     focus_client.assert_called_once_with(server, c)
@@ -120,10 +120,10 @@ def test_move_direction_moves():
     c = make_client(workspace=m.active_workspace)
     m.active_workspace.root = flat_tree(a, b, c)
     server = make_server(monitors=[m], active_monitor=m, clients=[a, b, c])
-    focus.focus_client(server, a)
+    focus.bump_focus_order(server, a)
 
-    with patch("welpy.geometry.apply_geometry"), \
-         patch("welpy.focus.apply_focus"):
+    with patch("welpy.geometry.reconcile"), \
+         patch("welpy.focus.reconcile"):
         commands.move_direction(server, layout.Direction.RIGHT)
 
     assert m.active_workspace.root.children == [b, a, c]
@@ -138,10 +138,10 @@ def test_move_direction_edge():
     b = make_client(workspace=m.active_workspace)
     m.active_workspace.root = flat_tree(a, b)
     server = make_server(monitors=[m], active_monitor=m, clients=[a, b])
-    focus.focus_client(server, b)
+    focus.bump_focus_order(server, b)
 
-    with patch("welpy.geometry.apply_geometry"), \
-         patch("welpy.focus.apply_focus"):
+    with patch("welpy.geometry.reconcile"), \
+         patch("welpy.focus.reconcile"):
         commands.move_direction(server, layout.Direction.RIGHT)
 
     assert m.active_workspace.root.children == [a, b]
@@ -156,10 +156,10 @@ def test_move_direction_fullscreen():
     m.active_workspace.root = flat_tree(a, b)
     m.active_workspace.fullscreen = a
     server = make_server(monitors=[m], active_monitor=m, clients=[a, b])
-    focus.focus_client(server, a)
+    focus.bump_focus_order(server, a)
 
-    with patch("welpy.geometry.apply_geometry"), \
-         patch("welpy.focus.apply_focus"):
+    with patch("welpy.geometry.reconcile"), \
+         patch("welpy.focus.reconcile"):
         commands.move_direction(server, layout.Direction.RIGHT)
 
     assert m.active_workspace.root.children == [a, b]
@@ -177,10 +177,10 @@ def test_move_direction_floating():
     )
     m.active_workspace.root = flat_tree(a)
     server = make_server(monitors=[m], active_monitor=m, clients=[a, b])
-    focus.focus_client(server, b)
+    focus.bump_focus_order(server, b)
 
-    with patch("welpy.geometry.apply_geometry") as apply_geom, \
-         patch("welpy.focus.apply_focus"):
+    with patch("welpy.geometry.reconcile") as apply_geom, \
+         patch("welpy.focus.reconcile"):
         commands.move_direction(server, layout.Direction.LEFT)
 
     apply_geom.assert_not_called()
@@ -198,10 +198,10 @@ def test_move_direction_vertical():
     m.active_workspace.root = layout.Container(
         layout.ContainerLayout.VERTICAL, [a, b, c])
     server = make_server(monitors=[m], active_monitor=m, clients=[a, b, c])
-    focus.focus_client(server, a)
+    focus.bump_focus_order(server, a)
 
-    with patch("welpy.geometry.apply_geometry"), \
-         patch("welpy.focus.apply_focus"):
+    with patch("welpy.geometry.reconcile"), \
+         patch("welpy.focus.reconcile"):
         commands.move_direction(server, layout.Direction.DOWN)
 
     assert m.active_workspace.root.children == [b, a, c]
@@ -216,10 +216,10 @@ def test_group_window_wraps():
     b = make_client(workspace=m.active_workspace)
     m.active_workspace.root = flat_tree(a, b)
     server = make_server(monitors=[m], active_monitor=m, clients=[a, b])
-    focus.focus_client(server, a)
+    focus.bump_focus_order(server, a)
 
-    with patch("welpy.geometry.apply_geometry"), \
-         patch("welpy.focus.apply_focus"):
+    with patch("welpy.geometry.reconcile"), \
+         patch("welpy.focus.reconcile"):
         commands.group_window(server)
 
     root = m.active_workspace.root
@@ -237,10 +237,10 @@ def test_group_window_alone():
     a = make_client(workspace=m.active_workspace)
     m.active_workspace.root = flat_tree(a)
     server = make_server(monitors=[m], active_monitor=m, clients=[a])
-    focus.focus_client(server, a)
+    focus.bump_focus_order(server, a)
 
-    with patch("welpy.geometry.apply_geometry"), \
-         patch("welpy.focus.apply_focus"):
+    with patch("welpy.geometry.reconcile"), \
+         patch("welpy.focus.reconcile"):
         commands.group_window(server)
 
     assert m.active_workspace.root.children == [a]
@@ -258,10 +258,10 @@ def test_group_window_nested():
     m.active_workspace.root = layout.Container(
         layout.ContainerLayout.HORIZONTAL, [column, c])
     server = make_server(monitors=[m], active_monitor=m, clients=[a, b, c])
-    focus.focus_client(server, a)
+    focus.bump_focus_order(server, a)
 
-    with patch("welpy.geometry.apply_geometry"), \
-         patch("welpy.focus.apply_focus"):
+    with patch("welpy.geometry.reconcile"), \
+         patch("welpy.focus.reconcile"):
         commands.group_window(server)
 
     assert isinstance(column.children[0], layout.Container)
@@ -279,10 +279,10 @@ def test_cycle_layout_flips():
     b = make_client(workspace=m.active_workspace)
     m.active_workspace.root = flat_tree(a, b)
     server = make_server(monitors=[m], active_monitor=m, clients=[a, b])
-    focus.focus_client(server, a)
+    focus.bump_focus_order(server, a)
 
-    with patch("welpy.geometry.apply_geometry"), \
-         patch("welpy.focus.apply_focus"):
+    with patch("welpy.geometry.reconcile"), \
+         patch("welpy.focus.reconcile"):
         commands.cycle_layout(server)
 
     assert m.active_workspace.root.layout == layout.ContainerLayout.VERTICAL
@@ -295,9 +295,9 @@ def test_toggle_fullscreen_enters():
     m.active_workspace = make_workspace(monitor=m)
     client = make_client(workspace=m.active_workspace)
     server = make_server(monitors=[m], active_monitor=m, clients=[client])
-    focus.focus_client(server, client)
+    focus.bump_focus_order(server, client)
 
-    with patch("welpy.geometry.apply_geometry"):
+    with patch("welpy.geometry.reconcile"):
         commands.toggle_fullscreen(server)
 
     assert m.active_workspace.fullscreen is client
@@ -312,7 +312,7 @@ def test_toggle_fullscreen_to_tile():
     m.active_workspace.fullscreen = client
     server = make_server(monitors=[m], active_monitor=m, clients=[client])
 
-    with patch("welpy.geometry.apply_geometry"):
+    with patch("welpy.geometry.reconcile"):
         commands.toggle_fullscreen(server)
 
     assert m.active_workspace.fullscreen is None
@@ -330,7 +330,7 @@ def test_toggle_fullscreen_to_float():
     m.active_workspace.fullscreen = client
     server = make_server(monitors=[m], active_monitor=m, clients=[client])
 
-    with patch("welpy.geometry.apply_geometry"):
+    with patch("welpy.geometry.reconcile"):
         commands.toggle_fullscreen(server)
 
     assert m.active_workspace.fullscreen is None
@@ -357,11 +357,11 @@ def test_toggle_floating_to_float():
     m.active_workspace = make_workspace(monitor=m)
     client = make_client(workspace=m.active_workspace)
     server = make_server(monitors=[m], active_monitor=m, clients=[client])
-    focus.focus_client(server, client)
+    focus.bump_focus_order(server, client)
 
     seed = layout.Rect(50, 60, 304, 204)
     with patch("welpy.geometry.client_outer_rect", return_value=seed), \
-         patch("welpy.geometry.apply_geometry"):
+         patch("welpy.geometry.reconcile"):
         commands.toggle_floating(server)
 
     assert client.floating_geom == seed
@@ -379,7 +379,7 @@ def test_toggle_floating_to_tile():
     )
     server = make_server(monitors=[m], active_monitor=m, clients=[client])
 
-    with patch("welpy.geometry.apply_geometry"):
+    with patch("welpy.geometry.reconcile"):
         commands.toggle_floating(server)
 
     assert client.floating_geom is None
@@ -393,11 +393,11 @@ def test_toggle_floating_drops_leaf():
     b = make_client(workspace=m.active_workspace)
     m.active_workspace.root = flat_tree(a, b)
     server = make_server(monitors=[m], active_monitor=m, clients=[a, b])
-    focus.focus_client(server, a)
+    focus.bump_focus_order(server, a)
 
     seed = layout.Rect(0, 0, 100, 100)
     with patch("welpy.geometry.client_outer_rect", return_value=seed), \
-         patch("welpy.geometry.apply_geometry"):
+         patch("welpy.geometry.reconcile"):
         commands.toggle_floating(server)
 
     assert m.active_workspace.root.children == [b]
@@ -417,7 +417,7 @@ def test_toggle_floating_adds_leaf():
     server = make_server(
         monitors=[m], active_monitor=m, clients=[tiled, floater])
 
-    with patch("welpy.geometry.apply_geometry"):
+    with patch("welpy.geometry.reconcile"):
         commands.toggle_floating(server)
 
     assert m.active_workspace.root.children == [tiled, floater]
@@ -432,7 +432,7 @@ def test_toggle_floating_fullscreen_noop():
     server = make_server(monitors=[m], active_monitor=m, clients=[client])
     before = client.floating_geom
 
-    with patch("welpy.geometry.apply_geometry") as apply_geom:
+    with patch("welpy.geometry.reconcile") as apply_geom:
         commands.toggle_floating(server)
 
     assert client.floating_geom is before
@@ -445,7 +445,7 @@ def test_toggle_floating_no_focus():
     m.active_workspace = make_workspace(monitor=m)
     server = make_server(monitors=[m], active_monitor=m)
 
-    with patch("welpy.geometry.apply_geometry") as apply_geom:
+    with patch("welpy.geometry.reconcile") as apply_geom:
         commands.toggle_floating(server)
 
     apply_geom.assert_not_called()
@@ -622,8 +622,8 @@ def test_move_client_moves_leaf():
         workspaces=[ws1, ws2], monitors=[monitor], active_monitor=monitor,
         clients=[client])
 
-    with patch("welpy.geometry.apply_geometry"), \
-         patch("welpy.focus.apply_focus"):
+    with patch("welpy.geometry.reconcile"), \
+         patch("welpy.focus.reconcile"):
         commands.move_client_to_workspace(server, "2")
 
     assert ws1.root.children == []

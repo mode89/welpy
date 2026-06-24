@@ -157,7 +157,7 @@ def unwrap(root, container):
     parent.children[i:i + 1] = container.children
 
 
-def cycle_layout(container):
+def cycle(container):
     """Flip a container between arranging its windows side by side and
     stacked."""
     container.layout = (

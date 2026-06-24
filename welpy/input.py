@@ -92,7 +92,7 @@ def cursor_button(server: Server, data) -> None:
             monitor = model.client_monitor(client)
             if monitor is not None:
                 server.active_monitor = monitor
-            focus.focus_client(server, client)
+            focus.bump_focus_order(server, client)
         kb = lib.welpy_keyboard_group_keyboard(server.keyboard_group.group)
         mods = lib.wlr_keyboard_get_modifiers(kb)
         action = lookup_binding(server, mods, event.button)
@@ -108,7 +108,7 @@ def cursor_button(server: Server, data) -> None:
     focus.rebase_pointer(server, event.time_msec)
     lib.wlr_seat_pointer_notify_button(
         server.seat, event.time_msec, event.button, event.state)
-    focus.apply_focus(server)
+    focus.reconcile(server)
 
 
 def cursor_axis(server: Server, data) -> None:
@@ -265,8 +265,8 @@ def begin_dragging_client(server: Server) -> None:
             "move", int(cur.x - node.x), int(cur.y - node.y))
         geometry.apply_tree(server)
         if monitor is not None:
-            geometry.apply_geometry(server, monitor)
-        focus.apply_focus(server)
+            geometry.reconcile(server, monitor)
+        focus.reconcile(server)
 
 
 def begin_resizing_client(server: Server) -> None:
@@ -286,14 +286,14 @@ def begin_resizing_client(server: Server) -> None:
             "resize", int(cur.x) - rect.width, int(cur.y) - rect.height)
         geometry.apply_tree(server)
         if monitor is not None:
-            geometry.apply_geometry(server, monitor)
-        focus.apply_focus(server)
+            geometry.reconcile(server, monitor)
+        focus.reconcile(server)
 
 
 def drag_client(server: Server, grabbed: Client) -> None:
     """While dragging, keep the grabbed window tracking the cursor: move
     pins the captured offset; resize adds the cursor delta to the size.
-    Updates floating_geom in step so apply_geometry stays a no-op mid-drag."""
+    Updates floating_geom in step so geometry.reconcile is a no-op mid-drag."""
     ffi, lib = server.ffi, server.lib
     cur = server.cursor.cursor
     grab = grabbed.grab
@@ -365,7 +365,7 @@ def build_keycode_map(lib, ffi, keymap) -> dict:
     return result
 
 
-def input_new(server: Server, data) -> None:
+def on_create(server: Server, data) -> None:
     """Fires when the backend reports a new keyboard, mouse, etc."""
     ffi, lib = server.ffi, server.lib
     device = ffi.cast("struct wlr_input_device *", data)
@@ -404,7 +404,7 @@ def keyboard_modifiers(server: Server, _data) -> None:
                           or not server.session_lock.surfaces):
         # A real lock surface needs modifiers; without one, only stale app
         # focus could receive them.
-        focus.focus_lock(server)
+        focus.activate_lock(server)
         return
     kb_group = lib.welpy_keyboard_group_keyboard(server.keyboard_group.group)
     lib.wlr_seat_keyboard_notify_modifiers(

@@ -25,7 +25,7 @@ def test_lock_new_blanks():
     server = make_server()
     lock = _stage_lock_new(server)
 
-    session_lock.lock_new(server, "DATA")
+    session_lock.on_lock(server, "DATA")
 
     assert server.locked is True
     assert server.session_lock.lock is lock
@@ -40,7 +40,7 @@ def test_lock_new_rejects():
     server = make_server(session_lock=existing, locked=True)
     lock = _stage_lock_new(server)
 
-    session_lock.lock_new(server, "DATA")
+    session_lock.on_lock(server, "DATA")
 
     server.lib.wlr_session_lock_v1_destroy.assert_called_once_with(lock)
     assert server.session_lock is existing
@@ -51,7 +51,7 @@ def test_lock_pointer_cleared():
     server = make_server()
     _stage_lock_new(server)
 
-    session_lock.lock_new(server, "DATA")
+    session_lock.on_lock(server, "DATA")
 
     server.lib.wlr_seat_pointer_clear_focus.assert_called_once_with(
         server.seat)
@@ -63,7 +63,7 @@ def test_lock_grabs_cleared():
     server = make_server(clients=[client])
     _stage_lock_new(server)
 
-    session_lock.lock_new(server, "DATA")
+    session_lock.on_lock(server, "DATA")
 
     assert client.grab is None
 
@@ -81,7 +81,7 @@ def test_lock_surface_configures():
         "struct wlr_session_lock_surface_v1 *": lock_surface,
     }.get(type_str, ("CAST", type_str, val))
 
-    session_lock.lock_surface_new(server, "DATA")
+    session_lock.on_surface_created(server, "DATA")
 
     server.lib.wlr_scene_subsurface_tree_create.assert_called_once_with(
         sess_lock.tree, lock_surface.surface)
@@ -100,7 +100,7 @@ def test_lock_surface_orphan():
         "struct wlr_session_lock_surface_v1 *": lock_surface,
     }.get(type_str, ("CAST", type_str, val))
 
-    session_lock.lock_surface_new(server, "DATA")
+    session_lock.on_surface_created(server, "DATA")
 
     assert not sess_lock.surfaces
     server.lib.wlr_scene_subsurface_tree_create.assert_not_called()
@@ -118,7 +118,7 @@ def test_lock_surface_orphan_logged(caplog):
     }.get(type_str, ("CAST", type_str, val))
 
     with caplog.at_level(logging.WARNING, logger="welpy.session_lock"):
-        session_lock.lock_surface_new(server, "DATA")
+        session_lock.on_surface_created(server, "DATA")
 
     assert "unknown screen" in caplog.text
 
@@ -134,7 +134,7 @@ def test_lock_surface_stale_ignored():
         "struct wlr_session_lock_surface_v1 *": lock_surface,
     }.get(type_str, ("CAST", type_str, val))
 
-    session_lock.lock_surface_new(server, "DATA")
+    session_lock.on_surface_created(server, "DATA")
 
     server.lib.wlr_scene_subsurface_tree_create.assert_not_called()
 
@@ -146,7 +146,7 @@ def test_lock_unlock_reveals():
     sess_lock = make_session_lock(listeners=[listener])
     server = make_server(session_lock=sess_lock, locked=True)
 
-    session_lock.lock_unlock(server)
+    session_lock.on_unlock(server)
 
     assert server.locked is False
     assert server.session_lock is None
@@ -162,7 +162,7 @@ def test_lock_destroy_locked():
     sess_lock = make_session_lock()
     server = make_server(session_lock=sess_lock, locked=True)
 
-    session_lock.lock_destroy(server)
+    session_lock.on_destroy(server)
 
     assert server.locked is True
     assert server.session_lock is None
@@ -178,7 +178,7 @@ def test_lock_surface_gone():
     sess_lock = make_session_lock(surfaces=[ls])
     server = make_server(session_lock=sess_lock, locked=True)
 
-    session_lock.lock_surface_destroy(server, ls)
+    session_lock.on_surface_destroyed(server, ls)
 
     assert ls not in sess_lock.surfaces
     listener.remove.assert_called_once()

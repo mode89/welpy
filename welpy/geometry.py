@@ -17,7 +17,7 @@ from .model import (
 logger = logging.getLogger(__name__)
 
 
-def apply_geometry(server: Server, monitor: Monitor) -> None:
+def reconcile(server: Server, monitor: Monitor) -> None:
     """Lay out this monitor's windows. A fullscreen window fills the screen and
     hides the rest; otherwise tiled windows follow the workspace tree and
     floats keep their own rects."""
@@ -176,7 +176,7 @@ def apply_clip(server: Server, client: Client) -> None:
     inner_w, inner_h = client.inner_size
     # Anchor at the geometry offset so the CSD shadow margin (baked into the
     # surface buffer by GTK/libadwaita) is clipped away.
-    geom = client_geometry(client)
+    geom = client_rect(client)
     clip = ffi.new("struct wlr_box *",
         [geom.x, geom.y, inner_w, inner_h])
     lib.wlr_scene_subsurface_tree_set_clip(
@@ -371,7 +371,7 @@ def init_floating_geom(client: Client) -> Rect:
     """Center a freshly-floated window in its screen's usable area at the
     size the app asked for (or a default if it didn't)."""
     area = model.client_monitor(client).window_area
-    geom = client_geometry(client)
+    geom = client_rect(client)
     inner_w = geom.width or 250
     inner_h = geom.height or 200
     outer_w = inner_w + 2 * model.BORDER_WIDTH
@@ -385,7 +385,7 @@ def init_floating_geom(client: Client) -> Rect:
 def client_outer_rect(client: Client) -> Rect:
     """This window's current outer rectangle (the area it draws into,
     borders included) in layout coordinates."""
-    geom = client_geometry(client)
+    geom = client_rect(client)
     return Rect(
         client.scene_tree.node.x, client.scene_tree.node.y,
         geom.width + 2 * model.BORDER_WIDTH,
@@ -403,7 +403,7 @@ def client_layer(client: Client) -> Layer:
     return Layer.TILE
 
 
-def client_geometry(client: Client) -> Rect:
+def client_rect(client: Client) -> Rect:
     """The window's content extent: offset plus size. For Wayland windows this
     is the xdg geometry box (whose offset trims the CSD shadow margin); X11
     windows have no such offset, so it's the raw surface size at (0, 0)."""

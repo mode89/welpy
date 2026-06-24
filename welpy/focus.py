@@ -15,14 +15,14 @@ from .model import Client, Layer, Server
 logger = logging.getLogger(__name__)
 
 
-def focus_client(server: Server, client: Client) -> None:
+def bump_focus_order(server: Server, client: Client) -> None:
     """Mark `client` as most-recently-focused. The actual focus effects
-    are emitted by apply_focus at the handler boundary."""
+    are emitted by reconcile at the handler boundary."""
     previous = top_client(server, server.active_monitor)
     client.focus_order = (previous.focus_order if previous else 0) + 1
 
 
-def apply_focus(server: Server) -> None: # pylint: disable=too-many-branches
+def reconcile(server: Server) -> None: # pylint: disable=too-many-branches
     """Reconcile keyboard focus and focus indicators to match current state.
     Picks the highest-priority TOP/OVERLAY shell surface that asks for the
     keyboard, else the most-recently-focused window on the selected screen,
@@ -32,11 +32,11 @@ def apply_focus(server: Server) -> None: # pylint: disable=too-many-branches
 
     if server.locked:
         # The locker owns the keyboard; windows and shell surfaces can't.
-        focus_lock(server)
+        activate_lock(server)
         return
 
     if server.unmanaged_focus is not None:
-        focus_unmanaged(server)
+        activate_unmanaged(server)
         return
 
     def qualifies(ls):
@@ -69,7 +69,7 @@ def apply_focus(server: Server) -> None: # pylint: disable=too-many-branches
         else geometry.client_surface(target_client) if target_client is not None
         else None)
 
-    # ls.focused is a cache of what apply_focus last picked.
+    # ls.focused is a cache of what reconcile last picked.
     for m in server.monitors:
         for bucket in m.layers.values():
             for ls in bucket:
@@ -115,7 +115,7 @@ def apply_focus(server: Server) -> None: # pylint: disable=too-many-branches
         forward_pointer_motion(server, 0)
 
 
-def focus_lock(server: Server) -> None:
+def activate_lock(server: Server) -> None:
     """While locked, route the keyboard to the lock surface on the active
     screen so the user can type their password, and nowhere else."""
     ffi, lib = server.ffi, server.lib
@@ -139,7 +139,7 @@ def focus_lock(server: Server) -> None:
                 kb.keycodes, kb.num_keycodes, ffi.addressof(kb, "modifiers"))
 
 
-def focus_unmanaged(server: Server) -> None:
+def activate_unmanaged(server: Server) -> None:
     """While an override-redirect surface holds focus, keep the keyboard on it
     so a stray reflow can't yank focus away and dismiss the menu."""
     ffi, lib = server.ffi, server.lib
@@ -154,10 +154,10 @@ def focus_unmanaged(server: Server) -> None:
             kb.keycodes, kb.num_keycodes, ffi.addressof(kb, "modifiers"))
 
 
-def focused_container(server: Server):
+def active_container(server: Server):
     """The focused window with its screen and the container holding it, or None
     when no tiled window is focused or it isn't in the tree."""
-    client = focused_tiled(server)
+    client = active_tiled(server)
     if client is None:
         return None
     monitor = server.active_monitor
@@ -167,7 +167,7 @@ def focused_container(server: Server):
     return monitor, client, found[0]
 
 
-def focused_tiled(server: Server):
+def active_tiled(server: Server):
     """The active screen's focused window when it's a tiled tree leaf with no
     fullscreen over it -- the precondition for the tree keybinds, else None."""
     monitor = server.active_monitor

@@ -129,7 +129,7 @@ def setup() -> Server: # pylint: disable=too-many-locals,too-many-statements
     # Layer's declaration order is the intended z-order under scene_root.
     scene_root = ffi.addressof(scene.tree)
     layers = {layer: lib.wlr_scene_tree_create(scene_root) for layer in Layer}
-    lock_background = session_lock.create_lock_background(
+    lock_background = session_lock.create_background(
         ffi, lib, layers[Layer.LOCK])
 
     xdg_shell = lib.wlr_xdg_shell_create(display, 7)
@@ -219,19 +219,19 @@ def setup() -> Server: # pylint: disable=too-many-locals,too-many-statements
 
     server.listeners.extend([
         listen(lib.welpy_backend_new_output(backend),
-            lambda data: output.monitor_new(server, data)),
+            lambda data: output.on_create(server, data)),
         listen(lib.welpy_xdg_shell_new_toplevel(xdg_shell),
-            lambda data: windows.client_new(server, data)),
+            lambda data: windows.on_create(server, data)),
         listen(lib.welpy_xdg_shell_new_popup(xdg_shell),
             lambda data: windows.popup_new(server, data)),
         listen(lib.welpy_backend_new_input(backend),
-            lambda data: input.input_new(server, data)),
+            lambda data: input.on_create(server, data)),
         listen(lib.welpy_output_layout_change(output_layout),
-            lambda _data: output.update_monitors(server)),
+            lambda _data: output.reconcile(server)),
         listen(lib.welpy_xdg_decoration_manager_new(xdg_decoration_mgr),
             lambda data: geometry.decoration_new(server, data)),
         listen(lib.welpy_layer_shell_new_surface(layer_shell_server),
-            lambda data: layer_shell.layer_surface_new(server, data)),
+            lambda data: layer_shell.on_create(server, data)),
         listen(lib.welpy_seat_request_set_selection(seat),
             lambda data: input.seat_set_selection(server, data)),
         listen(lib.welpy_seat_request_set_primary_selection(seat),
@@ -239,18 +239,18 @@ def setup() -> Server: # pylint: disable=too-many-locals,too-many-statements
         listen(lib.welpy_seat_request_set_cursor(seat),
             lambda data: input.seat_set_cursor(server, data)),
         listen(lib.welpy_xdg_activation_request_activate(xdg_activation),
-            lambda data: windows.client_request_activate(server, data)),
+            lambda data: windows.on_request_activate(server, data)),
         listen(lib.welpy_session_lock_mgr_new_lock(session_lock_mgr),
-            lambda data: session_lock.lock_new(server, data)),
+            lambda data: session_lock.on_lock(server, data)),
         listen(lib.welpy_pointer_constraints_new_constraint(
                 pointer_constraints),
             lambda data: input.constraint_new(server, data)),
         listen(lib.welpy_output_power_mgr_set_mode(output_power_mgr),
-            lambda data: output.output_power_set_mode(server, data)),
+            lambda data: output.on_power_mode(server, data)),
         listen(lib.welpy_xwayland_new_surface(xwayland_server),
-            lambda data: xwayland.x11_surface_new(server, data)),
+            lambda data: xwayland.on_create(server, data)),
         listen(lib.welpy_xwayland_ready(xwayland_server),
-            lambda _data: xwayland.x11_ready(server)),
+            lambda _data: xwayland.on_ready(server)),
     ])
 
     return server
@@ -304,7 +304,7 @@ def teardown(server: Server) -> None:
     lib.wlr_xwayland_destroy(server.xwayland)
     # Tearing down clients (surface unmap) and the backend (screen destroy)
     # both run handlers that reach back into the cursor, keyboard group, and
-    # workspace state via apply_focus -> forward_pointer_motion. Keep those
+    # workspace state via focus.reconcile -> forward_pointer_motion. Keep those
     # alive until both are gone, then free them (dwl's cleanup order).
     lib.wl_display_destroy_clients(server.display)
     lib.wlr_backend_destroy(server.backend)

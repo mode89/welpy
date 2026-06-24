@@ -30,7 +30,7 @@ def test_layer_new_no_monitor():
     server = make_server()
     _stage_layer_surface_new(server)
 
-    layer_shell.layer_surface_new(server, "DATA")
+    layer_shell.on_create(server, "DATA")
 
     server.lib.wlr_layer_surface_v1_destroy.assert_called_once()
     server.lib.wlr_scene_layer_surface_v1_create.assert_not_called()
@@ -43,7 +43,7 @@ def test_layer_new_assigns_monitor():
     monitor = make_monitor()
     layer_surface = _stage_layer_surface_new(server, monitor=monitor)
 
-    layer_shell.layer_surface_new(server, "DATA")
+    layer_shell.on_create(server, "DATA")
 
     assert layer_surface.output is monitor.output
     assert monitor.layers[model.Layer.BACKGROUND][0].monitor is monitor
@@ -56,7 +56,7 @@ def test_layer_new_buckets():
     monitor = make_monitor()
     _stage_layer_surface_new(server, layer=2, monitor=monitor)  # TOP
 
-    layer_shell.layer_surface_new(server, "DATA")
+    layer_shell.on_create(server, "DATA")
 
     assert len(monitor.layers[model.Layer.TOP]) == 1
     assert monitor.layers[model.Layer.BACKGROUND] == []
@@ -69,7 +69,7 @@ def test_layer_new_popups_high():
     monitor = make_monitor()
     _stage_layer_surface_new(server, layer=3, monitor=monitor)  # OVERLAY
 
-    layer_shell.layer_surface_new(server, "DATA")
+    layer_shell.on_create(server, "DATA")
 
     server.lib.wlr_scene_tree_create.assert_called_once_with(
         server.layers[model.Layer.OVERLAY])
@@ -82,7 +82,7 @@ def test_layer_new_popups_low():
     monitor = make_monitor()
     _stage_layer_surface_new(server, layer=0, monitor=monitor)
 
-    layer_shell.layer_surface_new(server, "DATA")
+    layer_shell.on_create(server, "DATA")
 
     server.lib.wlr_scene_tree_create.assert_called_once_with(
         server.layers[model.Layer.TOP])
@@ -95,7 +95,7 @@ def test_layer_new_send_enter():
     monitor = make_monitor()
     layer_surface = _stage_layer_surface_new(server, monitor=monitor)
 
-    layer_shell.layer_surface_new(server, "DATA")
+    layer_shell.on_create(server, "DATA")
 
     server.lib.wlr_surface_send_enter.assert_called_once_with(
         layer_surface.surface, monitor.output)
@@ -112,7 +112,7 @@ def test_layer_commit_moves_bucket():
     monitor.layers[model.Layer.BOTTOM].append(ls)
 
     with patch("welpy.geometry.arrange_layers"):
-        layer_shell.layer_surface_commit(server, ls, None)
+        layer_shell.on_commit(server, ls, None)
 
     assert ls not in monitor.layers[model.Layer.BOTTOM]
     assert ls in monitor.layers[model.Layer.TOP]
@@ -130,7 +130,7 @@ def test_layer_commit_skips_content():
     ls.layer_surface.surface.mapped = True
 
     with patch("welpy.geometry.arrange_layers") as arrange:
-        layer_shell.layer_surface_commit(server, ls, None)
+        layer_shell.on_commit(server, ls, None)
 
     arrange.assert_not_called()
 
@@ -143,8 +143,8 @@ def test_layer_unmap_clears_focus():
     ls = make_layer_surface(monitor=monitor, focused=True)
 
     with patch("welpy.geometry.arrange_layers"), \
-         patch("welpy.focus.focus_client"):
-        layer_shell.layer_surface_unmap(server, ls, None)
+         patch("welpy.focus.bump_focus_order"):
+        layer_shell.on_unmap(server, ls, None)
 
     assert ls.focused is False
 
@@ -160,8 +160,8 @@ def test_layer_unmap_refocuses_client():
     ls = make_layer_surface(monitor=monitor, focused=True)
 
     with patch("welpy.geometry.arrange_layers"), \
-         patch("welpy.focus.focus_client") as focus_client:
-        layer_shell.layer_surface_unmap(server, ls, None)
+         patch("welpy.focus.bump_focus_order") as focus_client:
+        layer_shell.on_unmap(server, ls, None)
 
     focus_client.assert_called_once_with(server, client)
 
@@ -183,8 +183,8 @@ def test_layer_unmap_refocuses_monitor():
     ls = make_layer_surface(monitor=monitor, focused=True)
 
     with patch("welpy.geometry.arrange_layers"), \
-         patch("welpy.focus.focus_client") as focus_client:
-        layer_shell.layer_surface_unmap(server, ls, None)
+         patch("welpy.focus.bump_focus_order") as focus_client:
+        layer_shell.on_unmap(server, ls, None)
 
     focus_client.assert_called_once_with(server, monitor_client)
 
@@ -197,8 +197,8 @@ def test_layer_unmap_unfocused():
     ls = make_layer_surface(monitor=monitor, focused=False)
 
     with patch("welpy.geometry.arrange_layers"), \
-         patch("welpy.focus.focus_client") as focus_client:
-        layer_shell.layer_surface_unmap(server, ls, None)
+         patch("welpy.focus.bump_focus_order") as focus_client:
+        layer_shell.on_unmap(server, ls, None)
 
     focus_client.assert_not_called()
 
@@ -214,7 +214,7 @@ def test_layer_cleanup_removes():
     ls.listeners.append(h)
 
     with patch("welpy.geometry.arrange_layers"):
-        layer_shell.layer_surface_cleanup(server, ls, None)
+        layer_shell.on_destroy(server, ls, None)
 
     h.remove.assert_called_once()
     assert ls not in monitor.layers[model.Layer.TOP]
@@ -230,7 +230,7 @@ def test_layer_cleanup_trees():
     ls = make_layer_surface(monitor=monitor)
     server.ffi.addressof.side_effect = lambda node: ("ADDR", node)
 
-    layer_shell.layer_surface_cleanup(server, ls, None)
+    layer_shell.on_destroy(server, ls, None)
 
     server.lib.wlr_scene_node_destroy.assert_called_once_with(
         ("ADDR", ls.popups_tree.node))

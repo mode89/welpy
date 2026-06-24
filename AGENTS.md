@@ -11,7 +11,7 @@ Wayland compositor written in Python on top of wlroots.
   - `xwayland.py`: X11 + override-redirect surfaces.
   - `layer_shell.py`: layer-shell surface lifecycle.
   - `session_lock.py`: screen-lock lifecycle.
-  - `output.py`: monitor/output band — the `update_monitors` render orchestrator.
+  - `output.py`: monitor/output band — the `reconcile` render orchestrator.
   - `input.py`: cursor/pointer/drag/keyboard/seat handling.
   - `commands.py`: the user-facing keybinding actions.
   - `bindings.py`: inline cffi bindings to wlroots (plumbing; see Bindings).

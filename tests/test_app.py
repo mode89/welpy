@@ -460,8 +460,8 @@ def test_client_unmap_unselected():
     a = make_client(focus_order=1, workspace=m2.active_workspace)
     server = make_server(monitors=[m1], active_monitor=m1, clients=[a])
 
-    with patch("welpy.focus.focus_client") as focus_client:
-        windows.client_unmap(server, a, "DATA")
+    with patch("welpy.focus.bump_focus_order") as focus_client:
+        windows.on_unmap(server, a, "DATA")
 
     focus_client.assert_not_called()
 
@@ -474,8 +474,8 @@ def test_borders_present():
     server.lib.wlr_scene_tree_create.return_value = wrapper
     client = make_client(toplevel=MagicMock(), scene_tree=None)
 
-    with patch("welpy.focus.focus_client"):
-        windows.client_map(server, client, None)
+    with patch("welpy.focus.bump_focus_order"):
+        windows.on_map(server, client, None)
 
     assert len(client.borders) == 4
     parents = [
@@ -580,9 +580,9 @@ def test_layout_wrap_unwrap():
 def test_layout_cycle_flips():
     """cycle_layout toggles a container between HORIZONTAL and VERTICAL."""
     root = layout.Container(layout.ContainerLayout.HORIZONTAL, [object()])
-    layout.cycle_layout(root)
+    layout.cycle(root)
     assert root.layout == layout.ContainerLayout.VERTICAL
-    layout.cycle_layout(root)
+    layout.cycle(root)
     assert root.layout == layout.ContainerLayout.HORIZONTAL
 
 
@@ -908,7 +908,7 @@ def test_setup_layer_listener():
     with patch("welpy.app.bindings.build", return_value=build), \
          patch("welpy.input.build_keycode_map",
                return_value=make_keycode_map()), \
-         patch("welpy.layer_shell.layer_surface_new") as handler:
+         patch("welpy.layer_shell.on_create") as handler:
         built = app.setup()
         trigger(built, lib.welpy_layer_shell_new_surface, "LS_DATA")
     handler.assert_called_once_with(built, "LS_DATA")
@@ -939,7 +939,7 @@ def test_setup_lock_listener():
     with patch("welpy.app.bindings.build", return_value=build), \
          patch("welpy.input.build_keycode_map",
                return_value=make_keycode_map()), \
-         patch("welpy.session_lock.lock_new") as handler:
+         patch("welpy.session_lock.on_lock") as handler:
         built = app.setup()
         trigger(built, lib.welpy_session_lock_mgr_new_lock, "LOCK_DATA")
     handler.assert_called_once_with(built, "LOCK_DATA")
@@ -1021,7 +1021,7 @@ def test_setup_output_power_listener():
     with patch("welpy.app.bindings.build", return_value=build), \
          patch("welpy.input.build_keycode_map",
                return_value=make_keycode_map()), \
-         patch("welpy.output.output_power_set_mode") as handler:
+         patch("welpy.output.on_power_mode") as handler:
         built = app.setup()
         trigger(built, lib.welpy_output_power_mgr_set_mode, "PWR_DATA")
     handler.assert_called_once_with(built, "PWR_DATA")
@@ -1075,7 +1075,7 @@ def test_cursor_button_locked():
     event.time_msec = 7
     event.state = server.lib.WL_POINTER_BUTTON_STATE_PRESSED
 
-    with patch("welpy.focus.focus_client") as focus_client, \
+    with patch("welpy.focus.bump_focus_order") as focus_client, \
          patch("welpy.focus.client_at") as at:
         input.cursor_button(server, "BUTTON_DATA")
 
@@ -1104,7 +1104,7 @@ def test_begin_dragging_floats():
 
     seed = layout.Rect(0, 0, 100, 80)
     with patch("welpy.geometry.client_outer_rect", return_value=seed), \
-         patch("welpy.geometry.apply_geometry"):
+         patch("welpy.geometry.reconcile"):
         input.begin_dragging_client(server)
 
     assert client.floating_geom == seed
@@ -1128,7 +1128,7 @@ def test_begin_dragging_drops_leaf():
 
     with patch("welpy.geometry.client_outer_rect",
                return_value=layout.Rect(0, 0, 100, 80)), \
-         patch("welpy.geometry.apply_geometry"):
+         patch("welpy.geometry.reconcile"):
         input.begin_dragging_client(server)
 
     assert m.active_workspace.root.children == [b]
@@ -1152,7 +1152,7 @@ def test_begin_resizing_drops_leaf():
 
     with patch("welpy.geometry.client_outer_rect",
                return_value=layout.Rect(0, 0, 100, 80)), \
-         patch("welpy.geometry.apply_geometry"):
+         patch("welpy.geometry.reconcile"):
         input.begin_resizing_client(server)
 
     assert m.active_workspace.root.children == [b]
@@ -1167,8 +1167,8 @@ def test_client_commit_initial_tiled():
     toplevel.base.initial_commit = True
     client = make_client(toplevel=toplevel, workspace=workspace)
 
-    with patch("welpy.geometry.apply_geometry") as apply_geom:
-        windows.client_commit(server, client, None)
+    with patch("welpy.geometry.reconcile") as apply_geom:
+        windows.on_commit(server, client, None)
 
     apply_geom.assert_not_called()
     server.lib.wlr_xdg_toplevel_set_size.assert_called_once_with(
@@ -1187,8 +1187,8 @@ def test_client_commit_initial_floating():
         workspace=workspace,
     )
 
-    with patch("welpy.geometry.apply_geometry") as apply_geom:
-        windows.client_commit(server, client, None)
+    with patch("welpy.geometry.reconcile") as apply_geom:
+        windows.on_commit(server, client, None)
 
     apply_geom.assert_not_called()
     server.lib.wlr_xdg_toplevel_set_size.assert_called_once_with(
@@ -1203,8 +1203,8 @@ def test_client_commit_initial_unassigned():
     toplevel.base.initial_commit = True
     client = make_client(toplevel=toplevel, workspace=None)
 
-    with patch("welpy.geometry.apply_geometry") as apply_geom:
-        windows.client_commit(server, client, None)
+    with patch("welpy.geometry.reconcile") as apply_geom:
+        windows.on_commit(server, client, None)
 
     apply_geom.assert_not_called()
     server.lib.wlr_xdg_toplevel_set_size.assert_called_once_with(
@@ -1222,8 +1222,8 @@ def test_client_unmap_arranges():
     b = make_client(workspace=m.active_workspace)
     server = make_server(monitors=[m], active_monitor=m, clients=[a, b])
 
-    with patch("welpy.geometry.apply_geometry") as apply_geom:
-        windows.client_unmap(server, a, None)
+    with patch("welpy.geometry.reconcile") as apply_geom:
+        windows.on_unmap(server, a, None)
 
     apply_geom.assert_called_once_with(server, m)
 
@@ -1234,7 +1234,7 @@ def test_client_unmap_destroys_tree():
     client = make_client()
     server = make_server(clients=[client])
 
-    windows.client_unmap(server, client, None)
+    windows.on_unmap(server, client, None)
 
     server.lib.wlr_scene_node_destroy.assert_called_once_with(
         server.ffi.addressof.return_value)
@@ -1252,9 +1252,9 @@ def test_client_unmap_drops_leaf():
     m.active_workspace.root = flat_tree(a, b)
     server = make_server(monitors=[m], active_monitor=m, clients=[a, b])
 
-    with patch("welpy.focus.focus_client"), \
-         patch("welpy.geometry.apply_geometry"):
-        windows.client_unmap(server, a, None)
+    with patch("welpy.focus.bump_focus_order"), \
+         patch("welpy.geometry.reconcile"):
+        windows.on_unmap(server, a, None)
 
     assert m.active_workspace.root.children == [b]
 
@@ -1264,8 +1264,8 @@ def test_client_unmap_orphan():
     client = make_client(workspace=None)
     server = make_server(clients=[client])
 
-    with patch("welpy.geometry.apply_geometry") as apply_geom:
-        windows.client_unmap(server, client, None)
+    with patch("welpy.geometry.reconcile") as apply_geom:
+        windows.on_unmap(server, client, None)
 
     apply_geom.assert_not_called()
 
@@ -1278,8 +1278,8 @@ def test_client_unmap_stale():
     client = make_client(workspace=m.active_workspace)
     server = make_server(clients=[client])
 
-    with patch("welpy.geometry.apply_geometry") as apply_geom:
-        windows.client_unmap(server, client, None)
+    with patch("welpy.geometry.reconcile") as apply_geom:
+        windows.on_unmap(server, client, None)
 
     apply_geom.assert_not_called()
 
@@ -1294,7 +1294,7 @@ def test_setup_layout_change_updates():
     with patch("welpy.app.bindings.build", return_value=build), \
          patch("welpy.input.build_keycode_map",
                return_value=make_keycode_map()), \
-         patch("welpy.output.update_monitors") as upd:
+         patch("welpy.output.reconcile") as upd:
         server = app.setup()
         trigger(server, lib.welpy_output_layout_change, "LAYOUT_DATA")
 
@@ -1458,7 +1458,7 @@ def test_urgent_clears_on_focus():
         ext_workspace=None, monitors=[monitor], active_monitor=monitor,
         clients=[client])
 
-    focus.apply_focus(server)
+    focus.reconcile(server)
 
     assert not client.urgent
 
@@ -1490,8 +1490,8 @@ def test_xwayland_map_front():
     server = make_server(clients=[old])
     fresh = make_x11_client(scene_tree=None)
 
-    with patch("welpy.focus.focus_client"):
-        windows.client_map(server, fresh, None)
+    with patch("welpy.focus.bump_focus_order"):
+        windows.on_map(server, fresh, None)
 
     assert server.clients[0] is fresh
 
@@ -1501,8 +1501,8 @@ def test_xwayland_map_scene():
     server = make_server()
     client = make_x11_client(scene_tree=None)
 
-    with patch("welpy.focus.focus_client"):
-        windows.client_map(server, client, None)
+    with patch("welpy.focus.bump_focus_order"):
+        windows.on_map(server, client, None)
 
     server.lib.wlr_scene_subsurface_tree_create.assert_called_once_with(
         server.lib.wlr_scene_tree_create.return_value, client.xsurface.surface)
@@ -1539,7 +1539,7 @@ def test_unmanaged_focus_defers():
     server.unmanaged_focus = um
 
     with patch("welpy.focus.top_client") as top:
-        focus.apply_focus(server)
+        focus.reconcile(server)
 
     top.assert_not_called()
     server.lib.wlr_seat_keyboard_notify_enter.assert_called_once()

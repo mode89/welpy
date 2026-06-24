@@ -18,7 +18,7 @@ def test_xwayland_new_unmanaged():
     server.ffi.cast.return_value = xsurface
 
     with patch("welpy.xwayland.unmanaged_new") as unmanaged:
-        xwayland.x11_surface_new(server, "DATA")
+        xwayland.on_create(server, "DATA")
 
     unmanaged.assert_called_once_with(server, xsurface)
 
@@ -30,7 +30,7 @@ def test_xwayland_new_attaches_listeners():
     xsurface.override_redirect = False
     server.ffi.cast.return_value = xsurface
 
-    xwayland.x11_surface_new(server, "DATA")
+    xwayland.on_create(server, "DATA")
 
     server.lib.welpy_xwayland_surface_associate.assert_called_once_with(
         xsurface)
@@ -43,9 +43,9 @@ def test_xwayland_associate_map():
     xsurface = MagicMock()
     xsurface.override_redirect = False
     server.ffi.cast.return_value = xsurface
-    xwayland.x11_surface_new(server, "DATA")
+    xwayland.on_create(server, "DATA")
 
-    with patch("welpy.windows.client_map") as mapped:
+    with patch("welpy.windows.on_map") as mapped:
         trigger(server, server.lib.welpy_xwayland_surface_associate, None)
         trigger(server, server.lib.welpy_surface_map, "MAP")
 
@@ -67,7 +67,7 @@ def test_xwayland_dissociate_detaches():
         return handle
     server.listen = MagicMock(side_effect=fake_listen)
 
-    xwayland.x11_surface_new(server, "DATA")
+    xwayland.on_create(server, "DATA")
     registry[server.lib.welpy_xwayland_surface_associate.return_value][0](None)
     map_handle = registry[server.lib.welpy_surface_map.return_value][1]
     registry[server.lib.welpy_xwayland_surface_dissociate.return_value][0](None)
@@ -82,7 +82,7 @@ def test_xwayland_hints_wired():
     xsurface.override_redirect = False
     server.ffi.cast.return_value = xsurface
 
-    xwayland.x11_surface_new(server, "DATA")
+    xwayland.on_create(server, "DATA")
 
     server.lib.welpy_xwayland_surface_set_hints.assert_called_once_with(
         xsurface)
@@ -95,7 +95,7 @@ def test_xwayland_configure_premap():
     event = MagicMock(x=5, y=10, width=300, height=200)
     server.ffi.cast.return_value = event
 
-    xwayland.x11_request_configure(server, client, "DATA")
+    xwayland.on_request_configure(server, client, "DATA")
 
     server.lib.wlr_xwayland_surface_configure.assert_called_once_with(
         client.xsurface, 5, 10, 300, 200)
@@ -107,7 +107,7 @@ def test_xwayland_activate_urgent():
     server = make_server()
     client = make_x11_client()
     with patch("welpy.windows.mark_urgent") as mark:
-        xwayland.x11_request_activate(server, client)
+        xwayland.on_request_activate(server, client)
     mark.assert_called_once_with(server, client)
 
 
@@ -118,7 +118,7 @@ def test_xwayland_hints_urgent():
     server.lib.welpy_xwayland_surface_is_urgent.return_value = True
 
     with patch("welpy.windows.mark_urgent") as mark:
-        xwayland.x11_set_hints(server, client)
+        xwayland.on_set_hints(server, client)
 
     mark.assert_called_once_with(server, client)
 
@@ -130,7 +130,7 @@ def test_xwayland_hints_premap():
     server.lib.welpy_xwayland_surface_is_urgent.return_value = True
 
     with patch("welpy.windows.mark_urgent") as mark:
-        xwayland.x11_set_hints(server, client)
+        xwayland.on_set_hints(server, client)
 
     mark.assert_not_called()
 
@@ -139,7 +139,7 @@ def test_xwayland_ready_seat():
     """When the X server comes up we point it at our seat and set its cursor."""
     server = make_server()
 
-    xwayland.x11_ready(server)
+    xwayland.on_ready(server)
 
     server.lib.wlr_xwayland_set_seat.assert_called_once_with(
         server.xwayland, server.seat)
@@ -200,7 +200,7 @@ def test_unmanaged_map_focus():
     server.lib.wlr_xwayland_surface_override_redirect_wants_focus \
         .return_value = True
 
-    with patch("welpy.focus.apply_focus") as apply_focus:
+    with patch("welpy.focus.reconcile") as apply_focus:
         xwayland.unmanaged_map(server, um, None)
 
     assert server.unmanaged_focus is um
@@ -238,7 +238,7 @@ def test_unmanaged_unmap_restores():
     um = make_unmanaged(scene_tree=MagicMock())
     server.unmanaged_focus = um
 
-    with patch("welpy.focus.apply_focus") as apply_focus:
+    with patch("welpy.focus.reconcile") as apply_focus:
         xwayland.unmanaged_unmap(server, um, None)
 
     server.lib.wlr_scene_node_destroy.assert_called_once()
@@ -254,7 +254,7 @@ def test_unmanaged_unmap_unfocused():
     server.unmanaged_focus = other
     um = make_unmanaged(scene_tree=MagicMock())
 
-    with patch("welpy.focus.apply_focus") as apply_focus:
+    with patch("welpy.focus.reconcile") as apply_focus:
         xwayland.unmanaged_unmap(server, um, None)
 
     apply_focus.assert_not_called()

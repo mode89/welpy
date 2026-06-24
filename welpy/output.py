@@ -18,7 +18,7 @@ from .model import Client, Layer, Monitor, Server, SHELL_LAYERS, XdgClient
 logger = logging.getLogger(__name__)
 
 
-def update_monitors(server: Server) -> None:
+def reconcile(server: Server) -> None:
     """Called whenever the output layout changes: adding or removing a
     monitor, changing an output's mode or position, etc. Repairs the
     workspace hierarchy, then re-flows visibility, geometry, and focus."""
@@ -27,15 +27,15 @@ def update_monitors(server: Server) -> None:
     geometry.apply_tree(server)
     for m in server.monitors:
         geometry.arrange_layers(server, m)
-        geometry.apply_geometry(server, m)
-    session_lock.update_lock_background(server)
-    session_lock.update_lock_surfaces(server)
-    focus.apply_focus(server)
+        geometry.reconcile(server, m)
+    session_lock.update_background(server)
+    session_lock.update_surfaces(server)
+    focus.reconcile(server)
     if server.ext_workspace is not None:
         ext_workspace.publish(server)
 
 
-def monitor_new(server: Server, data) -> None:
+def on_create(server: Server, data) -> None:
     """Fires when the backend reports a screen (at startup or hot-plug). Brings
     it online: pick a mode, place it in the layout, attach a render target,
     start its frame loop."""
@@ -75,29 +75,29 @@ def monitor_new(server: Server, data) -> None:
         frame_timer=None,
         listeners=[])
     monitor.frame_timer = server.add_timer(
-        lambda: monitor_force_paint(server, monitor))
+        lambda: on_force_paint(server, monitor))
     server.monitors.append(monitor)
     monitor.window_area = geometry.monitor_box(server, monitor)
     monitor.listeners.extend([
         listen(lib.welpy_output_frame(output),
-            lambda data: monitor_render(server, monitor, data)),
+            lambda data: on_frame(server, monitor, data)),
         listen(lib.welpy_output_request_state(output),
-            lambda data: monitor_request_state(server, monitor, data)),
+            lambda data: on_request_state(server, monitor, data)),
         listen(lib.welpy_output_destroy_signal(output),
-            lambda data: monitor_cleanup(server, monitor, data)),
+            lambda data: on_destroy(server, monitor, data)),
     ])
-    update_monitors(server)
+    reconcile(server)
 
 
-def monitor_request_state(server: Server, monitor: Monitor, data) -> None:
+def on_request_state(server: Server, monitor: Monitor, data) -> None:
     """Fires when the backend asks to reconfigure a screen."""
     ffi, lib = server.ffi, server.lib
     event = ffi.cast("struct wlr_output_event_request_state *", data)
     lib.wlr_output_commit_state(monitor.output, event.state)
-    update_monitors(server)
+    reconcile(server)
 
 
-def monitor_cleanup(server: Server, monitor: Monitor, _data) -> None:
+def on_destroy(server: Server, monitor: Monitor, _data) -> None:
     """Fires when a screen goes away -- unplugged, or the backend is shutting
     down. Detaches our listeners and drops the monitor."""
     logger.info("removing output: %s",
@@ -110,10 +110,10 @@ def monitor_cleanup(server: Server, monitor: Monitor, _data) -> None:
         listener.remove()
     monitor.listeners.clear()
     server.monitors.remove(monitor)
-    update_monitors(server)
+    reconcile(server)
 
 
-def output_power_set_mode(server: Server, data) -> None:
+def on_power_mode(server: Server, data) -> None:
     """Fires when a client (e.g. an idle daemon) asks to switch a screen on or
     off for power saving (DPMS). The screen keeps its place in the layout, so
     windows stay put for when it wakes."""
@@ -129,7 +129,7 @@ def output_power_set_mode(server: Server, data) -> None:
     lib.welpy_output_state_free(state)
 
 
-def monitor_render(server: Server, monitor: Monitor, _data) -> None:
+def on_frame(server: Server, monitor: Monitor, _data) -> None:
     """Fires once per refresh of this screen. Paints a frame and tells the apps
     visible on it to start producing the next, keeping them in sync with this
     screen's vsync."""
@@ -171,7 +171,7 @@ def client_rendered(server: Server, client: Client) -> bool:
             server.ffi, head, "struct wlr_surface_output", "link"))
 
 
-def monitor_force_paint(server: Server, monitor: Monitor) -> None:
+def on_force_paint(server: Server, monitor: Monitor) -> None:
     """Timer callback: repaint this screen so its refresh loop resumes when
     an app is too slow to catch up."""
     server.lib.wlr_scene_output_commit(monitor.scene_output, server.ffi.NULL)

@@ -19,7 +19,7 @@ def test_apply_geometry_single_full():
     server = make_server(clients=[a])
 
     with patch("welpy.geometry.resize_client") as resize:
-        geometry.apply_geometry(server, m)
+        geometry.reconcile(server, m)
 
     resize.assert_called_once_with(server, a, layout.Rect(0, 0, 800, 600))
 
@@ -36,7 +36,7 @@ def test_apply_geometry_row():
     server = make_server(clients=[a, b, c])
 
     with patch("welpy.geometry.resize_client") as resize:
-        geometry.apply_geometry(server, m)
+        geometry.reconcile(server, m)
 
     assert resize.call_args_list == [
         call(server, a, layout.Rect(0, 0, 266, 600)),
@@ -58,7 +58,7 @@ def test_apply_geometry_other_monitor():
     server = make_server(clients=[a, b])
 
     with patch("welpy.geometry.resize_client") as resize:
-        geometry.apply_geometry(server, m1)
+        geometry.reconcile(server, m1)
 
     resize.assert_called_once_with(server, a, layout.Rect(0, 0, 800, 600))
 
@@ -77,7 +77,7 @@ def test_apply_geometry_skips_floating():
     server = make_server(clients=[a, b])
 
     with patch("welpy.geometry.resize_client") as resize:
-        geometry.apply_geometry(server, m)
+        geometry.reconcile(server, m)
 
     # The tile gets the full window area; the float gets its own rect.
     assert resize.call_args_list == [
@@ -100,7 +100,7 @@ def test_apply_geometry_sizes_fullscreen():
     with patch("welpy.geometry.monitor_box",
                return_value=layout.Rect(0, 0, 800, 600)), \
          patch("welpy.geometry.resize_client") as resize:
-        geometry.apply_geometry(server, m)
+        geometry.reconcile(server, m)
 
     resize.assert_called_once_with(server, fs, layout.Rect(0, 0, 800, 600))
 
@@ -113,7 +113,7 @@ def test_apply_geometry_empty():
     m.active_workspace = make_workspace(monitor=m)
 
     with patch("welpy.geometry.resize_client") as resize:
-        geometry.apply_geometry(server, m)
+        geometry.reconcile(server, m)
 
     resize.assert_not_called()
 
@@ -129,7 +129,7 @@ def test_apply_geometry_reconciles_float():
     server = make_server(clients=[c])
 
     with patch("welpy.geometry.resize_client") as resize:
-        geometry.apply_geometry(server, m)
+        geometry.reconcile(server, m)
 
     resize.assert_called_once_with(server, c, saved)
     assert c.floating_geom == saved
@@ -1034,7 +1034,7 @@ def test_xwayland_client_geometry():
     client.xsurface.width = 640
     client.xsurface.height = 480
 
-    geom = geometry.client_geometry(client)
+    geom = geometry.client_rect(client)
 
     assert (geom.x, geom.y, geom.width, geom.height) == (0, 0, 640, 480)
 

@@ -20,9 +20,9 @@ def test_focus_client_order():
     b = make_client(workspace=m.active_workspace)
     server = make_server(monitors=[m], active_monitor=m, clients=[a, b])
 
-    focus.focus_client(server, a)
-    focus.focus_client(server, b)
-    focus.focus_client(server, a)
+    focus.bump_focus_order(server, a)
+    focus.bump_focus_order(server, b)
+    focus.bump_focus_order(server, a)
 
     assert a.focus_order > b.focus_order > 0
 
@@ -31,7 +31,7 @@ def test_apply_focus_idle():
     """No monitors, no clients, no focused surface -> nothing to do."""
     server = make_server()
 
-    focus.apply_focus(server)
+    focus.reconcile(server)
 
     server.lib.wlr_seat_keyboard_notify_enter.assert_not_called()
     server.lib.wlr_seat_keyboard_clear_focus.assert_not_called()
@@ -47,7 +47,7 @@ def test_apply_focus_client():
     server = make_server(
         monitors=[monitor], active_monitor=monitor, clients=[client])
 
-    focus.apply_focus(server)
+    focus.reconcile(server)
 
     server.lib.wlr_xdg_toplevel_set_activated.assert_called_once_with(
         client.toplevel, True)
@@ -70,7 +70,7 @@ def test_apply_focus_shell():
     ls.layer_surface.current.keyboard_interactive = 1
     monitor.layers[model.Layer.OVERLAY].append(ls)
 
-    focus.apply_focus(server)
+    focus.reconcile(server)
 
     assert ls.focused
     server.lib.wlr_seat_keyboard_notify_enter.assert_called_once()
@@ -93,7 +93,7 @@ def test_apply_focus_releases():
     ls.layer_surface.current.keyboard_interactive = 1
     monitor.layers[model.Layer.OVERLAY].append(ls)
 
-    focus.apply_focus(server)
+    focus.reconcile(server)
 
     server.lib.wlr_xdg_toplevel_set_activated.assert_called_once_with(
         client.toplevel, False)
@@ -107,7 +107,7 @@ def test_apply_focus_clears():
     server = make_server()
     server.seat.keyboard_state.focused_surface = MagicMock(name="stale") # pylint: disable=no-member
 
-    focus.apply_focus(server)
+    focus.reconcile(server)
 
     server.lib.wlr_seat_keyboard_clear_focus.assert_called_once_with(
         server.seat)
@@ -125,7 +125,7 @@ def test_apply_focus_handoff():
         monitors=[monitor], active_monitor=monitor, clients=[a, b])
     server.seat.keyboard_state.focused_surface = a.toplevel.base.surface # pylint: disable=no-member
 
-    focus.apply_focus(server)
+    focus.reconcile(server)
 
     server.lib.wlr_xdg_toplevel_set_activated.assert_any_call(
         a.toplevel, False)
@@ -145,7 +145,7 @@ def test_apply_focus_idempotent():
         monitors=[monitor], active_monitor=monitor, clients=[client])
     server.seat.keyboard_state.focused_surface = client.toplevel.base.surface # pylint: disable=no-member
 
-    focus.apply_focus(server)
+    focus.reconcile(server)
 
     server.lib.wlr_seat_keyboard_notify_enter.assert_not_called()
     server.lib.wlr_seat_keyboard_clear_focus.assert_not_called()
@@ -164,7 +164,7 @@ def test_apply_focus_no_hold():
     server.seat.keyboard_state.focused_surface = a.toplevel.base.surface # pylint: disable=no-member
     server.lib.wlr_xdg_toplevel_set_activated.side_effect = [3, 7]
 
-    focus.apply_focus(server)
+    focus.reconcile(server)
 
     assert a.pending_serial is None
     assert b.pending_serial is None
@@ -181,7 +181,7 @@ def test_apply_focus_borders():
         monitors=[monitor], active_monitor=monitor, clients=[a, b])
     server.seat.keyboard_state.focused_surface = a.toplevel.base.surface # pylint: disable=no-member
 
-    focus.apply_focus(server)
+    focus.reconcile(server)
 
     color_args = [c.args for c in server.ffi.new.call_args_list]
     assert ("float[4]", model.BORDER_COLOR_ACTIVE) in color_args
@@ -203,7 +203,7 @@ def test_apply_focus_sticky():
     contender.layer_surface.current.keyboard_interactive = 1
     m2.layers[model.Layer.OVERLAY].append(contender)
 
-    focus.apply_focus(server)
+    focus.reconcile(server)
 
     assert focused.focused
     assert not contender.focused
@@ -223,7 +223,7 @@ def test_apply_focus_priority():
     overlay.layer_surface.current.keyboard_interactive = 1
     monitor.layers[model.Layer.OVERLAY].append(overlay)
 
-    focus.apply_focus(server)
+    focus.reconcile(server)
 
     assert overlay.focused
     assert not top.focused
@@ -237,7 +237,7 @@ def test_apply_focus_pointer():
     server = make_server()
 
     with patch("welpy.focus.forward_pointer_motion") as fwd:
-        focus.apply_focus(server)
+        focus.reconcile(server)
 
     fwd.assert_called_once_with(server, 0)
 
@@ -250,9 +250,9 @@ def test_apply_focus_pointer_grab():
         clients=[make_client(grab=model.Grab("move", 0, 0))])
 
     with patch("welpy.focus.forward_pointer_motion") as fwd_idle:
-        focus.apply_focus(idle)
+        focus.reconcile(idle)
     with patch("welpy.focus.forward_pointer_motion") as fwd_drag:
-        focus.apply_focus(dragging)
+        focus.reconcile(dragging)
 
     assert fwd_idle.called
     assert not fwd_drag.called
@@ -265,9 +265,9 @@ def test_apply_focus_pointer_locked():
     locked = make_server(locked=True)
 
     with patch("welpy.focus.forward_pointer_motion") as fwd_unlocked:
-        focus.apply_focus(unlocked)
+        focus.reconcile(unlocked)
     with patch("welpy.focus.forward_pointer_motion") as fwd_locked:
-        focus.apply_focus(locked)
+        focus.reconcile(locked)
 
     assert fwd_unlocked.called
     assert not fwd_locked.called
@@ -286,7 +286,7 @@ def test_focus_lock_keyboard():
         monitors=[monitor], active_monitor=monitor,
         session_lock=session_lock, locked=True)
 
-    focus.focus_lock(server)
+    focus.activate_lock(server)
 
     server.lib.wlr_seat_keyboard_notify_enter.assert_called_once()
     assert server.lib.wlr_seat_keyboard_notify_enter.call_args.args[1] is (
@@ -301,7 +301,7 @@ def test_focus_lock_cleared():
     # A window still held the keyboard when the lock began.
     server.seat.keyboard_state.focused_surface = MagicMock(name="window")
 
-    focus.focus_lock(server)
+    focus.activate_lock(server)
 
     server.lib.wlr_seat_keyboard_clear_focus.assert_called_once_with(
         server.seat)

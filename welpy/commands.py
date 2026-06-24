@@ -15,7 +15,7 @@ def focus_direction(server: Server, direction: layout.Direction) -> None:
     """Shift focus to the tiled window structurally adjacent in `direction` on
     the current screen, landing on a group's most-recently-focused window.
     No-op at an edge, on a float, or while fullscreen."""
-    client = focus.focused_tiled(server)
+    client = focus.active_tiled(server)
     if client is None:
         return
     monitor = server.active_monitor
@@ -23,28 +23,28 @@ def focus_direction(server: Server, direction: layout.Direction) -> None:
         monitor.active_workspace.root, client, direction)
     if not candidates:
         return
-    focus.focus_client(server, max(candidates, key=lambda c: c.focus_order))
-    focus.apply_focus(server)
+    focus.bump_focus_order(server, max(candidates, key=lambda c: c.focus_order))
+    focus.reconcile(server)
 
 
 def move_direction(server: Server, direction: layout.Direction) -> None:
     """Relocate the focused window one step in `direction` within the tiled
     tree -- reorder, pop out of its group, or descend into an adjacent one.
     No-op at an edge, on a float, or while fullscreen."""
-    client = focus.focused_tiled(server)
+    client = focus.active_tiled(server)
     if client is None:
         return
     monitor = server.active_monitor
     layout.move(monitor.active_workspace.root, client, direction)
-    geometry.apply_geometry(server, monitor)
-    focus.apply_focus(server)
+    geometry.reconcile(server, monitor)
+    focus.reconcile(server)
 
 
 def group_window(server: Server) -> None:
     """Wrap the focused window in its own group, split along the window's long
     side so the group has room to grow (mod+v). No-op when the window has no
     siblings to split off from."""
-    found = focus.focused_container(server)
+    found = focus.active_container(server)
     if found is None:
         return
     monitor, client, parent = found
@@ -57,20 +57,20 @@ def group_window(server: Server) -> None:
         else layout.ContainerLayout.VERTICAL
     )
     layout.wrap(monitor.active_workspace.root, client, axis)
-    geometry.apply_geometry(server, monitor)
-    focus.apply_focus(server)
+    geometry.reconcile(server, monitor)
+    focus.reconcile(server)
 
 
 def cycle_layout(server: Server) -> None:
     """Flip the focused window's split between side-by-side and stacked
     (mod+e)."""
-    found = focus.focused_container(server)
+    found = focus.active_container(server)
     if found is None:
         return
     monitor, _, parent = found
-    layout.cycle_layout(parent)
-    geometry.apply_geometry(server, monitor)
-    focus.apply_focus(server)
+    layout.cycle(parent)
+    geometry.reconcile(server, monitor)
+    focus.reconcile(server)
 
 
 def toggle_fullscreen(server: Server) -> None:
@@ -86,8 +86,8 @@ def toggle_fullscreen(server: Server) -> None:
         else:
             geometry.set_fullscreen(server, workspace, client)
         geometry.apply_tree(server)
-        geometry.apply_geometry(server, monitor)
-        focus.apply_focus(server)
+        geometry.reconcile(server, monitor)
+        focus.reconcile(server)
 
 
 def toggle_floating(server: Server) -> None:
@@ -105,8 +105,8 @@ def toggle_floating(server: Server) -> None:
             layout.insert_sibling(
                 workspace.root, focus.recent_tiled_leaf(workspace.root), client)
         geometry.apply_tree(server)
-        geometry.apply_geometry(server, monitor)
-        focus.apply_focus(server)
+        geometry.reconcile(server, monitor)
+        focus.reconcile(server)
 
 
 def close_window(server: Server) -> None:
@@ -141,8 +141,8 @@ def view_workspace(server: Server, name: str) -> None:
     geometry.apply_visibility(server)
     geometry.apply_tree(server)
     for m in server.monitors:
-        geometry.apply_geometry(server, m)
-    focus.apply_focus(server)
+        geometry.reconcile(server, m)
+    focus.reconcile(server)
     if server.ext_workspace is not None:
         ext_workspace.publish(server)
 
@@ -181,8 +181,8 @@ def move_client_to_workspace(server: Server, name: str) -> None:
     geometry.apply_visibility(server)
     geometry.apply_tree(server)
     for m in server.monitors:
-        geometry.apply_geometry(server, m)
-    focus.apply_focus(server)
+        geometry.reconcile(server, m)
+    focus.reconcile(server)
     if server.ext_workspace is not None:
         ext_workspace.publish(server)
 
@@ -196,8 +196,8 @@ def assign_workspace_to_monitor(
     geometry.apply_visibility(server)
     geometry.apply_tree(server)
     for m in server.monitors:
-        geometry.apply_geometry(server, m)
-    focus.apply_focus(server)
+        geometry.reconcile(server, m)
+    focus.reconcile(server)
     if server.ext_workspace is not None:
         ext_workspace.publish(server)
 
@@ -219,7 +219,7 @@ def move_active_workspace_to_monitor(
     geometry.apply_visibility(server)
     geometry.apply_tree(server)
     for m in server.monitors:
-        geometry.apply_geometry(server, m)
-    focus.apply_focus(server)
+        geometry.reconcile(server, m)
+    focus.reconcile(server)
     if server.ext_workspace is not None:
         ext_workspace.publish(server)

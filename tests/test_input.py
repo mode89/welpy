@@ -266,7 +266,7 @@ def test_cursor_button_focuses():
     event.button = "ANY_BUTTON"
     event.state = server.lib.WL_POINTER_BUTTON_STATE_PRESSED
 
-    with patch("welpy.focus.focus_client") as focus_client:
+    with patch("welpy.focus.bump_focus_order") as focus_client:
         input.cursor_button(server, "BUTTON_DATA")
 
     focus_client.assert_called_once_with(server, client)
@@ -714,7 +714,7 @@ def test_begin_dragging_offset():
 
     with patch("welpy.geometry.client_outer_rect",
                return_value=layout.Rect(100, 150, 200, 200)), \
-         patch("welpy.geometry.apply_geometry"):
+         patch("welpy.geometry.reconcile"):
         input.begin_dragging_client(server)
 
     assert client.grab == model.Grab("move", 20, 50)
@@ -725,7 +725,7 @@ def test_begin_dragging_empty():
     server = make_server(cursor=make_cursor(xcursor_manager="X"))
     server.lib.wlr_scene_node_at.return_value = server.ffi.NULL
 
-    with patch("welpy.geometry.apply_geometry") as apply_geom:
+    with patch("welpy.geometry.reconcile") as apply_geom:
         input.begin_dragging_client(server)
 
     apply_geom.assert_not_called()
@@ -745,7 +745,7 @@ def test_begin_resizing_anchor():
 
     with patch("welpy.geometry.client_outer_rect",
                return_value=layout.Rect(100, 150, 300, 200)), \
-         patch("welpy.geometry.apply_geometry"):
+         patch("welpy.geometry.reconcile"):
         input.begin_resizing_client(server)
 
     assert client.grab == model.Grab("resize", 200, 200)
@@ -756,7 +756,7 @@ def test_begin_resizing_empty():
     server = make_server(cursor=make_cursor(xcursor_manager="X"))
     server.lib.wlr_scene_node_at.return_value = server.ffi.NULL
 
-    with patch("welpy.geometry.apply_geometry") as apply_geom:
+    with patch("welpy.geometry.reconcile") as apply_geom:
         input.begin_resizing_client(server)
 
     apply_geom.assert_not_called()
@@ -893,7 +893,7 @@ def test_input_new_keyboard():
     device = server.ffi.cast.return_value
     device.type = server.lib.WLR_INPUT_DEVICE_KEYBOARD
 
-    input.input_new(server, "DEVICE_DATA")
+    input.on_create(server, "DEVICE_DATA")
 
     server.lib.wlr_keyboard_group_add_keyboard.assert_called_once_with(
         "GROUP", server.lib.wlr_keyboard_from_input_device.return_value)
@@ -907,7 +907,7 @@ def test_input_new_keymap():
     device.type = server.lib.WLR_INPUT_DEVICE_KEYBOARD
     keyboard = server.lib.wlr_keyboard_from_input_device.return_value
 
-    input.input_new(server, "DEVICE_DATA")
+    input.on_create(server, "DEVICE_DATA")
 
     server.lib.wlr_keyboard_set_keymap.assert_called_once_with(
         keyboard, "KEYMAP")
@@ -923,7 +923,7 @@ def test_input_new_other():
     device = server.ffi.cast.return_value
     device.type = "SOMETHING_ELSE"
 
-    input.input_new(server, "DEVICE_DATA")
+    input.on_create(server, "DEVICE_DATA")
 
     server.lib.wlr_keyboard_group_add_keyboard.assert_not_called()
 
@@ -936,7 +936,7 @@ def test_input_new_pointer():
     device = server.ffi.cast.return_value
     device.type = server.lib.WLR_INPUT_DEVICE_POINTER
 
-    input.input_new(server, "DEVICE_DATA")
+    input.on_create(server, "DEVICE_DATA")
 
     server.lib.wlr_cursor_attach_input_device.assert_called_once_with(
         "CURSOR", device)

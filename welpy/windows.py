@@ -12,7 +12,7 @@ from . import model
 from .model import Client, Layer, Server, X11Client, XdgClient
 
 
-def client_new(server: Server, data) -> None:
+def on_create(server: Server, data) -> None:
     """Fires when an app creates a new window. Attaches lifecycle
     listeners; the scene tree, borders, and layout entry are added at map
     time so creation lands in a single frame."""
@@ -29,25 +29,25 @@ def client_new(server: Server, data) -> None:
     toplevel.base.data = client.handle
     client.listeners.extend([
         listen(lib.welpy_surface_commit(toplevel.base.surface),
-            lambda data: client_commit(server, client, data)),
+            lambda data: on_commit(server, client, data)),
         listen(lib.welpy_surface_map(toplevel.base.surface),
-            lambda data: client_map(server, client, data)),
+            lambda data: on_map(server, client, data)),
         listen(lib.welpy_surface_unmap(toplevel.base.surface),
-            lambda data: client_unmap(server, client, data)),
+            lambda data: on_unmap(server, client, data)),
         listen(lib.welpy_xdg_toplevel_destroy(toplevel),
-            lambda data: client_cleanup(server, client, data)),
+            lambda data: on_destroy(server, client, data)),
         listen(lib.welpy_xdg_toplevel_request_fullscreen(toplevel),
-            lambda data: client_request_fullscreen(server, client, data)),
+            lambda data: on_request_fullscreen(server, client, data)),
         listen(lib.welpy_xdg_toplevel_request_maximize(toplevel),
-            lambda data: client_request_maximize(server, client, data)),
+            lambda data: on_request_maximize(server, client, data)),
     ])
 
 
-def client_commit(server: Server, client: Client, _data) -> None:
+def on_commit(server: Server, client: Client, _data) -> None:
     """Fires every time the app commits new state for its window."""
     if isinstance(client, XdgClient):
         if client.toplevel.base.initial_commit:
-            # Empty configure; real tile size is sent from client_map.
+            # Empty configure; real tile size is sent from on_map.
             geometry.set_size(server, client, 0, 0)
             return
         if client.pending_serial is not None:
@@ -61,13 +61,13 @@ def client_commit(server: Server, client: Client, _data) -> None:
         geometry.apply_clip(server, client)
 
 
-def client_map(server: Server, client: Client, _data) -> None:
+def on_map(server: Server, client: Client, _data) -> None:
     """Fires the first time the window has a buffer to show. Builds the
     window's scene tree, joins the layout, and shifts focus -- all in one
     event so the new window, sibling reflow, and focus highlight land in
     a single frame."""
     lib = server.lib
-    create_window_scene(server, client)
+    create_scene(server, client)
     if server.active_monitor is not None:
         client.workspace = server.active_monitor.active_workspace
     monitor = model.client_monitor(client)
@@ -90,19 +90,19 @@ def client_map(server: Server, client: Client, _data) -> None:
     if geometry.client_wants_fullscreen(client) and workspace is not None:
         # Honor a pre-map or initial-commit fullscreen request.
         geometry.set_fullscreen(server, workspace, client)
-    focus.focus_client(server, client)
+    focus.bump_focus_order(server, client)
     geometry.apply_hierarchy(server)
     geometry.apply_visibility(server)
     geometry.apply_tree(server)
     if monitor is not None:
-        geometry.apply_geometry(server, monitor)
-    focus.apply_focus(server)
+        geometry.reconcile(server, monitor)
+    focus.reconcile(server)
     # The decoration request may have arrived before the initial configure;
     # now that the surface is initialized, set_mode is safe.
     geometry.apply_decoration(server)
 
 
-def client_unmap(server: Server, client: Client, _data) -> None:
+def on_unmap(server: Server, client: Client, _data) -> None:
     """Fires when a window stops showing (close or voluntary hide). Tears
     down the window's scene tree, leaves the layout, reflows siblings,
     and shifts focus to a window beside the closed one -- in one event so
@@ -130,16 +130,16 @@ def client_unmap(server: Server, client: Client, _data) -> None:
     if successor is None:
         successor = focus.top_client(server, monitor)
     if successor is not None:
-        focus.focus_client(server, successor)
+        focus.bump_focus_order(server, successor)
     if monitor is not None and monitor in server.monitors:
-        geometry.apply_geometry(server, monitor)
-    focus.apply_focus(server)
+        geometry.reconcile(server, monitor)
+    focus.reconcile(server)
 
 
-def client_request_fullscreen(
+def on_request_fullscreen(
         server: Server, client: Client, _data) -> None:
     """An app asked to enter or leave fullscreen."""
-    # Pre-map: client_map reads the same flag once the tree exists.
+    # Pre-map: on_map reads the same flag once the tree exists.
     workspace = client.workspace if client.scene_tree is not None else None
     monitor = (model.client_monitor(client)
                if client.scene_tree is not None else None)
@@ -150,11 +150,11 @@ def client_request_fullscreen(
         elif not wants and workspace.fullscreen is client:
             geometry.set_fullscreen(server, workspace, None)
         geometry.apply_tree(server)
-        geometry.apply_geometry(server, monitor)
-        focus.apply_focus(server)
+        geometry.reconcile(server, monitor)
+        focus.reconcile(server)
 
 
-def client_request_maximize(server: Server, client: Client, _data) -> None:
+def on_request_maximize(server: Server, client: Client, _data) -> None:
     """An app asked to (un)maximize. We don't maximize, but xdg-shell still
     requires a configure in reply, so ack the request with an empty one."""
     # Clients may request maximize before their first commit; scheduling a
@@ -163,7 +163,7 @@ def client_request_maximize(server: Server, client: Client, _data) -> None:
         server.lib.wlr_xdg_surface_schedule_configure(client.toplevel.base)
 
 
-def client_request_activate(server: Server, data) -> None:
+def on_request_activate(server: Server, data) -> None:
     """An app asked to be brought to the foreground. We never steal focus:
     the window just shows an urgent border until the user focuses it."""
     event = server.ffi.cast(
@@ -186,7 +186,7 @@ def mark_urgent(server: Server, client: Client) -> None:
         ext_workspace.publish(server)
 
 
-def client_cleanup(_server: Server, client: Client, _data) -> None:
+def on_destroy(_server: Server, client: Client, _data) -> None:
     """Fires when an app closes a window (or its connection drops). The
     visible work happened in unmap (if the window was ever mapped); this
     just detaches listeners."""
@@ -195,7 +195,7 @@ def client_cleanup(_server: Server, client: Client, _data) -> None:
     client.listeners.clear()
 
 
-def create_window_scene(server: Server, client: Client) -> None:
+def create_scene(server: Server, client: Client) -> None:
     """Build the window's wrapper scene tree: the app's content subtree inset
     within four border rects. The inset is reapplied per-resize so fullscreen
     can collapse it to 0."""
@@ -224,7 +224,7 @@ def popup_new(server: Server, data) -> None:
     ffi, lib, listen = server.ffi, server.lib, server.listen
     popup = ffi.cast("struct wlr_xdg_popup *", data)
 
-    def on_commit(_data):
+    def on_popup_commit(_data):
         if popup.base.initial_commit:
             # Short-circuit guards popup.parent.data when popup.parent is NULL.
             parent_scene = (
@@ -253,7 +253,7 @@ def popup_new(server: Server, data) -> None:
         listeners.clear()
 
     listeners = [
-        listen(lib.welpy_surface_commit(popup.base.surface), on_commit),
+        listen(lib.welpy_surface_commit(popup.base.surface), on_popup_commit),
         listen(lib.welpy_xdg_popup_destroy(popup), lambda _data: cleanup()),
     ]
 

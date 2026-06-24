@@ -15,7 +15,7 @@ def test_client_new_no_insert():
     at map time so siblings don't reflow before the new window is ready."""
     server = make_server()
 
-    windows.client_new(server, "TOPLEVEL_DATA")
+    windows.on_create(server, "TOPLEVEL_DATA")
 
     assert not server.clients
     server.lib.wlr_scene_tree_create.assert_not_called()
@@ -25,8 +25,8 @@ def test_client_new_commit():
     """The window's surface commit signal drives client_commit so the
     initial configure path runs on first commit."""
     server = make_server()
-    with patch("welpy.windows.client_commit") as committed:
-        windows.client_new(server, "TOPLEVEL_DATA")
+    with patch("welpy.windows.on_commit") as committed:
+        windows.on_create(server, "TOPLEVEL_DATA")
         trigger(server, server.lib.welpy_surface_commit, "COMMIT_DATA")
     committed.assert_called_once_with(server, ANY, "COMMIT_DATA")
 
@@ -35,8 +35,8 @@ def test_client_new_map():
     """The window's surface map signal drives client_map so a window gets
     focused the moment it has something to show."""
     server = make_server()
-    with patch("welpy.windows.client_map") as mapped:
-        windows.client_new(server, "TOPLEVEL_DATA")
+    with patch("welpy.windows.on_map") as mapped:
+        windows.on_create(server, "TOPLEVEL_DATA")
         trigger(server, server.lib.welpy_surface_map, "MAP_DATA")
     mapped.assert_called_once_with(server, ANY, "MAP_DATA")
 
@@ -45,8 +45,8 @@ def test_client_new_unmap():
     """The window's surface unmap signal drives client_unmap so closing
     one window hands focus to another."""
     server = make_server()
-    with patch("welpy.windows.client_unmap") as unmap:
-        windows.client_new(server, "TOPLEVEL_DATA")
+    with patch("welpy.windows.on_unmap") as unmap:
+        windows.on_create(server, "TOPLEVEL_DATA")
         trigger(server, server.lib.welpy_surface_unmap, "UNMAP_DATA")
     unmap.assert_called_once_with(server, ANY, "UNMAP_DATA")
 
@@ -55,8 +55,8 @@ def test_client_new_destroy():
     """The window's destroy signal triggers client_cleanup so closing an
     app doesn't leave stale listeners attached to the dying surface."""
     server = make_server()
-    with patch("welpy.windows.client_cleanup") as cleanup:
-        windows.client_new(server, "TOPLEVEL_DATA")
+    with patch("welpy.windows.on_destroy") as cleanup:
+        windows.on_create(server, "TOPLEVEL_DATA")
         trigger(server, server.lib.welpy_xdg_toplevel_destroy, "DESTROY_DATA")
     cleanup.assert_called_once_with(server, ANY, "DESTROY_DATA")
 
@@ -65,8 +65,8 @@ def test_client_new_request_fullscreen():
     """The window's request_fullscreen signal drives client_request_fullscreen
     so app-initiated fullscreen toggles are honored."""
     server = make_server()
-    with patch("welpy.windows.client_request_fullscreen") as handler:
-        windows.client_new(server, "TOPLEVEL_DATA")
+    with patch("welpy.windows.on_request_fullscreen") as handler:
+        windows.on_create(server, "TOPLEVEL_DATA")
         trigger(
             server, server.lib.welpy_xdg_toplevel_request_fullscreen,
             "REQ_DATA")
@@ -77,8 +77,8 @@ def test_client_new_request_maximize():
     """The window's request_maximize signal drives client_request_maximize
     so the client gets the configure xdg-shell requires in reply."""
     server = make_server()
-    with patch("welpy.windows.client_request_maximize") as handler:
-        windows.client_new(server, "TOPLEVEL_DATA")
+    with patch("welpy.windows.on_request_maximize") as handler:
+        windows.on_create(server, "TOPLEVEL_DATA")
         trigger(
             server, server.lib.welpy_xdg_toplevel_request_maximize,
             "REQ_DATA")
@@ -93,7 +93,7 @@ def test_client_commit_initial():
     toplevel.base.initial_commit = True
     client = make_client(toplevel=toplevel, scene_tree=None)
 
-    windows.client_commit(server, client, None)
+    windows.on_commit(server, client, None)
 
     server.lib.wlr_xdg_toplevel_set_size.assert_called_once_with(toplevel, 0, 0)
 
@@ -105,7 +105,7 @@ def test_client_commit_subsequent():
     toplevel.base.initial_commit = False
     client = make_client(toplevel=toplevel, scene_tree=None)
 
-    windows.client_commit(server, client, None)
+    windows.on_commit(server, client, None)
 
     server.lib.wlr_xdg_toplevel_set_size.assert_not_called()
 
@@ -118,7 +118,7 @@ def test_client_commit_clears():
     client.toplevel.base.initial_commit = False
     client.toplevel.base.current.configure_serial = 9
 
-    windows.client_commit(server, client, None)
+    windows.on_commit(server, client, None)
 
     assert client.pending_serial is None
     server.lib.wlr_xdg_toplevel_set_size.assert_not_called()
@@ -132,7 +132,7 @@ def test_client_commit_holds():
     client.toplevel.base.initial_commit = False
     client.toplevel.base.current.configure_serial = 3
 
-    windows.client_commit(server, client, None)
+    windows.on_commit(server, client, None)
 
     assert client.pending_serial == 7
 
@@ -147,7 +147,7 @@ def test_client_commit_initial_pending():
     toplevel.base.current.configure_serial = 0
     client = make_client(toplevel=toplevel, scene_tree=None)
 
-    windows.client_commit(server, client, None)
+    windows.on_commit(server, client, None)
 
     assert client.pending_serial == 11
 
@@ -164,7 +164,7 @@ def test_client_commit_reclips():
     client = make_client(
         toplevel=toplevel, scene_tree=MagicMock(), inner_size=(800, 600))
 
-    windows.client_commit(server, client, None)
+    windows.on_commit(server, client, None)
 
     server.ffi.new.assert_any_call("struct wlr_box *", [0, 0, 800, 600])
     server.lib.wlr_scene_subsurface_tree_set_clip.assert_called_once_with(
@@ -180,7 +180,7 @@ def test_client_commit_postunmap():
     client = make_client(
         toplevel=toplevel, scene_tree=None, inner_size=(800, 600))
 
-    windows.client_commit(server, client, None)
+    windows.on_commit(server, client, None)
 
     server.lib.wlr_scene_subsurface_tree_set_clip.assert_not_called()
 
@@ -193,7 +193,7 @@ def test_client_commit_premap():
     toplevel.base.initial_commit = True
     client = make_client(toplevel=toplevel, scene_tree=None, inner_size=None)
 
-    windows.client_commit(server, client, None)
+    windows.on_commit(server, client, None)
 
     server.lib.wlr_scene_subsurface_tree_set_clip.assert_not_called()
 
@@ -205,8 +205,8 @@ def test_client_map_inserts_front():
     server = make_server(clients=[old])
     fresh = make_client(scene_tree=None)
 
-    with patch("welpy.focus.focus_client"):
-        windows.client_map(server, fresh, None)
+    with patch("welpy.focus.bump_focus_order"):
+        windows.on_map(server, fresh, None)
 
     assert server.clients[0] is fresh
     assert server.clients[1] is old
@@ -221,8 +221,8 @@ def test_client_map_subtree():
     server.lib.wlr_scene_tree_create.return_value = wrapper
     client = make_client(toplevel=MagicMock(), scene_tree=None)
 
-    with patch("welpy.focus.focus_client"):
-        windows.client_map(server, client, None)
+    with patch("welpy.focus.bump_focus_order"):
+        windows.on_map(server, client, None)
 
     server.lib.wlr_scene_tree_create.assert_called_once_with(
         server.layers[model.Layer.TILE])
@@ -241,11 +241,11 @@ def test_client_map_orders():
 
     calls = []
     with patch(
-            "welpy.geometry.apply_geometry",
+            "welpy.geometry.reconcile",
             side_effect=lambda *_: calls.append("geometry")), \
-         patch("welpy.focus.focus_client",
+         patch("welpy.focus.bump_focus_order",
                side_effect=lambda *_a: calls.append("focus")):
-        windows.client_map(server, client, None)
+        windows.on_map(server, client, None)
 
     assert calls == ["focus", "geometry"]
 
@@ -259,8 +259,8 @@ def test_client_map_anchors_popups():
     server.ffi.cast.side_effect = lambda type_, val: ("CAST", type_, val)
     client = make_client(toplevel=MagicMock(), scene_tree=None)
 
-    with patch("welpy.focus.focus_client"):
-        windows.client_map(server, client, None)
+    with patch("welpy.focus.bump_focus_order"):
+        windows.on_map(server, client, None)
 
     assert client.toplevel.base.surface.data == ("CAST", "void *", wrapper)
 
@@ -271,10 +271,10 @@ def test_client_map_reasserts_decoration():
     server = make_server(monitors=[MagicMock(name="m", fullscreen=None)])
     client = make_client(scene_tree=None)
 
-    with patch("welpy.geometry.apply_geometry"), \
-         patch("welpy.focus.focus_client"), \
+    with patch("welpy.geometry.reconcile"), \
+         patch("welpy.focus.bump_focus_order"), \
          patch("welpy.geometry.apply_decoration") as ad:
-        windows.client_map(server, client, None)
+        windows.on_map(server, client, None)
 
     ad.assert_called_once_with(server)
 
@@ -285,8 +285,8 @@ def test_client_map_focuses():
     server = make_server()
     client = make_client(toplevel=MagicMock(), scene_tree=MagicMock())
 
-    with patch("welpy.focus.focus_client") as focus_client:
-        windows.client_map(server, client, None)
+    with patch("welpy.focus.bump_focus_order") as focus_client:
+        windows.on_map(server, client, None)
 
     focus_client.assert_called_once_with(server, client)
 
@@ -301,7 +301,7 @@ def test_client_map_tiled_once():
     server.lib.WLR_EDGE_RIGHT = 8
     client = make_client(toplevel=MagicMock(), scene_tree=MagicMock())
 
-    windows.client_map(server, client, None)
+    windows.on_map(server, client, None)
 
     server.lib.wlr_xdg_toplevel_set_tiled.assert_called_once_with(
         client.toplevel, 15)
@@ -313,8 +313,8 @@ def test_client_map_to_tile():
     server = make_server()
     client = make_client(toplevel=MagicMock(), scene_tree=None)
 
-    with patch("welpy.focus.focus_client"):
-        windows.client_map(server, client, None)
+    with patch("welpy.focus.bump_focus_order"):
+        windows.on_map(server, client, None)
 
     server.lib.wlr_scene_tree_create.assert_called_once_with(
         server.layers[model.Layer.TILE])
@@ -330,9 +330,9 @@ def test_client_map_monitor_selected():
     server = make_server(monitors=[m1, m2], active_monitor=m1)
     client = make_client(scene_tree=None)
 
-    with patch("welpy.focus.focus_client"), \
-         patch("welpy.geometry.apply_geometry"):
-        windows.client_map(server, client, None)
+    with patch("welpy.focus.bump_focus_order"), \
+         patch("welpy.geometry.reconcile"):
+        windows.on_map(server, client, None)
 
     assert client.workspace is m1.active_workspace
 
@@ -342,8 +342,8 @@ def test_client_map_monitor_none():
     server = make_server()
     client = make_client(scene_tree=None)
 
-    with patch("welpy.focus.focus_client"):
-        windows.client_map(server, client, None)
+    with patch("welpy.focus.bump_focus_order"):
+        windows.on_map(server, client, None)
 
     assert client.workspace is None
 
@@ -360,9 +360,9 @@ def test_client_map_floats_dialog():
     client = make_client(toplevel=toplevel, scene_tree=None)
     toplevel.parent = MagicMock(name="parent_toplevel")
 
-    with patch("welpy.focus.focus_client"), \
-         patch("welpy.geometry.apply_geometry"):
-        windows.client_map(server, client, None)
+    with patch("welpy.focus.bump_focus_order"), \
+         patch("welpy.geometry.reconcile"):
+        windows.on_map(server, client, None)
 
     assert geometry.client_layer(client) == model.Layer.FLOAT
 
@@ -374,9 +374,9 @@ def test_client_map_no_parent():
     server = make_server(monitors=[m], active_monitor=m)
     client = make_client(scene_tree=None)
 
-    with patch("welpy.focus.focus_client"), \
-         patch("welpy.geometry.apply_geometry"):
-        windows.client_map(server, client, None)
+    with patch("welpy.focus.bump_focus_order"), \
+         patch("welpy.geometry.reconcile"):
+        windows.on_map(server, client, None)
 
     assert geometry.client_layer(client) == model.Layer.TILE
 
@@ -391,9 +391,9 @@ def test_client_map_adds_leaf():
     server = make_server(monitors=[m], active_monitor=m, clients=[old])
     fresh = make_client(scene_tree=None)
 
-    with patch("welpy.focus.focus_client"), \
-         patch("welpy.geometry.apply_geometry"):
-        windows.client_map(server, fresh, None)
+    with patch("welpy.focus.bump_focus_order"), \
+         patch("welpy.geometry.reconcile"):
+        windows.on_map(server, fresh, None)
 
     assert m.active_workspace.root.children == [old, fresh]
 
@@ -408,9 +408,9 @@ def test_client_map_unfullscreens_existing():
     server = make_server(monitors=[m], active_monitor=m, clients=[existing])
     fresh = make_client(scene_tree=None)
 
-    with patch("welpy.focus.focus_client"), \
-         patch("welpy.geometry.apply_geometry"):
-        windows.client_map(server, fresh, None)
+    with patch("welpy.focus.bump_focus_order"), \
+         patch("welpy.geometry.reconcile"):
+        windows.on_map(server, fresh, None)
 
     assert m.active_workspace.fullscreen is None
     server.lib.wlr_xdg_toplevel_set_fullscreen.assert_called_once_with(
@@ -426,9 +426,9 @@ def test_client_unmap_refocuses():
     b = make_client(focus_order=1, workspace=m.active_workspace)
     server = make_server(monitors=[m], active_monitor=m, clients=[a, b])
 
-    with patch("welpy.geometry.apply_geometry"), \
-         patch("welpy.focus.focus_client") as focus_client:
-        windows.client_unmap(server, a, "DATA")
+    with patch("welpy.geometry.reconcile"), \
+         patch("welpy.focus.bump_focus_order") as focus_client:
+        windows.on_unmap(server, a, "DATA")
 
     focus_client.assert_called_once_with(server, b)
 
@@ -439,7 +439,7 @@ def test_client_unmap_ends_grab():
     client = make_client(grab=model.Grab("move", 10, 20))
     server = make_server(clients=[client])
 
-    windows.client_unmap(server, client, "DATA")
+    windows.on_unmap(server, client, "DATA")
 
     assert client.grab is None
 
@@ -454,8 +454,8 @@ def test_client_unmap_alone():
     )
     server = make_server(monitors=[m], active_monitor=m, clients=[only])
 
-    with patch("welpy.focus.focus_client") as focus_client:
-        windows.client_unmap(server, only, "DATA")
+    with patch("welpy.focus.bump_focus_order") as focus_client:
+        windows.on_unmap(server, only, "DATA")
 
     focus_client.assert_not_called()
 
@@ -473,9 +473,9 @@ def test_client_unmap_lineage():
         layout.ContainerLayout.HORIZONTAL, [a, inner])
     server = make_server(monitors=[m], active_monitor=m, clients=[a, b, c])
 
-    with patch("welpy.geometry.apply_geometry"), \
-         patch("welpy.focus.focus_client") as focus_client:
-        windows.client_unmap(server, b, "DATA")
+    with patch("welpy.geometry.reconcile"), \
+         patch("welpy.focus.bump_focus_order") as focus_client:
+        windows.on_unmap(server, b, "DATA")
 
     focus_client.assert_called_once_with(server, c)
 
@@ -493,9 +493,9 @@ def test_client_unmap_float_fallback():
         floating_geom=layout.Rect(0, 0, 100, 100))
     server = make_server(monitors=[m], active_monitor=m, clients=[a, b, f])
 
-    with patch("welpy.geometry.apply_geometry"), \
-         patch("welpy.focus.focus_client") as focus_client:
-        windows.client_unmap(server, f, "DATA")
+    with patch("welpy.geometry.reconcile"), \
+         patch("welpy.focus.bump_focus_order") as focus_client:
+        windows.on_unmap(server, f, "DATA")
 
     focus_client.assert_called_once_with(server, b)
 
@@ -506,7 +506,7 @@ def test_client_unmap_clears_popup_anchor():
     client = make_client()
     server = make_server(clients=[client])
 
-    windows.client_unmap(server, client, None)
+    windows.on_unmap(server, client, None)
 
     assert client.toplevel.base.surface.data is server.ffi.NULL
 
@@ -525,9 +525,9 @@ def test_request_fullscreen_enters():
     client.toplevel.requested.fullscreen = True
 
     with patch("welpy.geometry.apply_tree"), \
-         patch("welpy.geometry.apply_geometry"), \
-         patch("welpy.focus.apply_focus"):
-        windows.client_request_fullscreen(server, client, None)
+         patch("welpy.geometry.reconcile"), \
+         patch("welpy.focus.reconcile"):
+        windows.on_request_fullscreen(server, client, None)
 
     assert m.active_workspace.fullscreen is client
     server.lib.wlr_xdg_toplevel_set_fullscreen.assert_called_once_with(
@@ -550,9 +550,9 @@ def test_request_fullscreen_keeps_float():
     client.toplevel.requested.fullscreen = True
 
     with patch("welpy.geometry.apply_tree"), \
-         patch("welpy.geometry.apply_geometry"), \
-         patch("welpy.focus.apply_focus"):
-        windows.client_request_fullscreen(server, client, None)
+         patch("welpy.geometry.reconcile"), \
+         patch("welpy.focus.reconcile"):
+        windows.on_request_fullscreen(server, client, None)
 
     assert m.active_workspace.fullscreen is client
     assert client.floating_geom == saved
@@ -573,9 +573,9 @@ def test_request_fullscreen_to_tile():
     client.toplevel.requested.fullscreen = False
 
     with patch("welpy.geometry.apply_tree"), \
-         patch("welpy.geometry.apply_geometry"), \
-         patch("welpy.focus.apply_focus"):
-        windows.client_request_fullscreen(server, client, None)
+         patch("welpy.geometry.reconcile"), \
+         patch("welpy.focus.reconcile"):
+        windows.on_request_fullscreen(server, client, None)
 
     assert m.active_workspace.fullscreen is None
     assert geometry.client_layer(client) == model.Layer.TILE
@@ -599,9 +599,9 @@ def test_request_fullscreen_to_float():
     client.toplevel.requested.fullscreen = False
 
     with patch("welpy.geometry.apply_tree"), \
-         patch("welpy.geometry.apply_geometry"), \
-         patch("welpy.focus.apply_focus"):
-        windows.client_request_fullscreen(server, client, None)
+         patch("welpy.geometry.reconcile"), \
+         patch("welpy.focus.reconcile"):
+        windows.on_request_fullscreen(server, client, None)
 
     assert m.active_workspace.fullscreen is None
     assert client.floating_geom == saved
@@ -618,12 +618,12 @@ def test_request_fullscreen_pre_map():
     client.toplevel.requested.fullscreen = True
 
     with patch("welpy.geometry.set_fullscreen") as sf:
-        windows.client_request_fullscreen(server, client, None)
+        windows.on_request_fullscreen(server, client, None)
     sf.assert_not_called()
 
     with patch("welpy.geometry.set_fullscreen") as sf, \
-         patch("welpy.focus.focus_client"):
-        windows.client_map(server, client, None)
+         patch("welpy.focus.bump_focus_order"):
+        windows.on_map(server, client, None)
     sf.assert_called_with(server, m.active_workspace, client)
 
 
@@ -642,9 +642,9 @@ def test_request_fullscreen_noop():
     client.toplevel.requested.fullscreen = True
 
     with patch("welpy.geometry.apply_tree"), \
-         patch("welpy.geometry.apply_geometry"), \
-         patch("welpy.focus.apply_focus"):
-        windows.client_request_fullscreen(server, client, None)
+         patch("welpy.geometry.reconcile"), \
+         patch("welpy.focus.reconcile"):
+        windows.on_request_fullscreen(server, client, None)
 
     server.lib.wlr_xdg_toplevel_set_fullscreen.assert_not_called()
 
@@ -654,7 +654,7 @@ def test_request_maximize_acks_initialized():
     server = make_server()
     client = make_client()
     client.toplevel.base.initialized = True
-    windows.client_request_maximize(server, client, None)
+    windows.on_request_maximize(server, client, None)
     server.lib.wlr_xdg_surface_schedule_configure.assert_called_once_with(
         client.toplevel.base)
 
@@ -665,7 +665,7 @@ def test_request_maximize_before_initialized():
     server = make_server()
     client = make_client()
     client.toplevel.base.initialized = False
-    windows.client_request_maximize(server, client, None)
+    windows.on_request_maximize(server, client, None)
     server.lib.wlr_xdg_surface_schedule_configure.assert_not_called()
 
 
@@ -675,7 +675,7 @@ def test_request_maximize_configures():
     server = make_server()
     client = make_client(toplevel=MagicMock())
 
-    windows.client_request_maximize(server, client, None)
+    windows.on_request_maximize(server, client, None)
 
     server.lib.wlr_xdg_surface_schedule_configure.assert_called_once_with(
         client.toplevel.base)
@@ -692,7 +692,7 @@ def test_urgent_marks():
     event.surface = client.toplevel.base.surface
     server.ffi.cast.return_value = event # pylint: disable=no-member
 
-    windows.client_request_activate(server, "DATA")
+    windows.on_request_activate(server, "DATA")
 
     assert client.urgent
 
@@ -709,7 +709,7 @@ def test_urgent_skips_focused():
     event.surface = client.toplevel.base.surface
     server.ffi.cast.return_value = event # pylint: disable=no-member
 
-    windows.client_request_activate(server, "DATA")
+    windows.on_request_activate(server, "DATA")
 
     assert not client.urgent
 
@@ -723,7 +723,7 @@ def test_client_cleanup_drops():
     client = make_client(
         toplevel="TL", scene_tree=None, listeners=[h1, h2])
 
-    windows.client_cleanup(server, client, None)
+    windows.on_destroy(server, client, None)
 
     h1.remove.assert_called_once()
     h2.remove.assert_called_once()
