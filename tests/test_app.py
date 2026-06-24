@@ -13,12 +13,10 @@ import cffi
 import pytest
 
 import welpy
-from welpy import (  # pylint: disable=redefined-builtin
-    app, bindings, focus, input, layout, model, windows)
+from welpy import app, bindings, layout, model
 from tests.helpers import (
-    make_server, make_bindings, make_client, make_x11_client, make_unmanaged,
-    make_monitor, make_workspace, flat_tree, make_cursor,
-    make_keycode_map, make_session_lock, trigger,
+    make_server, make_bindings, make_monitor,
+    make_keycode_map, trigger,
 )
 
 
@@ -273,7 +271,7 @@ def test_teardown_detach():
 # --- wl_list iterator ------------------------------------------------------
 
 
-def test_wl_list_for_each_yields_containers():
+def test_wl_list_walks_in_order():
     """The wl_list iterator walks an intrusive list and recovers each owning
     struct from its embedded link, in order."""
     ffi = cffi.FFI()
@@ -298,7 +296,7 @@ def test_wl_list_for_each_yields_containers():
     assert got == [1, 2, 3]
 
 
-def test_wl_list_for_each_empty():
+def test_wl_list_empty_yields_nothing():
     """An empty list -- its sentinel points back at itself -- yields nothing."""
     ffi = cffi.FFI()
     ffi.cdef("struct wl_list { struct wl_list *prev; struct wl_list *next; };")
@@ -450,44 +448,10 @@ def test_setup_layers_created():
     assert server.layers == dict(zip(model.Layer, trees))
 
 
-def test_client_unmap_unselected():
-    """Unmapping a window not on the active monitor leaves focus alone
-    when there's nothing to refocus on the active monitor."""
-    m1 = make_monitor()
-    m1.active_workspace = make_workspace(monitor=m1)
-    m2 = make_monitor()
-    m2.active_workspace = make_workspace(monitor=m2)
-    a = make_client(focus_order=1, workspace=m2.active_workspace)
-    server = make_server(monitors=[m1], active_monitor=m1, clients=[a])
-
-    with patch("welpy.focus.bump_focus_order") as focus_client:
-        windows.on_unmap(server, a, "DATA")
-
-    focus_client.assert_not_called()
-
-
-def test_borders_present():
-    """A new window gets four edge rects under its wrapper tree so it has
-    something to color on focus."""
-    server = make_server()
-    wrapper = MagicMock(name="wrapper")
-    server.lib.wlr_scene_tree_create.return_value = wrapper
-    client = make_client(toplevel=MagicMock(), scene_tree=None)
-
-    with patch("welpy.focus.bump_focus_order"):
-        windows.on_map(server, client, None)
-
-    assert len(client.borders) == 4
-    parents = [
-        c.args[0] for c in server.lib.wlr_scene_rect_create.call_args_list
-    ]
-    assert parents == [wrapper] * 4
-
-
 # --- apply_geometry ------------------------------------------------------
 
 
-def test_layout_walk_row():
+def test_walk_row():
     """A HORIZONTAL container splits its area into equal columns that sum
     exactly to the width."""
     a, b, c = object(), object(), object()
@@ -501,7 +465,7 @@ def test_layout_walk_row():
     ]
 
 
-def test_layout_walk_nested():
+def test_walk_nested():
     """A nested container subdivides only its own slice of the parent area."""
     a, b, c = object(), object(), object()
     inner = layout.Container(layout.ContainerLayout.VERTICAL, [b, c])
@@ -514,7 +478,7 @@ def test_layout_walk_nested():
     assert placed[id(c)] == layout.Rect(400, 300, 400, 300)
 
 
-def test_layout_insert_after():
+def test_insert_after():
     """insert_sibling places the new leaf right after its target."""
     a, b, c = object(), object(), object()
     root = layout.Container(layout.ContainerLayout.HORIZONTAL, [a, b])
@@ -523,7 +487,7 @@ def test_layout_insert_after():
     assert root.children == [a, c, b]
 
 
-def test_layout_insert_append():
+def test_insert_append():
     """insert_sibling appends to the root when the target is None or absent."""
     a, b = object(), object()
     root = layout.Container(layout.ContainerLayout.HORIZONTAL, [a])
@@ -532,7 +496,7 @@ def test_layout_insert_append():
     assert root.children == [a, b]
 
 
-def test_layout_remove_promotes():
+def test_remove_promotes():
     """Removing a window that leaves its container with one sibling promotes
     that sibling, dropping the now-redundant container."""
     a, b, c = object(), object(), object()
@@ -543,7 +507,7 @@ def test_layout_remove_promotes():
     assert root.children == [a, c]
 
 
-def test_layout_remove_empty():
+def test_remove_empty():
     """Removing the only window of a group drops the emptied container."""
     a, b = object(), object()
     root = layout.Container(layout.ContainerLayout.HORIZONTAL, [a, b])
@@ -553,7 +517,7 @@ def test_layout_remove_empty():
     assert root.children == [b]
 
 
-def test_layout_remove_unrelated():
+def test_remove_unrelated():
     """Collapse touches only the removed window's ancestors, so a one-window
     group elsewhere survives an unrelated removal."""
     a, b, c = object(), object(), object()
@@ -564,7 +528,7 @@ def test_layout_remove_unrelated():
     assert root.children[0] is group and group.children == [a]
 
 
-def test_layout_wrap_unwrap():
+def test_wrap_unwrap():
     """wrap nests a leaf one level deeper; unwrap splices the group back."""
     a, b = object(), object()
     root = layout.Container(layout.ContainerLayout.HORIZONTAL, [a, b])
@@ -577,7 +541,7 @@ def test_layout_wrap_unwrap():
     assert root.children == [a, b]
 
 
-def test_layout_cycle_flips():
+def test_cycle_flips():
     """cycle_layout toggles a container between HORIZONTAL and VERTICAL."""
     root = layout.Container(layout.ContainerLayout.HORIZONTAL, [object()])
     layout.cycle(root)
@@ -586,7 +550,7 @@ def test_layout_cycle_flips():
     assert root.layout == layout.ContainerLayout.HORIZONTAL
 
 
-def test_layout_adjacent_leaves_sibling():
+def test_adjacent_sibling():
     """In a flat row the adjacent set is the single neighboring window."""
     a, b, c = object(), object(), object()
     root = layout.Container(layout.ContainerLayout.HORIZONTAL, [a, b, c])
@@ -595,7 +559,7 @@ def test_layout_adjacent_leaves_sibling():
     assert layout.adjacent_leaves(root, c, layout.Direction.LEFT) == [b]
 
 
-def test_layout_adjacent_leaves_edge():
+def test_adjacent_edge():
     """Nothing lies past an edge or along an axis no ancestor splits on, so the
     adjacent set is empty."""
     a, b = object(), object()
@@ -605,7 +569,7 @@ def test_layout_adjacent_leaves_edge():
     assert not layout.adjacent_leaves(root, a, layout.Direction.UP)
 
 
-def test_layout_adjacent_leaves_group():
+def test_adjacent_group():
     """A neighboring container contributes all its windows as candidates."""
     a, b, c = object(), object(), object()
     inner = layout.Container(layout.ContainerLayout.VERTICAL, [b, c])
@@ -615,7 +579,7 @@ def test_layout_adjacent_leaves_group():
     assert layout.adjacent_leaves(root, a, layout.Direction.RIGHT) == [b, c]
 
 
-def test_layout_successor_siblings():
+def test_successor_siblings():
     """In a flat row the successor is the highest-ranked other window."""
     a, b, c = object(), object(), object()
     root = layout.Container(layout.ContainerLayout.HORIZONTAL, [a, b, c])
@@ -624,7 +588,7 @@ def test_layout_successor_siblings():
     assert layout.successor(root, a, rank.get) is b
 
 
-def test_layout_successor_inner():
+def test_successor_inner():
     """The innermost enclosing group wins: a grouped window's successor is a
     groupmate, even when a higher-ranked window sits outside the group."""
     a, b, c = object(), object(), object()
@@ -635,7 +599,7 @@ def test_layout_successor_inner():
     assert layout.successor(root, b, rank.get) is c
 
 
-def test_layout_successor_climbs():
+def test_successor_climbs():
     """When the innermost group holds no one else, the climb skips it and
     picks from the next ancestor."""
     a, b = object(), object()
@@ -645,7 +609,7 @@ def test_layout_successor_climbs():
     assert layout.successor(root, b, lambda n: 0) is a
 
 
-def test_layout_successor_alone():
+def test_successor_alone():
     """A sole window, or one absent from the tree, has no successor."""
     a = object()
     root = layout.Container(layout.ContainerLayout.HORIZONTAL, [a])
@@ -654,7 +618,7 @@ def test_layout_successor_alone():
     assert layout.successor(root, object(), lambda n: 0) is None
 
 
-def test_layout_container_parent():
+def test_container_parent():
     """container_of returns the parent and index of a window by identity."""
     a, b = object(), object()
     inner = layout.Container(layout.ContainerLayout.VERTICAL, [a, b])
@@ -664,7 +628,7 @@ def test_layout_container_parent():
     assert layout.container_of(root, object()) is None
 
 
-def test_layout_move_reorder():
+def test_move_reorder():
     """Moving a window toward a leaf sibling reorders it past that sibling
     within the same container."""
     a, b, c = object(), object(), object()
@@ -675,7 +639,7 @@ def test_layout_move_reorder():
     assert root.children == [b, a, c]
 
 
-def test_layout_move_pops_out():
+def test_move_pops_out():
     """Moving a window past the edge of its container pops it out beside that
     container in the parent, collapsing the container it vacated."""
     a, f, b = object(), object(), object()
@@ -688,7 +652,7 @@ def test_layout_move_pops_out():
     assert root.children == [a, f, b]
 
 
-def test_layout_move_descends():
+def test_move_descends():
     """Moving a window into an adjacent container descends into it, entering a
     perpendicular container at the front."""
     f, b, c = object(), object(), object()
@@ -702,7 +666,7 @@ def test_layout_move_descends():
     assert inner.children == [f, b, c]
 
 
-def test_layout_move_perp():
+def test_move_perp():
     """Moving a window out of a perpendicular container pops it into the parent
     beside that container, which keeps its remaining windows."""
     a, b, f, c = object(), object(), object(), object()
@@ -716,7 +680,7 @@ def test_layout_move_perp():
     assert inner.children == [b, c]
 
 
-def test_layout_move_edge():
+def test_move_edge():
     """Moving a window toward the outer edge of the root is a no-op."""
     a, f = object(), object()
     root = layout.Container(layout.ContainerLayout.HORIZONTAL, [a, f])
@@ -726,7 +690,7 @@ def test_layout_move_edge():
     assert root.children == [a, f]
 
 
-def test_layout_move_root_perp():
+def test_move_root_perp():
     """Moving along an axis no ancestor splits on is a no-op."""
     a, f = object(), object()
     root = layout.Container(layout.ContainerLayout.VERTICAL, [a, f])
@@ -736,7 +700,7 @@ def test_layout_move_root_perp():
     assert root.children == [a, f]
 
 
-def test_layout_move_escapes_parent():
+def test_move_escape_after_parent():
     """At the edge of its container, a window escapes its immediate parent one
     level up, toward the move side; the drained single-child group collapses."""
     a, b, f = object(), object(), object()
@@ -749,7 +713,7 @@ def test_layout_move_escapes_parent():
     assert root.children == [a, b, f]
 
 
-def test_layout_move_escapes_up():
+def test_move_escape_before_parent():
     """Escaping toward the up/left side lands the window before its parent."""
     a, b, f = object(), object(), object()
     inner = layout.Container(layout.ContainerLayout.VERTICAL, [f, b])
@@ -761,7 +725,7 @@ def test_layout_move_escapes_up():
     assert root.children == [f, b, a]
 
 
-def test_layout_move_escape_keeps_container():
+def test_move_escape_keeps_parent():
     """A parent left with more than one child survives the escape."""
     a, b, c, f = object(), object(), object(), object()
     inner = layout.Container(layout.ContainerLayout.VERTICAL, [b, c, f])
@@ -774,7 +738,7 @@ def test_layout_move_escape_keeps_container():
     assert inner.children == [b, c]
 
 
-def test_layout_move_escapes_to_grandparent():
+def test_move_escape_one_level():
     """The escape rises only one level: a deeply nested window lands in its
     grandparent, not the root."""
     a, x, y, f = object(), object(), object(), object()
@@ -789,7 +753,7 @@ def test_layout_move_escapes_to_grandparent():
     assert v1.children == [x, y, f]
 
 
-def test_layout_move_reorder_left():
+def test_move_reorder_left():
     """Moving left reorders a window past its left-hand leaf sibling within the
     same container (negative-step reorder)."""
     a, b, c = object(), object(), object()
@@ -800,7 +764,7 @@ def test_layout_move_reorder_left():
     assert root.children == [a, c, b]
 
 
-def test_layout_move_vertical_reorder():
+def test_move_reorder_down():
     """Moving DOWN in a column reorders a window past the one below it."""
     a, b, c = object(), object(), object()
     root = layout.Container(layout.ContainerLayout.VERTICAL, [a, b, c])
@@ -810,7 +774,7 @@ def test_layout_move_vertical_reorder():
     assert root.children == [b, a, c]
 
 
-def test_layout_move_pops_up():
+def test_move_pops_up():
     """Moving UP pops a window out of its nested row into the column."""
     x, a, f = object(), object(), object()
     row = layout.Container(layout.ContainerLayout.HORIZONTAL, [a, f])
@@ -821,7 +785,7 @@ def test_layout_move_pops_up():
     assert root.children == [x, f, a]
 
 
-def test_layout_move_descend_front():
+def test_move_descend_front():
     """Descending into a same-axis container from the low side enters it at the
     front."""
     f, y, z = object(), object(), object()
@@ -835,7 +799,7 @@ def test_layout_move_descend_front():
     assert inner.children == [f, y, z]
 
 
-def test_layout_move_descend_end():
+def test_move_descend_back():
     """Descending into a same-axis container from the high side enters it at
     the back."""
     y, z, f = object(), object(), object()
@@ -849,7 +813,7 @@ def test_layout_move_descend_end():
     assert inner.children == [y, z, f]
 
 
-def test_layout_move_deep_climb():
+def test_move_climbs_ancestors():
     """A window with no room nearby climbs past several ancestors to the first
     matching-axis one with a neighbor, popping out there and collapsing the
     chain it left behind."""
@@ -865,7 +829,7 @@ def test_layout_move_deep_climb():
     assert column.children == [a, c]
 
 
-def test_layout_move_popout_survives():
+def test_move_popout_keeps_container():
     """Popping out of a multi-window container leaves that container in place
     with its remaining windows."""
     a, b, f, x = object(), object(), object(), object()
@@ -1027,264 +991,7 @@ def test_setup_output_power_listener():
     handler.assert_called_once_with(built, "PWR_DATA")
 
 
-# --- session lock ---------------------------------------------------------
-
-
-def test_keyboard_modifiers_locked():
-    """While locked with no locker surface, modifiers are not forwarded to a
-    stale app focus."""
-    session_lock = make_session_lock(surfaces=[])
-    server = make_server(session_lock=session_lock, locked=True)
-    server.seat.keyboard_state.focused_surface = MagicMock(name="window")
-
-    input.keyboard_modifiers(server, "MOD_DATA")
-
-    server.lib.wlr_seat_keyboard_notify_modifiers.assert_not_called()
-    server.lib.wlr_seat_keyboard_clear_focus.assert_called_once_with(
-        server.seat)
-
-
-def test_keyboard_key_locked():
-    """While locked, compositor keybindings are suppressed so the lock can't
-    be bypassed; the key still forwards to the locker."""
-    action = MagicMock()
-    server = make_server(bindings={(0x40, 28): action}, locked=True)
-    server.lib.wlr_keyboard_get_modifiers.return_value = 0x40
-    event = server.ffi.cast.return_value
-    event.time_msec = 42
-    event.state = 1
-    event.keycode = 28
-
-    input.keyboard_key(server, "KEY_DATA")
-
-    action.assert_not_called()
-    server.lib.wlr_seat_keyboard_notify_key.assert_called_once_with(
-        server.seat, 42, 28, 1)
-
-
-def test_cursor_button_locked():
-    """While locked, clicking a window neither focuses it nor runs a mouse
-    binding; the click still forwards to the locker."""
-    action = MagicMock()
-    server = make_server(
-        bindings={(0x8, 0x110): action}, locked=True,
-        cursor=make_cursor(xcursor_manager="X"))
-    server.lib.wlr_keyboard_get_modifiers.return_value = 0x8
-    event = server.ffi.cast.return_value
-    event.button = 0x110
-    event.time_msec = 7
-    event.state = server.lib.WL_POINTER_BUTTON_STATE_PRESSED
-
-    with patch("welpy.focus.bump_focus_order") as focus_client, \
-         patch("welpy.focus.client_at") as at:
-        input.cursor_button(server, "BUTTON_DATA")
-
-    action.assert_not_called()
-    focus_client.assert_not_called()
-    at.assert_not_called()
-    server.lib.wlr_seat_pointer_notify_button.assert_called_once()
-
-
-# --- drag / commit / unmap -------------------------------------------------
-
-
-def test_begin_dragging_floats():
-    """begin_dragging_client makes the dragged window floating by seeding
-    floating_geom from its current outer rect."""
-    client = make_client()
-    client.scene_tree.node.x = 0
-    client.scene_tree.node.y = 0
-    server = make_server(
-        clients=[client], cursor=make_cursor(xcursor_manager="X"))
-    server.cursor.cursor.x = 0
-    server.cursor.cursor.y = 0
-    node = MagicMock(name="node")
-    node.parent = client.scene_tree
-    server.lib.wlr_scene_node_at.return_value = node
-
-    seed = layout.Rect(0, 0, 100, 80)
-    with patch("welpy.geometry.client_outer_rect", return_value=seed), \
-         patch("welpy.geometry.reconcile"):
-        input.begin_dragging_client(server)
-
-    assert client.floating_geom == seed
-
-
-def test_begin_dragging_drops_leaf():
-    """Starting a mouse move on a tiled window drops its leaf from the
-    workspace tree so it floats outside the layout."""
-    # pylint: disable=duplicate-code
-    m = make_monitor()
-    m.active_workspace = make_workspace(monitor=m)
-    a = make_client(workspace=m.active_workspace)
-    b = make_client(workspace=m.active_workspace)
-    m.active_workspace.root = flat_tree(a, b)
-    server = make_server(
-        monitors=[m], active_monitor=m, clients=[a, b],
-        cursor=make_cursor(xcursor_manager="X"))
-    node = MagicMock(name="node")
-    node.parent = a.scene_tree
-    server.lib.wlr_scene_node_at.return_value = node
-
-    with patch("welpy.geometry.client_outer_rect",
-               return_value=layout.Rect(0, 0, 100, 80)), \
-         patch("welpy.geometry.reconcile"):
-        input.begin_dragging_client(server)
-
-    assert m.active_workspace.root.children == [b]
-
-
-def test_begin_resizing_drops_leaf():
-    """Starting a mouse resize on a tiled window drops its leaf from the
-    workspace tree so it floats outside the layout."""
-    # pylint: disable=duplicate-code
-    m = make_monitor()
-    m.active_workspace = make_workspace(monitor=m)
-    a = make_client(workspace=m.active_workspace)
-    b = make_client(workspace=m.active_workspace)
-    m.active_workspace.root = flat_tree(a, b)
-    server = make_server(
-        monitors=[m], active_monitor=m, clients=[a, b],
-        cursor=make_cursor(xcursor_manager="X"))
-    node = MagicMock(name="node")
-    node.parent = a.scene_tree
-    server.lib.wlr_scene_node_at.return_value = node
-
-    with patch("welpy.geometry.client_outer_rect",
-               return_value=layout.Rect(0, 0, 100, 80)), \
-         patch("welpy.geometry.reconcile"):
-        input.begin_resizing_client(server)
-
-    assert m.active_workspace.root.children == [b]
-
-
-def test_client_commit_initial_tiled():
-    """A tiled client's initial commit defers tiling to map so siblings
-    don't reflow before the new window can appear."""
-    server = make_server()
-    workspace = make_workspace()
-    toplevel = MagicMock()
-    toplevel.base.initial_commit = True
-    client = make_client(toplevel=toplevel, workspace=workspace)
-
-    with patch("welpy.geometry.reconcile") as apply_geom:
-        windows.on_commit(server, client, None)
-
-    apply_geom.assert_not_called()
-    server.lib.wlr_xdg_toplevel_set_size.assert_called_once_with(
-        toplevel, 0, 0)
-
-
-def test_client_commit_initial_floating():
-    """A floating client falls back to the (0, 0) initial configure."""
-    server = make_server()
-    workspace = make_workspace()
-    toplevel = MagicMock()
-    toplevel.base.initial_commit = True
-    client = make_client(
-        toplevel=toplevel,
-        floating_geom=layout.Rect(0, 0, 100, 100),
-        workspace=workspace,
-    )
-
-    with patch("welpy.geometry.reconcile") as apply_geom:
-        windows.on_commit(server, client, None)
-
-    apply_geom.assert_not_called()
-    server.lib.wlr_xdg_toplevel_set_size.assert_called_once_with(
-        toplevel, 0, 0)
-
-
-def test_client_commit_initial_unassigned():
-    """A tiled client with no workspace falls back to the (0, 0) initial
-    configure so the required configure still goes out."""
-    server = make_server()
-    toplevel = MagicMock()
-    toplevel.base.initial_commit = True
-    client = make_client(toplevel=toplevel, workspace=None)
-
-    with patch("welpy.geometry.reconcile") as apply_geom:
-        windows.on_commit(server, client, None)
-
-    apply_geom.assert_not_called()
-    server.lib.wlr_xdg_toplevel_set_size.assert_called_once_with(
-        toplevel, 0, 0)
-
-
-def test_client_unmap_arranges():
-    """After a tiled client unmaps, its monitor re-flows so remaining
-    tiles expand -- in the same event as the window's removal so it lands
-    in a single frame."""
-    # pylint: disable=duplicate-code
-    m = make_monitor()
-    m.active_workspace = make_workspace(monitor=m)
-    a = make_client(workspace=m.active_workspace)
-    b = make_client(workspace=m.active_workspace)
-    server = make_server(monitors=[m], active_monitor=m, clients=[a, b])
-
-    with patch("welpy.geometry.reconcile") as apply_geom:
-        windows.on_unmap(server, a, None)
-
-    apply_geom.assert_called_once_with(server, m)
-
-
-def test_client_unmap_destroys_tree():
-    """Unmapping releases the scene tree so the disappearing window, the
-    reflow, and the focus shift all happen together."""
-    client = make_client()
-    server = make_server(clients=[client])
-
-    windows.on_unmap(server, client, None)
-
-    server.lib.wlr_scene_node_destroy.assert_called_once_with(
-        server.ffi.addressof.return_value)
-    assert client.scene_tree is None
-    assert client not in server.clients
-
-
-def test_client_unmap_drops_leaf():
-    """Unmapping a tiled window drops its leaf from the workspace tree so the
-    siblings reflow."""
-    m = make_monitor()
-    m.active_workspace = make_workspace(monitor=m)
-    a = make_client(workspace=m.active_workspace, focus_order=1)
-    b = make_client(workspace=m.active_workspace, focus_order=2)
-    m.active_workspace.root = flat_tree(a, b)
-    server = make_server(monitors=[m], active_monitor=m, clients=[a, b])
-
-    with patch("welpy.focus.bump_focus_order"), \
-         patch("welpy.geometry.reconcile"):
-        windows.on_unmap(server, a, None)
-
-    assert m.active_workspace.root.children == [b]
-
-
-def test_client_unmap_orphan():
-    """Unmapping an orphaned client doesn't trigger an arrange."""
-    client = make_client(workspace=None)
-    server = make_server(clients=[client])
-
-    with patch("welpy.geometry.reconcile") as apply_geom:
-        windows.on_unmap(server, client, None)
-
-    apply_geom.assert_not_called()
-
-
-def test_client_unmap_stale():
-    """Unmapping a client whose monitor has already been removed is a
-    no-op for arrange."""
-    m = make_monitor()  # not in server.monitors
-    m.active_workspace = make_workspace(monitor=m)
-    client = make_client(workspace=m.active_workspace)
-    server = make_server(clients=[client])
-
-    with patch("welpy.geometry.reconcile") as apply_geom:
-        windows.on_unmap(server, client, None)
-
-    apply_geom.assert_not_called()
-
-
-def test_setup_layout_change_updates():
+def test_setup_layout_change_reflows():
     """A change in the screen layout (monitor added/removed/repositioned)
     drives update_monitors so windows re-flow onto the new geometry."""
     build = make_bindings()
@@ -1304,7 +1011,7 @@ def test_setup_layout_change_updates():
 # --- override / load_config ------------------------------------------------
 
 
-def test_override_form1_chains_original(monkeypatch):
+def test_override_chains_original(monkeypatch):
     """The previous function is passed in as the first argument."""
     monkeypatch.setattr(app, "modkey", app.modkey)
 
@@ -1317,7 +1024,7 @@ def test_override_form1_chains_original(monkeypatch):
     assert app.modkey(server) == 0x40 | 0xFF
 
 
-def test_override_form2_wl(monkeypatch):
+def test_override_renamed_function(monkeypatch):
     """@welpy.override(target) installs at the target's home, even when the
     new function has a different local name."""
     monkeypatch.setattr(app, "modkey", app.modkey)
@@ -1329,7 +1036,7 @@ def test_override_form2_wl(monkeypatch):
     assert app.modkey(MagicMock()) == 0x123
 
 
-def test_override_form2_bindings(monkeypatch):
+def test_override_cross_module(monkeypatch):
     """@welpy.override reaches outside welpy.app: targeting bindings.build
     installs the replacement in bindings, not in welpy.app."""
     monkeypatch.setattr(bindings, "build", bindings.build)
@@ -1362,7 +1069,7 @@ def test_override_chain_composes(monkeypatch):
     assert app.modkey(server) == 60
 
 
-def test_autostart_overridable(monkeypatch):
+def test_override_autostart(monkeypatch):
     """@welpy.override on `autostart` lets config swap the launched programs."""
     monkeypatch.setattr(app, "autostart", app.autostart)
     calls = []
@@ -1382,7 +1089,7 @@ def test_override_non_callable():
         welpy.override(None)
 
 
-def test_override_callable_no_name():
+def test_override_missing_name():
     """Callable missing __name__ (e.g. functools.partial): default
     AttributeError names the missing attribute clearly."""
     partial = functools.partial(lambda x: x)
@@ -1390,12 +1097,12 @@ def test_override_callable_no_name():
         welpy.override(partial)
 
 
-def test_load_config_missing(tmp_path):
+def test_config_missing_noop(tmp_path):
     """Absent config file is a silent no-op."""
     app.load_config(tmp_path / "nonexistent.py")
 
 
-def test_load_config_runs(tmp_path, monkeypatch):
+def test_config_runs_file(tmp_path, monkeypatch):
     """The loader executes the file's top-level code."""
     # pylint: disable=protected-access,no-member
     monkeypatch.setattr(app, "_test_marker", None, raising=False)
@@ -1408,7 +1115,7 @@ def test_load_config_runs(tmp_path, monkeypatch):
     assert app._test_marker == "ran"
 
 
-def test_load_config_sys_path(tmp_path, monkeypatch):
+def test_config_sibling_importable(tmp_path, monkeypatch):
     """Sibling files are importable as top-level modules after load, and
     overrides defined in them land on the running welpy.app module."""
     monkeypatch.setattr(app, "modkey", app.modkey)
@@ -1445,28 +1152,10 @@ def test_setup_workspaces_orphaned():
     assert server.active_monitor is None
 
 
-# --- workspaces: helpers --------------------------------------------------
-
-
-def test_urgent_clears_on_focus():
-    """Focusing an urgent window clears its urgent flag."""
-    monitor = make_monitor()
-    monitor.active_workspace = make_workspace(monitor=monitor)
-    client = make_client(
-        focus_order=1, urgent=True, workspace=monitor.active_workspace)
-    server = make_server(
-        ext_workspace=None, monitors=[monitor], active_monitor=monitor,
-        clients=[client])
-
-    focus.reconcile(server)
-
-    assert not client.urgent
-
-
 # --- setup: ext-workspace -------------------------------------------------
 
 
-def test_setup_extws():
+def test_setup_ext_workspace():
     """app.setup() builds an ext_workspace ext on the server."""
     build = make_bindings()
     with patch("welpy.app.bindings.build", return_value=build), \
@@ -1478,35 +1167,6 @@ def test_setup_extws():
     create.assert_called_once_with(
         server, on_activate=ANY, on_assign=ANY)
     assert server.ext_workspace is create.return_value
-
-
-# --- xwayland (X11 clients) ------------------------------------------------
-
-
-def test_xwayland_map_front():
-    """A mapped X11 window goes to the front of server.clients, like a
-    Wayland one."""
-    old = make_client()
-    server = make_server(clients=[old])
-    fresh = make_x11_client(scene_tree=None)
-
-    with patch("welpy.focus.bump_focus_order"):
-        windows.on_map(server, fresh, None)
-
-    assert server.clients[0] is fresh
-
-
-def test_xwayland_map_scene():
-    """An X11 window's content goes into a subsurface tree, not an xdg one."""
-    server = make_server()
-    client = make_x11_client(scene_tree=None)
-
-    with patch("welpy.focus.bump_focus_order"):
-        windows.on_map(server, client, None)
-
-    server.lib.wlr_scene_subsurface_tree_create.assert_called_once_with(
-        server.lib.wlr_scene_tree_create.return_value, client.xsurface.surface)
-    server.lib.wlr_scene_xdg_surface_create.assert_not_called()
 
 
 def test_main_display_before_autostart(monkeypatch):
@@ -1529,19 +1189,3 @@ def test_main_display_before_autostart(monkeypatch):
         app.main()
 
     assert seen["display"] == ":4"
-
-
-def test_unmanaged_focus_defers():
-    """apply_focus keeps the keyboard on a focus-holding unmanaged surface and
-    skips the normal window-focus path."""
-    server = make_server()
-    um = make_unmanaged()
-    server.unmanaged_focus = um
-
-    with patch("welpy.focus.top_client") as top:
-        focus.reconcile(server)
-
-    top.assert_not_called()
-    server.lib.wlr_seat_keyboard_notify_enter.assert_called_once()
-    assert (server.lib.wlr_seat_keyboard_notify_enter.call_args.args[1]
-            is um.xsurface.surface)

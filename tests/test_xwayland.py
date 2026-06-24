@@ -9,7 +9,7 @@ from tests.helpers import (
 )
 
 
-def test_xwayland_new_unmanaged():
+def test_create_override_redirect_unmanaged():
     """Override-redirect surfaces (menus, tooltips) take the lighter unmanaged
     path instead of the managed-window wiring."""
     server = make_server()
@@ -23,7 +23,7 @@ def test_xwayland_new_unmanaged():
     unmanaged.assert_called_once_with(server, xsurface)
 
 
-def test_xwayland_new_attaches_listeners():
+def test_create_managed_listeners():
     """A managed X11 window gets its lifecycle listeners."""
     server = make_server()
     xsurface = MagicMock()
@@ -37,7 +37,7 @@ def test_xwayland_new_attaches_listeners():
     server.lib.welpy_xwayland_surface_destroy.assert_called_once_with(xsurface)
 
 
-def test_xwayland_associate_map():
+def test_create_associate_wires_map():
     """On associate, the wl_surface's map drives the shared client_map."""
     server = make_server()
     xsurface = MagicMock()
@@ -52,7 +52,7 @@ def test_xwayland_associate_map():
     mapped.assert_called_once_with(server, ANY, "MAP")
 
 
-def test_xwayland_dissociate_detaches():
+def test_create_dissociate_detaches():
     """Dissociate removes the map/unmap/commit listeners wired on associate."""
     server = make_server()
     xsurface = MagicMock()
@@ -75,7 +75,7 @@ def test_xwayland_dissociate_detaches():
     map_handle.remove.assert_called_once_with()
 
 
-def test_xwayland_hints_wired():
+def test_create_hints_listener():
     """A managed X11 window listens for ICCCM hint changes."""
     server = make_server()
     xsurface = MagicMock()
@@ -88,7 +88,7 @@ def test_xwayland_hints_wired():
         xsurface)
 
 
-def test_xwayland_configure_premap():
+def test_request_configure_premap():
     """Before map, honor the X11 app's requested geometry verbatim."""
     server = make_server()
     client = make_x11_client(scene_tree=None)
@@ -101,7 +101,7 @@ def test_xwayland_configure_premap():
         client.xsurface, 5, 10, 300, 200)
 
 
-def test_xwayland_activate_urgent():
+def test_request_activate_urgent():
     """An X11 activate request shows an urgent border instead of stealing
     focus."""
     server = make_server()
@@ -111,7 +111,7 @@ def test_xwayland_activate_urgent():
     mark.assert_called_once_with(server, client)
 
 
-def test_xwayland_hints_urgent():
+def test_hints_urgent_mapped():
     """An urgent ICCCM hint on a mapped window shows an urgent border."""
     server = make_server()
     client = make_x11_client()
@@ -123,7 +123,7 @@ def test_xwayland_hints_urgent():
     mark.assert_called_once_with(server, client)
 
 
-def test_xwayland_hints_premap():
+def test_hints_premap_ignored():
     """Hints before the window maps don't raise urgency."""
     server = make_server()
     client = make_x11_client(scene_tree=None)
@@ -135,7 +135,7 @@ def test_xwayland_hints_premap():
     mark.assert_not_called()
 
 
-def test_xwayland_ready_seat():
+def test_ready_sets_seat_and_cursor():
     """When the X server comes up we point it at our seat and set its cursor."""
     server = make_server()
 
@@ -162,7 +162,7 @@ def test_unmanaged_new_listeners():
     server.lib.welpy_xwayland_surface_request_fullscreen.assert_not_called()
 
 
-def test_unmanaged_associate_map():
+def test_unmanaged_associate_wires_map():
     """On associate, the wl_surface's map drives unmanaged_map."""
     server = make_server()
     xsurface = MagicMock()
@@ -175,7 +175,7 @@ def test_unmanaged_associate_map():
     mapped.assert_called_once_with(server, ANY, "MAP")
 
 
-def test_unmanaged_map_position():
+def test_unmanaged_map_overlay_no_focus():
     """Mapping places the surface in the OVERLAY layer at the app's coords and,
     without a focus request, leaves the keyboard alone."""
     server = make_server()
@@ -193,7 +193,7 @@ def test_unmanaged_map_position():
     assert server.unmanaged_focus is None
 
 
-def test_unmanaged_map_focus():
+def test_unmanaged_map_takes_focus():
     """A focus-wanting unmanaged surface becomes the keyboard owner on map."""
     server = make_server()
     um = make_unmanaged()
@@ -207,7 +207,7 @@ def test_unmanaged_map_focus():
     apply_focus.assert_called_once_with(server)
 
 
-def test_unmanaged_configure_position():
+def test_unmanaged_configure_repositions():
     """A configure request repositions the scene node to the requested spot."""
     server = make_server()
     um = make_unmanaged(scene_tree=MagicMock())

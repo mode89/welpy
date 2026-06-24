@@ -10,7 +10,7 @@ from tests.helpers import (
 )
 
 
-def test_apply_geometry_single_full():
+def test_reconcile_single_tile_full():
     """One tiled window fills the whole window area."""
     m = make_monitor(window_area=layout.Rect(0, 0, 800, 600))
     m.active_workspace = make_workspace(monitor=m)
@@ -24,7 +24,7 @@ def test_apply_geometry_single_full():
     resize.assert_called_once_with(server, a, layout.Rect(0, 0, 800, 600))
 
 
-def test_apply_geometry_row():
+def test_reconcile_row_equal_columns():
     """Three tiled windows in a HORIZONTAL container split the width into three
     equal columns spanning the full height, summing exactly to the area."""
     m = make_monitor(window_area=layout.Rect(0, 0, 800, 600))
@@ -45,7 +45,7 @@ def test_apply_geometry_row():
     ]
 
 
-def test_apply_geometry_other_monitor():
+def test_reconcile_ignores_other_monitor():
     """apply_geometry only touches clients visible on its monitor."""
     m1 = make_monitor(window_area=layout.Rect(0, 0, 800, 600))
     m1.active_workspace = make_workspace(monitor=m1)
@@ -63,7 +63,7 @@ def test_apply_geometry_other_monitor():
     resize.assert_called_once_with(server, a, layout.Rect(0, 0, 800, 600))
 
 
-def test_apply_geometry_skips_floating():
+def test_reconcile_tiles_then_floats():
     """Floating windows aren't in the tree; the tile path covers tiles only,
     then floats get their own rect."""
     m = make_monitor(window_area=layout.Rect(0, 0, 800, 600))
@@ -86,7 +86,7 @@ def test_apply_geometry_skips_floating():
     ]
 
 
-def test_apply_geometry_sizes_fullscreen():
+def test_reconcile_fullscreen_fills_monitor():
     """A fullscreen window is sized to the monitor box; the windows hidden
     behind it are left untouched until fullscreen exits."""
     m = make_monitor(window_area=layout.Rect(0, 0, 800, 600))
@@ -105,7 +105,7 @@ def test_apply_geometry_sizes_fullscreen():
     resize.assert_called_once_with(server, fs, layout.Rect(0, 0, 800, 600))
 
 
-def test_apply_geometry_empty():
+def test_reconcile_empty_noop():
     """With no tile/fullscreen clients on the monitor, apply_geometry
     does nothing."""
     server = make_server()
@@ -118,7 +118,7 @@ def test_apply_geometry_empty():
     resize.assert_not_called()
 
 
-def test_apply_geometry_reconciles_float():
+def test_reconcile_float_converges():
     """A floating client is resized to its floating_geom on every
     apply_geometry, so any drift between wlroots state and dataclass
     state converges."""
@@ -339,7 +339,7 @@ def test_hierarchy_active_repair():
     assert monitor.active_workspace is on_monitor
 
 
-def test_apply_visibility_active():
+def test_visibility_active_shown():
     """Clients on a monitor's active workspace have their scene nodes
     enabled."""
     monitor = make_monitor()
@@ -355,7 +355,7 @@ def test_apply_visibility_active():
         server.ffi.addressof.return_value, True)
 
 
-def test_apply_visibility_inactive():
+def test_visibility_inactive_hidden():
     """Clients on a non-active workspace have their scene nodes disabled."""
     monitor = make_monitor()
     active = make_workspace(name="1", monitor=monitor)
@@ -371,7 +371,7 @@ def test_apply_visibility_inactive():
         server.ffi.addressof.return_value, False)
 
 
-def test_apply_visibility_orphan():
+def test_visibility_orphan_hidden():
     """Clients on an orphaned workspace are hidden."""
     ws = make_workspace(name="1")
     client = make_client(workspace=ws)
@@ -383,7 +383,7 @@ def test_apply_visibility_orphan():
         server.ffi.addressof.return_value, False)
 
 
-def test_apply_tree_clients():
+def test_tree_reparents_clients():
     """Each client's scene node is reparented to its layer's tree."""
     a = make_client()
     b = make_client(floating_geom=layout.Rect(0, 0, 100, 100))
@@ -398,7 +398,7 @@ def test_apply_tree_clients():
         node, server.layers[model.Layer.FLOAT])
 
 
-def test_apply_tree_skips_unmapped():
+def test_tree_skips_unmapped():
     """A client without a scene_tree is between create and map -- skipped."""
     client = make_client(scene_tree=None)
     server = make_server(clients=[client])
@@ -408,7 +408,7 @@ def test_apply_tree_skips_unmapped():
     server.lib.wlr_scene_node_reparent.assert_not_called()
 
 
-def test_apply_tree_idempotent():
+def test_tree_idempotent():
     """When every node is already under the right parent, nothing is
     reparented."""
     client = make_client()
@@ -420,7 +420,7 @@ def test_apply_tree_idempotent():
     server.lib.wlr_scene_node_reparent.assert_not_called()
 
 
-def test_apply_tree_layer_surface():
+def test_tree_layer_surface_parented():
     """A layer surface in monitor.layers[TOP] is parented under the TOP
     tree; its popups tree follows."""
     monitor = MagicMock(name="m", fullscreen=None)
@@ -436,7 +436,7 @@ def test_apply_tree_layer_surface():
         node, server.layers[model.Layer.TOP])
 
 
-def test_apply_tree_popups_lifted():
+def test_tree_popups_lifted():
     """A layer surface in BACKGROUND has its popups tree lifted into TOP
     so a bar can't bury them."""
     monitor = MagicMock(name="m", fullscreen=None)
@@ -454,7 +454,7 @@ def test_apply_tree_popups_lifted():
         node, server.layers[model.Layer.TOP])
 
 
-def test_resize_client_geometry():
+def test_resize_inner_inset_by_border():
     """resize_client positions the wrapper subtree and configures the inner
     surface size shrunk by twice the border width, without touching
     tiled-edge state. The xdg subtree is also inset by the border so the
@@ -476,7 +476,7 @@ def test_resize_client_geometry():
     server.lib.wlr_xdg_toplevel_set_tiled.assert_not_called()
 
 
-def test_resize_client_tracks():
+def test_resize_tracks_serial():
     """resize_client records the configure serial so the screen waits for
     the client to render at the new size."""
     server = make_server()
@@ -489,7 +489,7 @@ def test_resize_client_tracks():
     assert client.pending_serial == 42
 
 
-def test_resize_client_clips():
+def test_resize_clips_to_geometry():
     """resize_client clips the xdg subtree to the inner area, anchored at
     the surface's xdg geometry offset so CSD shadow margins are skipped."""
     server = make_server()
@@ -509,7 +509,7 @@ def test_resize_client_clips():
         server.ffi.addressof.return_value, server.ffi.new.return_value)
 
 
-def test_resize_client_fullscreen():
+def test_resize_fullscreen_no_border():
     """Resizing a fullscreen window leaves no room for borders: the inner
     surface fills the rect, the xdg subtree sits flush at (0, 0), and the
     border rects collapse to zero size."""
@@ -537,7 +537,7 @@ def test_resize_client_fullscreen():
     server.lib.wlr_scene_rect_set_size.assert_any_call(right, 0, 600)
 
 
-def test_borders_resize():
+def test_resize_border_rects():
     """resize_client frames the wrapper with edge rects whose sizes match
     the outer rect on the long axis and the border width on the short one."""
     server = make_server()
@@ -560,7 +560,7 @@ def test_borders_resize():
     ]
 
 
-def test_set_size_tracks():
+def test_size_tracks_serial():
     """set_size sends the configure and records the returned serial."""
     server = make_server()
     server.lib.wlr_xdg_toplevel_set_size.return_value = 9
@@ -573,7 +573,7 @@ def test_set_size_tracks():
     assert client.pending_serial == 9
 
 
-def test_xwayland_set_size():
+def test_size_x11_absolute_configure():
     """X11 sizing couples position and size, so set_size sends an absolute
     configure derived from the already-placed wrapper plus the border inset."""
     server = make_server()
@@ -588,7 +588,7 @@ def test_xwayland_set_size():
         100 + model.BORDER_WIDTH, 50 + model.BORDER_WIDTH, 200, 150)
 
 
-def test_xwayland_position_only():
+def test_size_x11_move_reconfigures():
     """An X11 move with unchanged size still sends ConfigureNotify because
     X11 couples the window position and size in one configure."""
     server = make_server()
@@ -603,7 +603,7 @@ def test_xwayland_position_only():
         300 + model.BORDER_WIDTH, 400 + model.BORDER_WIDTH, 200, 150)
 
 
-def test_xwayland_size_unchanged_skips():
+def test_size_x11_unchanged_skips():
     """Re-applying the geometry an X11 window already has sends no configure,
     so repeated layouts don't spam the client with redundant ConfigureNotify."""
     server = make_server()
@@ -620,7 +620,7 @@ def test_xwayland_size_unchanged_skips():
     server.lib.wlr_xwayland_surface_configure.assert_not_called()
 
 
-def test_set_tiled_tracks():
+def test_tiled_tracks_serial():
     """set_tiled sends the configure and records the returned serial."""
     server = make_server()
     server.lib.wlr_xdg_toplevel_set_tiled.return_value = 6
@@ -633,7 +633,7 @@ def test_set_tiled_tracks():
     assert client.pending_serial == 6
 
 
-def test_xwayland_set_tiled():
+def test_tiled_x11_noop():
     """X11 has no tiled-edge state, so set_tiled does nothing."""
     server = make_server()
     client = make_x11_client()
@@ -641,7 +641,7 @@ def test_xwayland_set_tiled():
     server.lib.wlr_xdg_toplevel_set_tiled.assert_not_called()
 
 
-def test_fullscreen_slot_enters():
+def test_fullscreen_enters():
     """Assigning a client to its workspace's fullscreen slot notifies the
     app so its xdg state matches."""
     server = make_server()
@@ -659,7 +659,7 @@ def test_fullscreen_slot_enters():
         client.toplevel, True)
 
 
-def test_fullscreen_slot_exits():
+def test_fullscreen_exits():
     """Clearing the slot notifies the previously-fullscreen app."""
     server = make_server()
     client = make_client(toplevel=MagicMock(), scene_tree=MagicMock())
@@ -673,7 +673,7 @@ def test_fullscreen_slot_exits():
         client.toplevel, False)
 
 
-def test_fullscreen_slot_noop():
+def test_fullscreen_unchanged_noop():
     """Setting the slot to its current value is a no-op so no spurious
     configure goes out."""
     server = make_server()
@@ -686,7 +686,7 @@ def test_fullscreen_slot_noop():
     server.lib.wlr_xdg_toplevel_set_fullscreen.assert_not_called()
 
 
-def test_fullscreen_slot_replaces():
+def test_fullscreen_replaces():
     """Replacing one fullscreen client with another notifies both: the
     outgoing one exits, the incoming one enters."""
     server = make_server()
@@ -711,7 +711,7 @@ def test_fullscreen_slot_replaces():
     ]
 
 
-def test_fullscreen_slot_keeps_float():
+def test_fullscreen_keeps_float():
     """Entering and exiting fullscreen leaves floating_geom untouched, so a
     window that was floating before going fullscreen returns to floating
     at the same rect; a window that was tiled stays tiled."""
@@ -739,7 +739,7 @@ def test_fullscreen_slot_keeps_float():
     assert tiler.floating_geom is None
 
 
-def test_xwayland_set_fullscreen():
+def test_fullscreen_x11():
     """set_fullscreen routes to the X11 fullscreen call."""
     server = make_server()
     ws = make_workspace()
@@ -749,7 +749,7 @@ def test_xwayland_set_fullscreen():
         client.xsurface, True)
 
 
-def test_set_activated_no_hold():
+def test_activated_no_hold():
     """set_activated sends focus state without recording a resize hold."""
     server = make_server()
     server.lib.wlr_xdg_toplevel_set_activated.return_value = 4
@@ -762,7 +762,7 @@ def test_set_activated_no_hold():
     assert client.pending_serial is None
 
 
-def test_xwayland_set_activated():
+def test_activated_x11():
     """set_activated routes to the X11 activate call."""
     server = make_server()
     client = make_x11_client()
@@ -771,7 +771,7 @@ def test_xwayland_set_activated():
         client.xsurface, True)
 
 
-def test_track_configure_acked():
+def test_configure_acked_clears():
     """An already-acked serial leaves pending cleared, so a no-op configure
     doesn't freeze the screen."""
     # pylint: disable=protected-access
@@ -784,7 +784,7 @@ def test_track_configure_acked():
     assert client.pending_serial is None
 
 
-def test_track_configure_pending():
+def test_configure_pending_held():
     """A serial the client hasn't reached yet is recorded as pending so the
     screen waits."""
     # pylint: disable=protected-access
@@ -796,7 +796,7 @@ def test_track_configure_pending():
     assert client.pending_serial == 7
 
 
-def test_arrange_layers_shrinks_area():
+def test_exclusive_zone_shrinks_area():
     """A surface with exclusive_zone > 0 reserves space; the monitor's
     window_area shrinks accordingly and tiles re-flow."""
     server = make_server()
@@ -825,7 +825,7 @@ def test_arrange_layers_shrinks_area():
     assert monitor.window_area == layout.Rect(0, 30, 800, 570)
 
 
-def test_monitor_box_returns_rect():
+def test_monitor_extent_rect():
     """monitor_box reads the layout box and returns it as a Rect."""
     server = make_server()
     monitor = make_monitor(output="OUT", scene_output="SO")
@@ -850,7 +850,7 @@ def _make_deco(server, client, *, initialized=True):
     return deco
 
 
-def test_decoration_new_forces_ssd():
+def test_decoration_forces_ssd():
     """A decoration request from an already-initialized window flips it to
     server-side immediately."""
     client = make_client()
@@ -865,7 +865,7 @@ def test_decoration_new_forces_ssd():
         server.lib.WLR_XDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE)
 
 
-def test_decoration_new_before_initialized():
+def test_decoration_defers_until_initialized():
     """A decoration request that arrives before the initial configure does
     not set the mode yet -- doing so would be a protocol error."""
     server = make_server()
@@ -878,7 +878,7 @@ def test_decoration_new_before_initialized():
     server.lib.wlr_xdg_toplevel_decoration_v1_set_mode.assert_not_called()
 
 
-def test_decoration_new_no_back_pointer():
+def test_decoration_unregistered_ignored():
     """A decoration whose toplevel was never registered (no back-pointer)
     is silently ignored; nothing to attach state to."""
     server = make_server()
@@ -892,7 +892,7 @@ def test_decoration_new_no_back_pointer():
     server.lib.wlr_xdg_toplevel_decoration_v1_set_mode.assert_not_called()
 
 
-def test_decoration_request_mode_reasserts():
+def test_decoration_reasserts_ssd():
     """Re-emitting request_mode after initialization re-forces server-side
     so apps can't flip themselves back to client-side later."""
     client = make_client()
@@ -925,7 +925,7 @@ def test_decoration_destroy_clears():
         h.remove.assert_called_once()
 
 
-def test_apply_decoration_forces():
+def test_decoration_sweep_forces():
     """Every initialized window with a decoration is set to server-side."""
     a = make_client(decoration=MagicMock(name="deco_a"))
     a.toplevel.base.initialized = True
@@ -942,7 +942,7 @@ def test_apply_decoration_forces():
     set_mode.assert_any_call(b.decoration, ssd)
 
 
-def test_apply_decoration_skips_uninitialized():
+def test_decoration_sweep_skips_uninitialized():
     """A decoration on a not-yet-initialized surface is skipped to avoid
     a protocol error."""
     client = make_client(decoration=MagicMock())
@@ -954,7 +954,7 @@ def test_apply_decoration_skips_uninitialized():
     server.lib.wlr_xdg_toplevel_decoration_v1_set_mode.assert_not_called()
 
 
-def test_apply_decoration_skips_no_decoration():
+def test_decoration_sweep_skips_undecorated():
     """Windows without a decoration object are skipped (most apps)."""
     client = make_client(decoration=None)
     client.toplevel.base.initialized = True
@@ -965,7 +965,7 @@ def test_apply_decoration_skips_no_decoration():
     server.lib.wlr_xdg_toplevel_decoration_v1_set_mode.assert_not_called()
 
 
-def test_init_floating_geom_centers():
+def test_float_centers_in_area():
     """init_floating_geom centers the window in its screen's usable area at
     the size the app asked for plus border."""
     m = make_monitor(window_area=layout.Rect(100, 50, 800, 600))
@@ -983,7 +983,7 @@ def test_init_floating_geom_centers():
         outer_w, outer_h)
 
 
-def test_init_floating_geom_fallback():
+def test_float_default_size():
     """When the app commits with empty geometry, init_floating_geom picks
     a default size so the window isn't invisibly small."""
     m = make_monitor(window_area=layout.Rect(0, 0, 800, 600))
@@ -999,14 +999,14 @@ def test_init_floating_geom_fallback():
     assert rect.height == 200 + 2 * model.BORDER_WIDTH
 
 
-def test_client_layer_tile():
+def test_layer_tile():
     """A client with no floating_geom and not pinned to any monitor's
     fullscreen slot is tiled."""
     client = make_client(toplevel=MagicMock(), scene_tree=MagicMock())
     assert geometry.client_layer(client) == model.Layer.TILE
 
 
-def test_client_layer_float():
+def test_layer_float():
     """A client with a floating_geom is floating."""
     client = make_client(
         toplevel=MagicMock(),
@@ -1016,7 +1016,7 @@ def test_client_layer_float():
     assert geometry.client_layer(client) == model.Layer.FLOAT
 
 
-def test_client_layer_fullscreen():
+def test_layer_fullscreen_over_float():
     """A client occupying its workspace's fullscreen slot is fullscreen,
     even if it also has a floating_geom stashed for restore."""
     client = make_client(
@@ -1028,7 +1028,7 @@ def test_client_layer_fullscreen():
     assert geometry.client_layer(client) == model.Layer.FULLSCREEN
 
 
-def test_xwayland_client_geometry():
+def test_x11_rect_no_offset():
     """X11 windows have no CSD offset; geometry is the raw size at (0, 0)."""
     client = make_x11_client()
     client.xsurface.width = 640
@@ -1039,20 +1039,20 @@ def test_xwayland_client_geometry():
     assert (geom.x, geom.y, geom.width, geom.height) == (0, 0, 640, 480)
 
 
-def test_xwayland_client_surface():
+def test_x11_surface_unwrap():
     """client_surface unwraps the X11 surface to its inner wl_surface."""
     client = make_x11_client()
     assert geometry.client_surface(client) is client.xsurface.surface
 
 
-def test_xwayland_wants_fullscreen():
+def test_x11_wants_fullscreen():
     """client_wants_fullscreen reads the X11 surface's fullscreen flag."""
     client = make_x11_client()
     client.xsurface.fullscreen = True
     assert geometry.client_wants_fullscreen(client) is True
 
 
-def test_xwayland_wants_float():
+def test_x11_transient_wants_float():
     """A transient X11 window (one with a parent) opens floating."""
     client = make_x11_client()
     client.xsurface.parent = MagicMock()

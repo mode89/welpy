@@ -10,7 +10,7 @@ from tests.helpers import (
 )
 
 
-def test_update_monitors_arranges_all():
+def test_reflow_arranges_all_monitors():
     """update_monitors arranges every connected monitor."""
     m1 = MagicMock(name="m1", fullscreen=None)
     m2 = MagicMock(name="m2", fullscreen=None)
@@ -22,7 +22,7 @@ def test_update_monitors_arranges_all():
     assert apply_geom.call_args_list == [call(server, m1), call(server, m2)]
 
 
-def test_update_monitors_no_monitors():
+def test_reflow_no_monitors():
     """With no monitors connected, apply_geometry isn't called."""
     server = make_server()
 
@@ -32,7 +32,7 @@ def test_update_monitors_no_monitors():
     apply_geom.assert_not_called()
 
 
-def test_lock_surfaces_reconfigured():
+def test_reflow_resizes_lock_surfaces():
     """Output layout changes resize and move active lock surfaces."""
     monitor = make_monitor()
     lock_surface = MagicMock(name="lock_surface")
@@ -61,7 +61,7 @@ def test_lock_surfaces_reconfigured():
         lock_surface, 300, 200)
 
 
-def test_lock_surfaces_pruned():
+def test_reflow_prunes_stale_lock_surface():
     """A removed screen drops its stale lock surface from lock state."""
     removed = make_monitor()
     remaining = make_monitor()
@@ -84,7 +84,7 @@ def test_lock_surfaces_pruned():
     assert ls not in session_lock.surfaces
 
 
-def test_monitor_new_order():
+def test_create_configures_before_layout():
     """A new screen is fully configured (mode, enable, commit) before
     being placed in the layout and exposed to the scene."""
     server = make_server()
@@ -106,7 +106,7 @@ def test_monitor_new_order():
     assert positions == sorted(positions)
 
 
-def test_monitor_scale_configured():
+def test_create_applies_configured_scale():
     """A screen listed in OUTPUT_SCALE is committed at its configured scale."""
     server = make_server()
     server.ffi.string.return_value.decode.return_value = "eDP-1"
@@ -117,7 +117,7 @@ def test_monitor_scale_configured():
     server.lib.wlr_output_state_set_scale.assert_called_once_with(ANY, 2.0)
 
 
-def test_monitor_scale_default():
+def test_create_applies_default_scale():
     """A screen absent from OUTPUT_SCALE falls back to DEFAULT_SCALE."""
     server = make_server()
     server.ffi.string.return_value.decode.return_value = "HDMI-A-1"
@@ -129,7 +129,7 @@ def test_monitor_scale_default():
         ANY, model.DEFAULT_SCALE)
 
 
-def test_monitor_new_appends():
+def test_create_appends_one_monitor():
     """Each new screen produces exactly one Monitor in server.monitors."""
     server = make_server()
 
@@ -138,7 +138,7 @@ def test_monitor_new_appends():
     assert len(server.monitors) == 1
 
 
-def test_monitor_new_frame():
+def test_create_wires_frame():
     """The screen's frame signal drives monitor_render so painting happens
     once per refresh."""
     server = make_server()
@@ -148,7 +148,7 @@ def test_monitor_new_frame():
     render.assert_called_once_with(server, server.monitors[0], "FRAME_DATA")
 
 
-def test_monitor_new_request_state():
+def test_create_wires_request_state():
     """The screen's request_state signal drives monitor_request_state so the
     nested-backend window can ask to resize the screen at runtime."""
     server = make_server()
@@ -158,7 +158,7 @@ def test_monitor_new_request_state():
     handler.assert_called_once_with(server, server.monitors[0], "RS_DATA")
 
 
-def test_monitor_new_destroy():
+def test_create_wires_destroy():
     """The screen's destroy signal triggers monitor_cleanup so an unplug
     self-cleans without leaks."""
     server = make_server()
@@ -168,7 +168,7 @@ def test_monitor_new_destroy():
     cleanup.assert_called_once_with(server, server.monitors[0], "DESTROY_DATA")
 
 
-def test_monitor_new_timer():
+def test_create_wires_force_paint_timer():
     """A new screen gets a safety-valve timer wired to monitor_force_paint
     so its refresh loop can be unstuck if an app is slow to catch up."""
     server = make_server()
@@ -184,7 +184,7 @@ def test_monitor_new_timer():
     assert monitor.frame_timer is server.add_timer.return_value
 
 
-def test_monitor_new_updates():
+def test_create_triggers_reflow():
     """monitor_new triggers update_monitors so the new monitor's box is
     picked up and orphans are adopted."""
     server = make_server()
@@ -195,7 +195,7 @@ def test_monitor_new_updates():
     upd.assert_called_once_with(server)
 
 
-def test_monitor_request_state_commits():
+def test_request_state_commits():
     """Applying the requested state means committing it on the output, which
     is what actually triggers the mode/size change."""
     server = make_server()
@@ -209,7 +209,7 @@ def test_monitor_request_state_commits():
         "OUT", "REQUESTED_STATE")
 
 
-def test_monitor_request_state_updates():
+def test_request_state_triggers_reflow():
     """A reconfigure may have changed the monitor's box, so all monitors
     re-flow."""
     server = make_server()
@@ -221,7 +221,7 @@ def test_monitor_request_state_updates():
     upd.assert_called_once_with(server)
 
 
-def test_monitor_cleanup_drops():
+def test_destroy_detaches_listeners():
     """Cleanup detaches every listener and removes the monitor from the
     server's tracking list."""
     h1, h2 = MagicMock(name="h1"), MagicMock(name="h2")
@@ -236,7 +236,7 @@ def test_monitor_cleanup_drops():
     assert not server.monitors
 
 
-def test_monitor_cleanup_removes_timer():
+def test_destroy_detaches_timer():
     """Cleanup detaches the safety-valve timer alongside other listeners."""
     timer = MagicMock(name="frame_timer")
     monitor = make_monitor(scene_output="SO", frame_timer=timer)
@@ -247,7 +247,7 @@ def test_monitor_cleanup_removes_timer():
     timer.remove.assert_called_once()
 
 
-def test_monitor_cleanup_destroys_layers():
+def test_destroy_destroys_layer_surfaces():
     """When a screen goes away its layer surfaces are destroyed first so
     wlroots doesn't try to render them against a freed output."""
     monitor = make_monitor()
@@ -261,7 +261,7 @@ def test_monitor_cleanup_destroys_layers():
         ls.layer_surface)
 
 
-def test_monitor_cleanup_removes():
+def test_destroy_triggers_reflow():
     """monitor_cleanup drops the monitor from server.monitors and triggers
     update_monitors so apply_hierarchy migrates its workspaces."""
     monitor = make_monitor(scene_output="SO")
@@ -274,7 +274,7 @@ def test_monitor_cleanup_removes():
     upd.assert_called_once_with(server)
 
 
-def test_output_power_off():
+def test_power_off_disables_screen():
     """A client turning a screen off commits a disabled state on it, leaving
     the screen in the layout."""
     server = make_server()
@@ -291,7 +291,7 @@ def test_output_power_off():
         "OUT", server.lib.welpy_output_state_new.return_value)
 
 
-def test_output_power_on():
+def test_power_on_enables_screen():
     """A client turning a screen back on commits an enabled state on it."""
     server = make_server()
     server.monitors.append(make_monitor(output="OUT"))
@@ -305,7 +305,7 @@ def test_output_power_on():
         server.lib.welpy_output_state_new.return_value, True)
 
 
-def test_output_power_unknown():
+def test_power_unknown_screen_ignored():
     """A set-mode request for a screen we don't track is ignored."""
     server = make_server()
     event = server.ffi.cast.return_value
@@ -318,7 +318,7 @@ def test_output_power_unknown():
     server.lib.wlr_output_commit_state.assert_not_called()
 
 
-def test_monitor_render_order():
+def test_frame_paints_then_notifies():
     """Each frame paints first, then notifies visible apps -- both calls
     targeting this monitor's own scene_output."""
     server = make_server()
@@ -334,7 +334,7 @@ def test_monitor_render_order():
         "wlr_scene_output_send_frame_done")
 
 
-def test_monitor_render_holds():
+def test_frame_pending_tile_holds():
     """A pending configure on a tiled window holds the screen paint, while
     frame-done still fires so the client keeps animating."""
     monitor = make_monitor(output="OUT", scene_output="SO_X")
@@ -350,7 +350,7 @@ def test_monitor_render_holds():
     server.lib.wlr_scene_output_send_frame_done.assert_called_once()
 
 
-def test_monitor_render_occluded():
+def test_frame_occluded_tile_does_not_hold():
     """A window with a pending configure that isn't shown on any screen (e.g.
     occluded behind a fullscreen peer) must not hold the paint: it gets no
     frame-done, never acks, and would otherwise freeze the screen."""
@@ -370,7 +370,7 @@ def test_monitor_render_occluded():
     server.lib.wlr_scene_output_commit.assert_called_once()
 
 
-def test_monitor_render_fullscreen_holds():
+def test_frame_fullscreen_entry_holds():
     """Entering fullscreen holds the paint until the window renders at full
     size, so the switch lands in one frame instead of flashing the old size."""
     monitor = make_monitor(output="OUT", scene_output="SO_X")
@@ -385,7 +385,7 @@ def test_monitor_render_fullscreen_holds():
     server.lib.wlr_scene_output_commit.assert_not_called()
 
 
-def test_monitor_render_floating():
+def test_frame_floating_does_not_hold():
     """A floating window's pending configure does not hold the screen --
     floating windows aren't synchronized with the layout."""
     monitor = make_monitor(output="OUT", scene_output="SO_X")
@@ -403,7 +403,7 @@ def test_monitor_render_floating():
     server.lib.wlr_scene_output_commit.assert_called_once()
 
 
-def test_monitor_render_resizing():
+def test_frame_resizing_float_does_not_hold():
     """A float being interactively resized does not hold the screen -- a slow
     client (e.g. Firefox) would otherwise stall the whole frame during drag."""
     monitor = make_monitor(output="OUT", scene_output="SO_X")
@@ -421,7 +421,7 @@ def test_monitor_render_resizing():
     server.lib.wlr_scene_output_commit.assert_called_once()
 
 
-def test_monitor_render_moving():
+def test_frame_moving_float_does_not_hold():
     """A float being interactively *moved* does not hold the screen -- move
     is a pure scene-graph reposition, no configure to wait on."""
     monitor = make_monitor(output="OUT", scene_output="SO_X")
@@ -439,7 +439,7 @@ def test_monitor_render_moving():
     server.lib.wlr_scene_output_commit.assert_called_once()
 
 
-def test_monitor_render_clear():
+def test_frame_caught_up_paints():
     """With every tiled window caught up to its latest configure, the paint
     runs normally."""
     monitor = make_monitor(output="OUT", scene_output="SO_X")
@@ -454,7 +454,7 @@ def test_monitor_render_clear():
     server.lib.wlr_scene_output_send_frame_done.assert_called_once()
 
 
-def test_monitor_render_arms_timer():
+def test_frame_hold_arms_timer():
     """While holding a paint, monitor_render arms the safety-valve timer
     so the screen doesn't stay frozen if the app never catches up."""
     monitor = make_monitor(output="OUT", scene_output="SO_X")
@@ -471,7 +471,7 @@ def test_monitor_render_arms_timer():
     monitor.frame_timer.update.assert_called_once_with(100)
 
 
-def test_monitor_render_disarms_timer():
+def test_frame_clean_disarms_timer():
     """A clean paint disarms the safety-valve timer."""
     server = make_server()
     monitor = make_monitor(output="OUT", scene_output="SO_X")
@@ -481,13 +481,13 @@ def test_monitor_render_disarms_timer():
     monitor.frame_timer.update.assert_called_once_with(0)
 
 
-def test_xwayland_holds_paint():
+def test_frame_x11_never_holds():
     """X11 windows have no configure-ack, so they never hold the paint."""
     client = make_x11_client(workspace=make_workspace())
     assert output.client_holds_paint(make_server(), client) is False
 
 
-def test_monitor_force_paint_commits():
+def test_frame_force_paint_commits():
     """The timer callback repaints the screen so its refresh loop resumes
     and monitor_render gets another shot at clearing the hold."""
     server = make_server()

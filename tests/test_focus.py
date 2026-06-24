@@ -6,11 +6,11 @@ from unittest.mock import MagicMock, patch
 from welpy import focus, model
 from tests.helpers import (
     make_server, make_client, make_x11_client, make_monitor, make_workspace,
-    make_cursor, make_layer_surface, make_session_lock,
+    make_cursor, make_layer_surface, make_session_lock, make_unmanaged,
 )
 
 
-def test_focus_client_order():
+def test_focus_order_monotonic():
     """Each focus bumps the client's focus_order above every other client's,
     so the most-recently-focused window always has the highest value."""
     # pylint: disable=duplicate-code
@@ -27,7 +27,7 @@ def test_focus_client_order():
     assert a.focus_order > b.focus_order > 0
 
 
-def test_apply_focus_idle():
+def test_focus_idle_noop():
     """No monitors, no clients, no focused surface -> nothing to do."""
     server = make_server()
 
@@ -38,7 +38,7 @@ def test_apply_focus_idle():
     server.lib.wlr_xdg_toplevel_set_activated.assert_not_called()
 
 
-def test_apply_focus_client():
+def test_focus_window_activated():
     """With one client on the active monitor and nothing focused yet,
     activate it, raise it, and hand it the keyboard."""
     monitor = make_monitor()
@@ -57,7 +57,7 @@ def test_apply_focus_client():
     assert enter_args[1] is client.toplevel.base.surface
 
 
-def test_apply_focus_shell():
+def test_focus_shell_outranks_window():
     """A mapped TOP/OVERLAY shell surface that wants the keyboard outranks
     any client."""
     monitor = make_monitor()
@@ -79,7 +79,7 @@ def test_apply_focus_shell():
     server.lib.wlr_xdg_toplevel_set_activated.assert_not_called()
 
 
-def test_apply_focus_releases():
+def test_focus_shell_takes_from_window():
     """When a shell surface takes the keyboard from a focused client,
     deactivate the client and route notify_enter to the shell surface."""
     monitor = make_monitor()
@@ -102,7 +102,7 @@ def test_apply_focus_releases():
     assert enter_args[1] is ls.layer_surface.surface
 
 
-def test_apply_focus_clears():
+def test_focus_cleared_when_empty():
     """A surface was focused, all candidates went away -> clear focus."""
     server = make_server()
     server.seat.keyboard_state.focused_surface = MagicMock(name="stale") # pylint: disable=no-member
@@ -114,7 +114,7 @@ def test_apply_focus_clears():
     server.lib.wlr_seat_keyboard_notify_enter.assert_not_called()
 
 
-def test_apply_focus_handoff():
+def test_focus_window_handoff():
     """Focus shifting from one client to another deactivates the previous
     one before activating the new one."""
     monitor = make_monitor()
@@ -135,7 +135,7 @@ def test_apply_focus_handoff():
     assert enter_args[1] is b.toplevel.base.surface
 
 
-def test_apply_focus_idempotent():
+def test_focus_idempotent():
     """Re-running with the same desired state as wlroots already has emits
     no effects."""
     monitor = make_monitor()
@@ -153,7 +153,7 @@ def test_apply_focus_idempotent():
     server.lib.wlr_scene_node_raise_to_top.assert_not_called()
 
 
-def test_apply_focus_no_hold():
+def test_focus_no_resize_hold():
     """Focus changes do not create resize holds."""
     monitor = make_monitor()
     monitor.active_workspace = make_workspace(monitor=monitor)
@@ -170,7 +170,7 @@ def test_apply_focus_no_hold():
     assert b.pending_serial is None
 
 
-def test_apply_focus_borders():
+def test_focus_border_indicators():
     """apply_focus paints the new window's borders active and the previously
     focused window's borders inactive."""
     monitor = make_monitor()
@@ -188,7 +188,7 @@ def test_apply_focus_borders():
     assert ("float[4]", model.BORDER_COLOR_INACTIVE) in color_args
 
 
-def test_apply_focus_sticky():
+def test_focus_shell_sticky():
     """A currently-focused shell surface keeps the keyboard when another
     qualifying surface appears, so arranging an unrelated screen doesn't
     steal focus from the launcher."""
@@ -209,7 +209,7 @@ def test_apply_focus_sticky():
     assert not contender.focused
 
 
-def test_apply_focus_priority():
+def test_focus_overlay_over_top():
     """With both TOP and OVERLAY surfaces wanting the keyboard, OVERLAY
     wins."""
     monitor = make_monitor()
@@ -231,7 +231,7 @@ def test_apply_focus_priority():
     assert enter_args[1] is overlay.layer_surface.surface
 
 
-def test_apply_focus_pointer():
+def test_pointer_reconcile_repoints():
     """apply_focus re-points the pointer at the surface under the cursor, so a
     scene change doesn't leave a scroll/click landing on a hidden window."""
     server = make_server()
@@ -242,7 +242,7 @@ def test_apply_focus_pointer():
     fwd.assert_called_once_with(server, 0)
 
 
-def test_apply_focus_pointer_grab():
+def test_pointer_reconcile_skips_grab():
     """A drag in progress suppresses the pointer reconcile apply_focus
     otherwise performs, so the grab keeps its captured surface."""
     idle = make_server()
@@ -258,7 +258,7 @@ def test_apply_focus_pointer_grab():
     assert not fwd_drag.called
 
 
-def test_apply_focus_pointer_locked():
+def test_pointer_reconcile_skips_locked():
     """While locked, apply_focus routes only the keyboard to the locker and
     skips the pointer reconcile it otherwise performs."""
     unlocked = make_server()
@@ -273,7 +273,7 @@ def test_apply_focus_pointer_locked():
     assert not fwd_locked.called
 
 
-def test_focus_lock_keyboard():
+def test_lock_keyboard_to_lock_surface():
     """While locked, the keyboard goes to the lock surface on the active
     screen so the user can type their password."""
     monitor = make_monitor()
@@ -293,7 +293,7 @@ def test_focus_lock_keyboard():
         lock_surface.surface)
 
 
-def test_focus_lock_cleared():
+def test_lock_clears_keyboard():
     """With no lock surface yet, the keyboard focus is cleared so no window
     keeps receiving keys."""
     session_lock = make_session_lock(surfaces=[])
@@ -307,7 +307,7 @@ def test_focus_lock_cleared():
         server.seat)
 
 
-def test_xwayland_for_surface():
+def test_query_client_from_surface():
     """A mapped X11 window resolves from its inner wl_surface."""
     server = make_server()
     client = make_x11_client()
@@ -317,7 +317,7 @@ def test_xwayland_for_surface():
         server, client.xsurface.surface) is client
 
 
-def test_grabbed_client_multiple():
+def test_query_grabbed_multiple_warns():
     """Only one window should be grabbed at a time; if two are, log a warning
     so the inconsistency doesn't go silent."""
     a = make_client(grab=model.Grab("move", 0, 0))
@@ -330,7 +330,7 @@ def test_grabbed_client_multiple():
     log.warning.assert_called_once()
 
 
-def test_top_client_per_monitor():
+def test_query_top_per_monitor():
     """top_client picks the highest focus_order among clients visible on
     the given monitor, ignoring clients on other monitors."""
     m1 = make_monitor()
@@ -347,7 +347,7 @@ def test_top_client_per_monitor():
     assert focus.top_client(server, m2) is d
 
 
-def test_top_client_empty():
+def test_query_top_empty():
     """top_client returns None when no clients are visible on the monitor."""
     server = make_server()
     m = make_monitor()
@@ -356,7 +356,7 @@ def test_top_client_empty():
     assert focus.top_client(server, m) is None
 
 
-def test_pointer_motion_resets_default():
+def test_pointer_forward_default_cursor():
     """Moving onto the background restores the default cursor image, so a
     cursor a client set earlier doesn't linger over empty space."""
     cur = MagicMock(name="cur")
@@ -371,7 +371,7 @@ def test_pointer_motion_resets_default():
         server.seat)
 
 
-def test_pointer_motion_keeps_cursor():
+def test_pointer_forward_keeps_cursor():
     """Over a client surface the compositor leaves the cursor image alone so
     the app's own set-cursor request stands."""
     server = make_server(cursor=make_cursor(xcursor_manager="XMGR"))
@@ -397,7 +397,7 @@ def test_pointer_rebase_repoints():
         server.seat, 7, 3.0, 4.0)
 
 
-def test_pointer_rebase_matched():
+def test_pointer_rebase_noop_matched():
     """Rebase is a no-op when focus already points at the surface under the
     cursor, so a scroll in place doesn't emit a redundant motion."""
     server = make_server(cursor=make_cursor(xcursor_manager="X"))
@@ -422,7 +422,7 @@ def test_pointer_rebase_clears():
         server.seat)
 
 
-def test_pointer_rebase_empty():
+def test_pointer_rebase_noop_empty():
     """No focus and nothing under the cursor: rebase does nothing rather than
     re-clearing an already-empty focus."""
     server = make_server(cursor=make_cursor(xcursor_manager="X"))
@@ -431,3 +431,34 @@ def test_pointer_rebase_empty():
         focus.rebase_pointer(server, 1)
 
     server.lib.wlr_seat_pointer_clear_focus.assert_not_called()
+
+
+def test_focus_clears_urgent():
+    """Focusing an urgent window clears its urgent flag."""
+    monitor = make_monitor()
+    monitor.active_workspace = make_workspace(monitor=monitor)
+    client = make_client(
+        focus_order=1, urgent=True, workspace=monitor.active_workspace)
+    server = make_server(
+        ext_workspace=None, monitors=[monitor], active_monitor=monitor,
+        clients=[client])
+
+    focus.reconcile(server)
+
+    assert not client.urgent
+
+
+def test_focus_defers_to_unmanaged():
+    """apply_focus keeps the keyboard on a focus-holding unmanaged surface and
+    skips the normal window-focus path."""
+    server = make_server()
+    um = make_unmanaged()
+    server.unmanaged_focus = um
+
+    with patch("welpy.focus.top_client") as top:
+        focus.reconcile(server)
+
+    top.assert_not_called()
+    server.lib.wlr_seat_keyboard_notify_enter.assert_called_once()
+    assert (server.lib.wlr_seat_keyboard_notify_enter.call_args.args[1]
+            is um.xsurface.surface)

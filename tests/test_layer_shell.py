@@ -24,7 +24,7 @@ def _stage_layer_surface_new(server, *, layer=0, output=None, monitor=None):
     return layer_surface
 
 
-def test_layer_new_no_monitor():
+def test_create_no_monitor_rejected():
     """A surface with no requested output and no monitors connected is
     rejected instead of crashing."""
     server = make_server()
@@ -36,7 +36,7 @@ def test_layer_new_no_monitor():
     server.lib.wlr_scene_layer_surface_v1_create.assert_not_called()
 
 
-def test_layer_new_assigns_monitor():
+def test_create_assigns_active_monitor():
     """When the app didn't pick a screen, place the surface on the active
     one and write back the output so wlroots agrees."""
     server = make_server()
@@ -49,7 +49,7 @@ def test_layer_new_assigns_monitor():
     assert monitor.layers[model.Layer.BACKGROUND][0].monitor is monitor
 
 
-def test_layer_new_buckets():
+def test_create_buckets_by_pending_layer():
     """The surface lands in the monitor bucket matching its pending layer
     (zwlr 0..3 -> BACKGROUND/BOTTOM/TOP/OVERLAY)."""
     server = make_server()
@@ -62,7 +62,7 @@ def test_layer_new_buckets():
     assert monitor.layers[model.Layer.BACKGROUND] == []
 
 
-def test_layer_new_popups_high():
+def test_create_overlay_popups_own_tree():
     """TOP/OVERLAY surfaces keep their popups in their own scene tree so a
     launcher's menu isn't buried by sibling overlays."""
     server = make_server()
@@ -75,7 +75,7 @@ def test_layer_new_popups_high():
         server.layers[model.Layer.OVERLAY])
 
 
-def test_layer_new_popups_low():
+def test_create_background_popups_into_top():
     """BACKGROUND/BOTTOM popups attach into TOP so e.g. a wallpaper's menu
     isn't hidden behind a bar."""
     server = make_server()
@@ -88,7 +88,7 @@ def test_layer_new_popups_low():
         server.layers[model.Layer.TOP])
 
 
-def test_layer_new_send_enter():
+def test_create_sends_enter():
     """The surface is told which screen it lives on so apps can scale
     correctly for that monitor."""
     server = make_server()
@@ -101,7 +101,7 @@ def test_layer_new_send_enter():
         layer_surface.surface, monitor.output)
 
 
-def test_layer_commit_moves_bucket():
+def test_commit_moves_bucket_on_layer_change():
     """If the app moves the surface to a different layer on commit, the
     bucket reflects the new layer; apply_tree reparents."""
     server = make_server()
@@ -118,7 +118,7 @@ def test_layer_commit_moves_bucket():
     assert ls in monitor.layers[model.Layer.TOP]
 
 
-def test_layer_commit_skips_content():
+def test_commit_content_skips_arrange():
     """A plain content commit (no layer-shell state change, mapped unchanged)
     must not re-arrange: wlroots configures on every arrange and the client
     acks with a commit, which would otherwise loop at CPU speed."""
@@ -135,7 +135,7 @@ def test_layer_commit_skips_content():
     arrange.assert_not_called()
 
 
-def test_layer_unmap_clears_focus():
+def test_unmap_clears_focus():
     """Closing the keyboard-grabbing shell surface releases its keyboard
     hold so clients can be focused again."""
     server = make_server()
@@ -149,7 +149,7 @@ def test_layer_unmap_clears_focus():
     assert ls.focused is False
 
 
-def test_layer_unmap_refocuses_client():
+def test_unmap_refocuses_top_client():
     """When the keyboard-grabbing surface goes away, focus returns to the
     top client on the active screen."""
     monitor = make_monitor()
@@ -166,7 +166,7 @@ def test_layer_unmap_refocuses_client():
     focus_client.assert_called_once_with(server, client)
 
 
-def test_layer_unmap_refocuses_monitor():
+def test_unmap_refocuses_own_screen():
     """A shell surface on a secondary screen returns focus to that screen's
     top client, not the globally selected screen."""
     selected = make_monitor()
@@ -189,7 +189,7 @@ def test_layer_unmap_refocuses_monitor():
     focus_client.assert_called_once_with(server, monitor_client)
 
 
-def test_layer_unmap_unfocused():
+def test_unmap_unfocused_leaves_focus():
     """Closing a non-keyboard layer surface (e.g. wallpaper) doesn't
     disturb whatever has the keyboard."""
     monitor = make_monitor()
@@ -203,7 +203,7 @@ def test_layer_unmap_unfocused():
     focus_client.assert_not_called()
 
 
-def test_layer_cleanup_removes():
+def test_destroy_removes_from_bucket():
     """Destroying a shell surface drops it from its monitor's bucket so
     later arranges don't trip over a stale entry."""
     server = make_server()
@@ -221,7 +221,7 @@ def test_layer_cleanup_removes():
     assert ls.monitor is None
 
 
-def test_layer_cleanup_trees():
+def test_destroy_frees_popup_tree():
     """Destroying a shell surface releases the popup tree we own; the
     content tree is freed by wlr_scene_layer_surface_v1's own destroy
     listener so we must not touch it."""

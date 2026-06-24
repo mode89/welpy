@@ -70,7 +70,7 @@ def extws_handle(manager, workspace):
     return next(w for w in manager.workspaces if w.workspace is workspace)
 
 
-def test_extws_create():
+def test_create_global():
     """create() creates the wl_global via the C helper, passing the ext
     handle so the bind callback can find it."""
     server = make_extws_server()
@@ -81,7 +81,7 @@ def test_extws_create():
     assert ext.global_ == server.lib.welpy_extws_manager_create.return_value
 
 
-def test_extws_destroy():
+def test_destroy_clears_state():
     """destroy() releases the global and clears all per-client state."""
     server = make_extws_server()
     ext, externs = make_extws(server)
@@ -94,7 +94,7 @@ def test_extws_destroy():
     assert not ext.managers
 
 
-def test_extws_bind_initial():
+def test_bind_initial_events():
     """Binding sends workspace_group + workspace events for the current
     layout, followed by exactly one `done`."""
     monitor = make_monitor()
@@ -110,7 +110,7 @@ def test_extws_bind_initial():
     server.lib.welpy_extws_send_done.assert_called_once_with(manager)
 
 
-def test_extws_layout_groups():
+def test_bind_group_per_monitor():
     """With N monitors, the manager receives N group resources and one
     handle per non-orphan workspace."""
     m1, m2 = make_monitor(), make_monitor()
@@ -130,7 +130,7 @@ def test_extws_layout_groups():
     assert {id(w.workspace) for w in manager.workspaces} == {id(ws1), id(ws2)}
 
 
-def test_extws_orphan_hidden():
+def test_bind_orphan_hidden():
     """Orphan workspaces (monitor=None) are not exposed as handles."""
     monitor = make_monitor()
     ws = make_workspace(name="1", monitor=monitor)
@@ -146,7 +146,7 @@ def test_extws_orphan_hidden():
     assert server.lib.welpy_extws_create_handle.call_count == 1
 
 
-def test_extws_publish_done():
+def test_publish_done_per_client():
     """Each publish() call emits one `done` per bound client, no more."""
     monitor = make_monitor()
     ws = make_workspace(name="1", monitor=monitor)
@@ -162,7 +162,7 @@ def test_extws_publish_done():
     assert server.lib.welpy_extws_send_done.call_count == 2
 
 
-def test_extws_activate():
+def test_request_activate():
     """Receiving an `activate` request invokes the on_activate callback
     with the workspace name."""
     monitor = make_monitor()
@@ -180,7 +180,7 @@ def test_extws_activate():
     on_activate.assert_called_once_with("3")
 
 
-def test_extws_assign():
+def test_request_assign():
     """Receiving an `assign` request invokes the on_assign callback with
     the workspace and the target monitor."""
     m1, m2 = make_monitor(), make_monitor()
@@ -202,7 +202,7 @@ def test_extws_assign():
     on_assign.assert_called_once_with(ws, m2)
 
 
-def test_extws_orphan_transition():
+def test_publish_orphan_transition():
     """A workspace gaining a monitor causes a new handle; losing the
     monitor causes `removed` and frees the entry."""
     monitor = make_monitor()
@@ -228,7 +228,7 @@ def test_extws_orphan_transition():
     assert all(w.workspace is not other for w in manager.workspaces)
 
 
-def test_extws_monitor_unplug():
+def test_publish_monitor_unplug():
     """Dropping a monitor sends `removed` on its group resource and
     forgets the entry."""
     m1, m2 = make_monitor(), make_monitor()
@@ -250,7 +250,7 @@ def test_extws_monitor_unplug():
     assert all(g.monitor is not m2 for g in manager.groups)
 
 
-def test_extws_unplug_migrate():
+def test_publish_migrate_rehomes():
     """Unplugging a monitor whose workspace migrates to a surviving monitor
     re-homes the handle without dereferencing the just-removed group."""
     m1, m2 = make_monitor(), make_monitor()
@@ -275,7 +275,7 @@ def test_extws_unplug_migrate():
         new_group_r, handle_r)
 
 
-def test_extws_active_change():
+def test_publish_active_state():
     """Swapping the active workspace on a monitor emits a `state` event on
     each affected handle (one going active, one going inactive)."""
     monitor = make_monitor()
@@ -298,7 +298,7 @@ def test_extws_active_change():
     assert (handle_r2, 1) in sent
 
 
-def test_extws_urgent_state():
+def test_publish_urgent_state():
     """A window flagged urgent publishes the urgent bit on its workspace
     handle, OR'd with the active bit."""
     monitor = make_monitor()

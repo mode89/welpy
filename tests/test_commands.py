@@ -451,7 +451,7 @@ def test_toggle_floating_no_focus():
     apply_geom.assert_not_called()
 
 
-def test_xwayland_close():
+def test_close_window_x11():
     """Closing the focused X11 window routes to the X11 close call."""
     server = make_server()
     client = make_x11_client()
@@ -579,7 +579,7 @@ def test_view_previous_noop():
     assert monitor.active_workspace is ws
 
 
-def test_view_workspace_outgoing():
+def test_view_workspace_orphans_outgoing():
     """Switching away from an empty workspace orphans it."""
     monitor = make_monitor()
     ws1 = make_workspace(name="1", monitor=monitor)

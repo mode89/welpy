@@ -42,7 +42,7 @@ Users customize welpy from `~/.config/welpy/config.py`, run at startup before th
 
 Run with `pytest`.
 
-Name tests `test_<system>_<scenario>`, where `<system>` is 1-2 words for the subsystem under test and `<scenario>` is 1-2 words for the specific case. Each source module `welpy/<m>.py` has a mirror `tests/test_<m>.py` (except `layout` and `bindings`, exercised within `tests/test_app.py`); shared builders live in `tests/helpers.py`.
+Name tests `test_<scenario>`, where `<scenario>` is 1-5 words describing the behavior under test — not the function under test (functions get renamed; scenarios don't). Related cases in a file share a leading prefix so they group together (e.g. `test_map_*`, `test_constraint_*`); the filename already names the module, so don't repeat it. Each source module `welpy/<m>.py` has a mirror `tests/test_<m>.py`; a test lives in the mirror of the module it exercises, and shared builders live in `tests/helpers.py`.
 
 ## Linting
 

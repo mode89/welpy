@@ -6,7 +6,7 @@ from welpy import libinput
 from tests.helpers import make_server
 
 
-def test_libinput_skips_nonlibinput():
+def test_skip_non_libinput():
     """A pointer from the nested backend isn't libinput-backed, so it gets
     attached to the cursor without any libinput config calls."""
     server = make_server()
@@ -18,7 +18,7 @@ def test_libinput_skips_nonlibinput():
     server.lib.libinput_device_config_tap_set_enabled.assert_not_called()
 
 
-def test_libinput_null_handle():
+def test_skip_null_handle():
     """If wlroots can't hand back a libinput device, configuration is a
     no-op rather than dereferencing a null pointer."""
     server = make_server()
@@ -30,7 +30,7 @@ def test_libinput_null_handle():
     server.lib.libinput_device_config_tap_set_enabled.assert_not_called()
 
 
-def test_libinput_applies_settings():
+def test_apply_all_settings():
     """Each supported knob is pushed to the device, with string choices
     resolved to the matching libinput enum value."""
     server = make_server()
@@ -66,7 +66,7 @@ def test_libinput_applies_settings():
         "HANDLE", 0.5)
 
 
-def test_libinput_unsupported_skipped():
+def test_apply_skips_unsupported():
     """Knobs a device doesn't advertise are left untouched; here tapping
     isn't available so no tap setting is sent."""
     server = make_server()
@@ -80,7 +80,7 @@ def test_libinput_unsupported_skipped():
     lib.libinput_device_config_tap_set_enabled.assert_not_called()
 
 
-def test_libinput_unknown_choice_defaults():
+def test_enum_unknown_defaults():
     """An unrecognized string falls back to the first choice instead of
     raising, so a config typo can't crash device setup."""
     server = make_server()

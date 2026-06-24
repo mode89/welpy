@@ -19,7 +19,7 @@ def _stage_lock_new(server):
     return lock
 
 
-def test_lock_new_blanks():
+def test_engage_blanks_screen():
     """A lock request blanks the screen, marks the server locked, and tells
     the locker the screen is now locked."""
     server = make_server()
@@ -34,7 +34,7 @@ def test_lock_new_blanks():
         server.lib.welpy_scene_rect_node.return_value, True)
 
 
-def test_lock_new_rejects():
+def test_engage_rejects_second_locker():
     """Only one locker may hold the screen; a second lock is rejected."""
     existing = make_session_lock()
     server = make_server(session_lock=existing, locked=True)
@@ -46,7 +46,7 @@ def test_lock_new_rejects():
     assert server.session_lock is existing
 
 
-def test_lock_pointer_cleared():
+def test_engage_clears_pointer():
     """Locking drops pointer focus so clicks don't reach the old window."""
     server = make_server()
     _stage_lock_new(server)
@@ -57,7 +57,7 @@ def test_lock_pointer_cleared():
         server.seat)
 
 
-def test_lock_grabs_cleared():
+def test_engage_cancels_grabs():
     """Locking cancels active window drags so motion goes to the locker."""
     client = make_client(grab=model.Grab("move", 1, 2))
     server = make_server(clients=[client])
@@ -68,7 +68,7 @@ def test_lock_grabs_cleared():
     assert client.grab is None
 
 
-def test_lock_surface_configures():
+def test_surface_placed_and_sized():
     """A lock surface is placed on its screen and sized to fill it."""
     monitor = make_monitor()
     sess_lock = make_session_lock()
@@ -90,7 +90,7 @@ def test_lock_surface_configures():
     assert sess_lock.surfaces[0].monitor is monitor
 
 
-def test_lock_surface_orphan():
+def test_surface_unknown_screen_ignored():
     """A lock surface for an unknown screen is ignored, not crashed on."""
     sess_lock = make_session_lock()
     server = make_server(session_lock=sess_lock, locked=True)
@@ -106,7 +106,7 @@ def test_lock_surface_orphan():
     server.lib.wlr_scene_subsurface_tree_create.assert_not_called()
 
 
-def test_lock_surface_orphan_logged(caplog):
+def test_surface_unknown_screen_logged(caplog):
     """An unknown-screen lock surface is visible in logs so locker/output
     races can be diagnosed."""
     sess_lock = make_session_lock()
@@ -123,7 +123,7 @@ def test_lock_surface_orphan_logged(caplog):
     assert "unknown screen" in caplog.text
 
 
-def test_lock_surface_stale_ignored():
+def test_surface_after_teardown_ignored():
     """A lock-surface signal arriving after lock teardown is ignored instead
     of crashing on missing lock state."""
     monitor = make_monitor()
@@ -139,7 +139,7 @@ def test_lock_surface_stale_ignored():
     server.lib.wlr_scene_subsurface_tree_create.assert_not_called()
 
 
-def test_lock_unlock_reveals():
+def test_teardown_unlock_reveals():
     """Unlocking clears the lock, un-blanks the screen, and tears down the
     lock's scene tree."""
     listener = MagicMock(name="listener")
@@ -156,7 +156,7 @@ def test_lock_unlock_reveals():
     server.lib.wlr_scene_node_destroy.assert_called_once()
 
 
-def test_lock_destroy_locked():
+def test_teardown_destroy_stays_locked():
     """If the locker vanishes without unlocking, the screen stays blank and
     locked so window contents are never exposed."""
     sess_lock = make_session_lock()
@@ -169,7 +169,7 @@ def test_lock_destroy_locked():
     server.lib.wlr_scene_node_set_enabled.assert_not_called()
 
 
-def test_lock_surface_gone():
+def test_surface_destroyed_dropped():
     """A destroyed lock surface is dropped and its listeners detached."""
     listener = MagicMock(name="listener")
     ls = model.LockSurface(

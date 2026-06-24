@@ -9,12 +9,12 @@ from welpy import (  # pylint: disable=redefined-builtin
     input, layout, model)
 from tests.helpers import (
     make_server, make_client, make_x11_client, make_cursor,
-    make_keyboard_group, make_monitor, make_workspace,
-    trigger,
+    make_keyboard_group, make_monitor, make_workspace, make_session_lock,
+    flat_tree, trigger,
 )
 
 
-def test_cursor_create_visible():
+def test_cursor_visible():
     """create_cursor wires the pointer to the screen layout and sets a default
     xcursor image -- the combination is what makes the cursor visible."""
     server = make_server()
@@ -32,7 +32,7 @@ def test_cursor_create_visible():
     assert cursor.xcursor_manager is lib.wlr_xcursor_manager_create.return_value
 
 
-def test_cursor_create_motion():
+def test_cursor_signal_motion():
     """The cursor's relative-motion signal drives cursor_motion so a moving
     mouse actually moves the pointer."""
     server = make_server()
@@ -42,7 +42,7 @@ def test_cursor_create_motion():
     handler.assert_called_once_with(server, "MOTION_DATA")
 
 
-def test_cursor_create_motion_absolute():
+def test_cursor_signal_motion_absolute():
     """The cursor's absolute-motion signal drives cursor_motion_absolute so
     touchscreens / nested-backend events still position the pointer."""
     server = make_server()
@@ -53,7 +53,7 @@ def test_cursor_create_motion_absolute():
     handler.assert_called_once_with(server, "MA_DATA")
 
 
-def test_cursor_create_axis():
+def test_cursor_signal_axis():
     """The cursor's axis signal drives cursor_axis so scroll events reach
     apps."""
     server = make_server()
@@ -63,7 +63,7 @@ def test_cursor_create_axis():
     handler.assert_called_once_with(server, "AXIS_DATA")
 
 
-def test_cursor_create_frame():
+def test_cursor_signal_frame():
     """The cursor's frame signal drives cursor_frame so apps see a batch
     boundary after every grouped pointer update."""
     server = make_server()
@@ -73,7 +73,7 @@ def test_cursor_create_frame():
     handler.assert_called_once_with(server, "FRAME_DATA")
 
 
-def test_cursor_create_button():
+def test_cursor_signal_button():
     """The cursor's button signal drives cursor_button so Alt+Left can start
     a drag-to-move and release can end it."""
     server = make_server()
@@ -83,7 +83,7 @@ def test_cursor_create_button():
     handler.assert_called_once_with(server, "BUTTON_DATA")
 
 
-def test_cursor_destroy_releases():
+def test_cursor_destroy_frees():
     """destroy_cursor detaches its listeners and frees both the wlr cursor
     and its xcursor theme."""
     lib = MagicMock()
@@ -100,7 +100,7 @@ def test_cursor_destroy_releases():
     lib.wlr_xcursor_manager_destroy.assert_called_once_with("XMGR")
 
 
-def test_cursor_motion_moves():
+def test_motion_moves_cursor():
     """cursor_motion forwards the pointer device and delta to wlr_cursor,
     which clamps the new position to the screen layout."""
     cur = MagicMock(name="cur")
@@ -115,7 +115,7 @@ def test_cursor_motion_moves():
         cur, server.ffi.addressof.return_value, 3.0, -2.5)
 
 
-def test_cursor_motion_absolute_converts():
+def test_motion_absolute_converts():
     """cursor_motion_absolute converts an absolute position to a layout delta
     and moves through the shared path (no warp), so pointer lock/confine apply
     to touch / tablet / nested-backend devices too."""
@@ -132,7 +132,7 @@ def test_cursor_motion_absolute_converts():
     server.lib.wlr_cursor_warp_absolute.assert_not_called()
 
 
-def test_cursor_motion_forwards():
+def test_motion_forwards_hover():
     """A move over a surface forwards enter+motion so apps see hovers."""
     server = make_server(cursor=make_cursor(xcursor_manager="X"))
     server.lib.WLR_SCENE_NODE_BUFFER = "BUF"
@@ -145,7 +145,7 @@ def test_cursor_motion_forwards():
     server.lib.wlr_seat_pointer_notify_motion.assert_called_once()
 
 
-def test_cursor_motion_empty_clears():
+def test_motion_empty_clears_focus():
     """A move over empty space clears pointer focus so no app keeps
     thinking it's being hovered."""
     server = make_server(cursor=make_cursor(xcursor_manager="X"))
@@ -158,7 +158,7 @@ def test_cursor_motion_empty_clears():
     server.lib.wlr_seat_pointer_notify_enter.assert_not_called()
 
 
-def test_cursor_motion_grab_skips():
+def test_motion_grab_skips_hover():
     """While dragging a window the pointer is captured -- motion isn't
     forwarded to surfaces."""
     client = make_client(
@@ -174,7 +174,7 @@ def test_cursor_motion_grab_skips():
     server.lib.wlr_seat_pointer_clear_focus.assert_not_called()
 
 
-def test_cursor_motion_drags():
+def test_motion_drags_window():
     """Motion during a grab repositions the grabbed window so it stays pinned
     to the cursor at the captured offset."""
     grabbed = make_client(
@@ -193,7 +193,7 @@ def test_cursor_motion_drags():
     assert grabbed.floating_geom == layout.Rect(190, 280, 100, 100)
 
 
-def test_cursor_motion_resizes():
+def test_motion_resizes_window():
     """Motion during a resize grab moves the bottom-right corner by the
     cursor delta; top-left stays fixed."""
     grabbed = make_client(
@@ -214,7 +214,7 @@ def test_cursor_motion_resizes():
     assert grabbed.floating_geom == layout.Rect(100, 150, 300, 200)
 
 
-def test_cursor_motion_resize_min():
+def test_motion_resize_min_size():
     """Resize clamps width/height to at least 1px so the window can't
     collapse to a degenerate zero-size rect."""
     grabbed = make_client(
@@ -234,7 +234,7 @@ def test_cursor_motion_resize_min():
     rc.assert_called_once_with(server, grabbed, layout.Rect(100, 150, 1, 1))
 
 
-def test_cursor_button_binding():
+def test_button_binding_runs():
     """A press whose (mods, button) matches a binding runs the bound
     callable."""
     action = MagicMock()
@@ -252,7 +252,7 @@ def test_cursor_button_binding():
     action.assert_called_once_with(server)
 
 
-def test_cursor_button_focuses():
+def test_button_focuses_window():
     """Pressing any mouse button over a window focuses it, so a single click
     is enough to direct keys to that window."""
     client = make_client()
@@ -272,7 +272,7 @@ def test_cursor_button_focuses():
     focus_client.assert_called_once_with(server, client)
 
 
-def test_cursor_button_active_monitor():
+def test_button_activates_monitor():
     """Clicking a window on another monitor makes that monitor active so
     keyboard focus follows the click."""
     # pylint: disable=duplicate-code
@@ -301,7 +301,7 @@ def test_cursor_button_active_monitor():
         client.toplevel.base.surface)
 
 
-def test_cursor_button_release_ends():
+def test_button_release_ends_grab():
     """Releasing the mouse button clears the active grab."""
     client = make_client(grab=model.Grab("move", 0, 0))
     server = make_server(
@@ -314,7 +314,7 @@ def test_cursor_button_release_ends():
     assert client.grab is None
 
 
-def test_cursor_button_release_pointer():
+def test_button_release_repoints():
     """Ending a drag re-points the pointer at whatever is now under the
     cursor, since focus was frozen on the grabbed window during the drag."""
     client = make_client(grab=model.Grab("move", 0, 0))
@@ -330,7 +330,7 @@ def test_cursor_button_release_pointer():
     fwd.assert_called_once_with(server, 42)
 
 
-def test_cursor_button_forwards():
+def test_button_forwards_click():
     """A regular click forwards the button to the focused surface so apps
     see clicks."""
     client = make_client()
@@ -351,7 +351,7 @@ def test_cursor_button_forwards():
         server.seat, 42, "BTN", event.state)
 
 
-def test_cursor_button_rebases():
+def test_button_rebases_focus():
     """A press re-points pointer focus before the button is delivered, so the
     first click after a scene change reaches the right surface."""
     client = make_client()
@@ -377,7 +377,7 @@ def test_cursor_button_rebases():
     server.lib.wlr_seat_pointer_notify_button.assert_called_once()
 
 
-def test_cursor_button_binding_norebase():
+def test_button_binding_no_rebase():
     """A bound press is consumed before dispatch, so it never re-points
     pointer focus."""
     action = MagicMock()
@@ -396,7 +396,7 @@ def test_cursor_button_binding_norebase():
     rebase.assert_not_called()
 
 
-def test_cursor_button_consumes():
+def test_button_binding_consumes():
     """A bound press is not forwarded to the focused surface."""
     server = make_server(
         bindings={(0x8, 0x110): lambda _: None},
@@ -412,7 +412,7 @@ def test_cursor_button_consumes():
     server.lib.wlr_seat_pointer_notify_button.assert_not_called()
 
 
-def test_cursor_button_release_consumed():
+def test_button_release_consumed():
     """Releasing to end a drag isn't forwarded; the app never saw the
     press, so it shouldn't see the release."""
     client = make_client(grab=model.Grab("move", 0, 0))
@@ -426,7 +426,7 @@ def test_cursor_button_release_consumed():
     server.lib.wlr_seat_pointer_notify_button.assert_not_called()
 
 
-def test_cursor_axis_forwards():
+def test_axis_forwards_scroll():
     """Scroll/wheel events forward to the focused surface so scrolling
     works inside apps."""
     server = make_server()
@@ -444,7 +444,7 @@ def test_cursor_axis_forwards():
         server.seat, 17, "V", 1.0, 1, "WHEEL", "NORMAL")
 
 
-def test_cursor_axis_rebases():
+def test_axis_rebases_focus():
     """A scroll re-points pointer focus before forwarding the event, so it
     reaches a freshly-fullscreened window without a prior mouse move."""
     server = make_server(cursor=make_cursor(xcursor_manager="X"))
@@ -462,7 +462,7 @@ def test_cursor_axis_rebases():
     server.lib.wlr_seat_pointer_notify_axis.assert_called_once()
 
 
-def test_cursor_axis_grab():
+def test_axis_grab_no_rebase():
     """While a window is being dragged, a scroll must not re-point focus off
     the grabbed window."""
     client = make_client(grab=model.Grab("move", 0, 0))
@@ -476,7 +476,7 @@ def test_cursor_axis_grab():
     server.lib.wlr_seat_pointer_notify_axis.assert_called_once()
 
 
-def test_cursor_frame_forwards():
+def test_frame_forwards():
     """The frame signal tells apps a batch of pointer events is complete."""
     server = make_server()
 
@@ -486,7 +486,7 @@ def test_cursor_frame_forwards():
         server.seat)
 
 
-def test_motion_relative_sent():
+def test_motion_relative_streamed():
     """Every real pointer move streams the raw, unaccelerated delta to
     relative-pointer clients -- what games read for look/aim."""
     server = make_server(cursor=make_cursor(xcursor_manager="X"))
@@ -660,7 +660,7 @@ def test_constraint_deactivate_destroys():
     assert old_record not in server.constraints
 
 
-def test_constraint_warp_to_hint():
+def test_constraint_hint_warps():
     """On release the cursor warps to the client's hint, mapped from
     surface-local coords to layout via the window's content origin."""
     real = cffi.FFI()
@@ -686,7 +686,7 @@ def test_constraint_warp_to_hint():
         server.cursor.cursor, server.ffi.NULL, 103.0, 204.0)
 
 
-def test_constraint_warp_no_hint():
+def test_constraint_no_hint_skips():
     """With no hint set, releasing the constraint leaves the cursor where it
     is rather than warping."""
     server = make_server(cursor=make_cursor(xcursor_manager="X"))
@@ -697,7 +697,7 @@ def test_constraint_warp_no_hint():
     server.lib.wlr_cursor_warp.assert_not_called()
 
 
-def test_begin_dragging_offset():
+def test_drag_move_captures_offset():
     """begin_dragging_client captures the cursor->window-origin offset as
     ints, which drag_client then subtracts from cursor position to
     reposition the window."""
@@ -720,7 +720,7 @@ def test_begin_dragging_offset():
     assert client.grab == model.Grab("move", 20, 50)
 
 
-def test_begin_dragging_empty():
+def test_drag_move_empty_noop():
     """With no window under the cursor, begin_dragging_client is a no-op."""
     server = make_server(cursor=make_cursor(xcursor_manager="X"))
     server.lib.wlr_scene_node_at.return_value = server.ffi.NULL
@@ -731,7 +731,7 @@ def test_begin_dragging_empty():
     apply_geom.assert_not_called()
 
 
-def test_begin_resizing_anchor():
+def test_drag_resize_captures_anchor():
     """begin_resizing_client stores `cursor - current_size` so that on
     motion `cursor - grab` recovers the new size."""
     client = make_client()
@@ -751,7 +751,7 @@ def test_begin_resizing_anchor():
     assert client.grab == model.Grab("resize", 200, 200)
 
 
-def test_begin_resizing_empty():
+def test_drag_resize_empty_noop():
     """With no window under the cursor, begin_resizing_client is a no-op."""
     server = make_server(cursor=make_cursor(xcursor_manager="X"))
     server.lib.wlr_scene_node_at.return_value = server.ffi.NULL
@@ -762,7 +762,7 @@ def test_begin_resizing_empty():
     apply_geom.assert_not_called()
 
 
-def test_xwayland_drag_move():
+def test_drag_xwayland_configures():
     """Dragging an X11 window sends a position-only configure so the X
     server's window coordinates follow the scene node."""
     server = make_server(cursor=make_cursor(xcursor_manager="X"))
@@ -840,7 +840,7 @@ def test_keyboard_destroy_releases():
     lib.xkb_context_unref.assert_called_once_with("XKB")
 
 
-def test_keycode_map_range():
+def test_keycode_range_inclusive():
     """build_keycode_map walks [min_keycode, max_keycode] inclusive, asking
     xkb for level-0 syms in layout 0."""
     lib = MagicMock()
@@ -857,7 +857,7 @@ def test_keycode_map_range():
     assert {c.args[3] for c in calls} == {0}
 
 
-def test_keycode_map_names():
+def test_keycode_names_to_evdev():
     """Sym names from xkb_keysym_get_name become dict keys; values are
     evdev keycodes (xkb minus 8)."""
     lib = MagicMock()
@@ -873,7 +873,7 @@ def test_keycode_map_names():
     assert result == {"j": 28}
 
 
-def test_keycode_map_unbound():
+def test_keycode_unbound_absent():
     """Keycodes with no level-0 syms are absent from the map."""
     lib = MagicMock()
     ffi = MagicMock()
@@ -886,7 +886,7 @@ def test_keycode_map_unbound():
     assert not result
 
 
-def test_input_new_keyboard():
+def test_device_keyboard_joins_group():
     """A new keyboard joins the combined group so its events feed the seat
     alongside any other already-plugged-in keyboards."""
     server = make_server()
@@ -899,7 +899,7 @@ def test_input_new_keyboard():
         "GROUP", server.lib.wlr_keyboard_from_input_device.return_value)
 
 
-def test_input_new_keymap():
+def test_device_keyboard_keymap_aligned():
     """A new keyboard's keymap is aligned with the group's before it joins.
     wlroots rejects the join otherwise and key events never reach us."""
     server = make_server()
@@ -916,7 +916,7 @@ def test_input_new_keymap():
         "wlr_keyboard_group_add_keyboard")
 
 
-def test_input_new_other():
+def test_device_other_ignored():
     """Non-keyboard devices (mice, touch, ...) are not added to the keyboard
     group -- the function silently ignores them for now."""
     server = make_server()
@@ -928,7 +928,7 @@ def test_input_new_other():
     server.lib.wlr_keyboard_group_add_keyboard.assert_not_called()
 
 
-def test_input_new_pointer():
+def test_device_pointer_attached():
     """A new mouse / touchpad is attached to the cursor so its motion events
     actually move the on-screen pointer."""
     server = make_server(
@@ -1049,7 +1049,7 @@ def test_keyboard_modifiers_forwards():
         server.seat, server.ffi.addressof.return_value)
 
 
-def test_lookup_binding_hit():
+def test_binding_hit():
     """A bound (mods, code) resolves to its action."""
     action = MagicMock()
     server = make_server(bindings={(0x40, 28): action})
@@ -1057,14 +1057,14 @@ def test_lookup_binding_hit():
     assert input.lookup_binding(server, 0x40, 28) is action
 
 
-def test_lookup_binding_miss():
+def test_binding_miss():
     """An unbound (mods, code) resolves to None so the press is forwarded."""
     server = make_server(bindings={(0x40, 28): MagicMock()})
 
     assert input.lookup_binding(server, 0, 28) is None
 
 
-def test_lookup_binding_passthrough():
+def test_binding_passthrough_suppressed():
     """While passing through, a bound action resolves to None so the press
     reaches the focused app instead."""
     server = make_server(
@@ -1073,7 +1073,7 @@ def test_lookup_binding_passthrough():
     assert input.lookup_binding(server, 0x40, 28) is None
 
 
-def test_lookup_binding_passthrough_toggle():
+def test_binding_passthrough_toggle_exempt():
     """The passthrough toggle still resolves while passing through, so it can
     be switched back off."""
     server = make_server(
@@ -1082,7 +1082,7 @@ def test_lookup_binding_passthrough_toggle():
     assert input.lookup_binding(server, 0x40, 28) is input.toggle_passthrough
 
 
-def test_toggle_passthrough_flips():
+def test_binding_passthrough_flips():
     """Toggling flips the passthrough flag both ways."""
     server = make_server(passthrough=False)
 
@@ -1092,7 +1092,7 @@ def test_toggle_passthrough_flips():
     assert server.passthrough is False
 
 
-def test_seat_set_selection():
+def test_seat_selection():
     """An app's set-selection request is honored by putting its source on
     the seat clipboard with the request's serial."""
     server = make_server()
@@ -1106,7 +1106,7 @@ def test_seat_set_selection():
         server.seat, "SOURCE", 42)
 
 
-def test_seat_set_primary_selection():
+def test_seat_primary_selection():
     """An app's set-primary-selection request is honored on the seat so
     middle-click paste tracks the latest highlight."""
     server = make_server()
@@ -1120,7 +1120,7 @@ def test_seat_set_primary_selection():
         server.seat, "PSOURCE", 7)
 
 
-def test_seat_set_cursor_focused():
+def test_seat_cursor_focused():
     """A set-cursor request from the app under the pointer swaps the cursor
     image to the surface it supplied, at its hotspot (I-beam, resize arrow,
     or a NULL surface to hide it)."""
@@ -1141,7 +1141,7 @@ def test_seat_set_cursor_focused():
         cur, "CURSOR_SURFACE", 4, 7)
 
 
-def test_seat_set_cursor_unfocused():
+def test_seat_cursor_unfocused():
     """A set-cursor request from an app that doesn't hold pointer focus is
     ignored, so a background app can't hijack the cursor image."""
     server = make_server(
@@ -1157,7 +1157,7 @@ def test_seat_set_cursor_unfocused():
     server.lib.wlr_cursor_set_surface.assert_not_called()
 
 
-def test_seat_set_cursor_grab():
+def test_seat_cursor_grab_ignored():
     """While a window is being mouse-dragged the compositor owns the cursor
     image, so set-cursor requests are ignored until the drag ends."""
     client = MagicMock(name="seat_client")
@@ -1175,3 +1175,128 @@ def test_seat_set_cursor_grab():
     input.seat_set_cursor(server, "SC_DATA")
 
     server.lib.wlr_cursor_set_surface.assert_not_called()
+
+
+def test_button_locked_swallows_click():
+    """While locked, clicking a window neither focuses it nor runs a mouse
+    binding; the click still forwards to the locker."""
+    action = MagicMock()
+    server = make_server(
+        bindings={(0x8, 0x110): action}, locked=True,
+        cursor=make_cursor(xcursor_manager="X"))
+    server.lib.wlr_keyboard_get_modifiers.return_value = 0x8
+    event = server.ffi.cast.return_value
+    event.button = 0x110
+    event.time_msec = 7
+    event.state = server.lib.WL_POINTER_BUTTON_STATE_PRESSED
+
+    with patch("welpy.focus.bump_focus_order") as focus_client, \
+         patch("welpy.focus.client_at") as at:
+        input.cursor_button(server, "BUTTON_DATA")
+
+    action.assert_not_called()
+    focus_client.assert_not_called()
+    at.assert_not_called()
+    server.lib.wlr_seat_pointer_notify_button.assert_called_once()
+
+
+def test_keyboard_locked_clears_focus():
+    """While locked with no locker surface, modifiers are not forwarded to a
+    stale app focus."""
+    session_lock = make_session_lock(surfaces=[])
+    server = make_server(session_lock=session_lock, locked=True)
+    server.seat.keyboard_state.focused_surface = MagicMock(name="window")
+
+    input.keyboard_modifiers(server, "MOD_DATA")
+
+    server.lib.wlr_seat_keyboard_notify_modifiers.assert_not_called()
+    server.lib.wlr_seat_keyboard_clear_focus.assert_called_once_with(
+        server.seat)
+
+
+def test_keyboard_locked_suppresses_binding():
+    """While locked, compositor keybindings are suppressed so the lock can't
+    be bypassed; the key still forwards to the locker."""
+    action = MagicMock()
+    server = make_server(bindings={(0x40, 28): action}, locked=True)
+    server.lib.wlr_keyboard_get_modifiers.return_value = 0x40
+    event = server.ffi.cast.return_value
+    event.time_msec = 42
+    event.state = 1
+    event.keycode = 28
+
+    input.keyboard_key(server, "KEY_DATA")
+
+    action.assert_not_called()
+    server.lib.wlr_seat_keyboard_notify_key.assert_called_once_with(
+        server.seat, 42, 28, 1)
+
+
+def test_drag_move_floats_window():
+    """begin_dragging_client makes the dragged window floating by seeding
+    floating_geom from its current outer rect."""
+    client = make_client()
+    client.scene_tree.node.x = 0
+    client.scene_tree.node.y = 0
+    server = make_server(
+        clients=[client], cursor=make_cursor(xcursor_manager="X"))
+    server.cursor.cursor.x = 0
+    server.cursor.cursor.y = 0
+    node = MagicMock(name="node")
+    node.parent = client.scene_tree
+    server.lib.wlr_scene_node_at.return_value = node
+
+    seed = layout.Rect(0, 0, 100, 80)
+    with patch("welpy.geometry.client_outer_rect", return_value=seed), \
+         patch("welpy.geometry.reconcile"):
+        input.begin_dragging_client(server)
+
+    assert client.floating_geom == seed
+
+
+def test_drag_move_drops_tiled_leaf():
+    """Starting a mouse move on a tiled window drops its leaf from the
+    workspace tree so it floats outside the layout."""
+    # pylint: disable=duplicate-code
+    m = make_monitor()
+    m.active_workspace = make_workspace(monitor=m)
+    a = make_client(workspace=m.active_workspace)
+    b = make_client(workspace=m.active_workspace)
+    m.active_workspace.root = flat_tree(a, b)
+    server = make_server(
+        monitors=[m], active_monitor=m, clients=[a, b],
+        cursor=make_cursor(xcursor_manager="X"))
+    node = MagicMock(name="node")
+    node.parent = a.scene_tree
+    server.lib.wlr_scene_node_at.return_value = node
+
+    with patch("welpy.geometry.client_outer_rect",
+               return_value=layout.Rect(0, 0, 100, 80)), \
+         patch("welpy.geometry.reconcile"):
+        input.begin_dragging_client(server)
+
+    assert m.active_workspace.root.children == [b]
+
+
+def test_drag_resize_drops_tiled_leaf():
+    """Starting a mouse resize on a tiled window drops its leaf from the
+    workspace tree so it floats outside the layout."""
+    # pylint: disable=duplicate-code
+    m = make_monitor()
+    m.active_workspace = make_workspace(monitor=m)
+    a = make_client(workspace=m.active_workspace)
+    b = make_client(workspace=m.active_workspace)
+    m.active_workspace.root = flat_tree(a, b)
+    server = make_server(
+        monitors=[m], active_monitor=m, clients=[a, b],
+        cursor=make_cursor(xcursor_manager="X"))
+    node = MagicMock(name="node")
+    node.parent = a.scene_tree
+    server.lib.wlr_scene_node_at.return_value = node
+
+    with patch("welpy.geometry.client_outer_rect",
+               return_value=layout.Rect(0, 0, 100, 80)), \
+         patch("welpy.geometry.reconcile"):
+        input.begin_resizing_client(server)
+
+    assert m.active_workspace.root.children == [b]
