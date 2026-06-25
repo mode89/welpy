@@ -393,7 +393,12 @@ def keyboard_key(server: Server, data) -> None:
         if action is not None:
             action(server)
             return  # action self-reconciles
-    lib.wlr_seat_keyboard_notify_key(
+    forward_key(server, event)
+
+
+def forward_key(server: Server, event) -> None:
+    """Deliver a key the compositor didn't consume to the focused app."""
+    server.lib.wlr_seat_keyboard_notify_key(
         server.seat, event.time_msec, event.keycode, event.state)
 
 
