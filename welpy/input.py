@@ -12,7 +12,8 @@ from . import libinput
 from . import model
 from .layout import Rect
 from .model import (
-    Client, Cursor, Grab, KeyboardGroup, PointerConstraint, Server, X11Client,
+    Client, Cursor, Grab, KeyboardGroup, PointerConstraint, Server,
+    VirtualKeyboard, X11Client,
 )
 
 logger = logging.getLogger(__name__)
@@ -379,20 +380,76 @@ def on_create(server: Server, data) -> None:
         lib.wlr_cursor_attach_input_device(server.cursor.cursor, device)
 
 
-def keyboard_key(server: Server, data) -> None:
-    """Fires when any keyboard in the group emits a key press/release."""
+def virtual_keyboard_new(server: Server, data) -> None:
+    """A client created a virtual keyboard (wtype, on-screen keyboards). Give
+    it its own isolated group: a virtual keyboard uploads its own keymap, and
+    wlroots copies a group member's keymap onto its siblings -- sharing the
+    physical group would overwrite the real keyboard's keymap and brick it."""
+    ffi, lib, listen = server.ffi, server.lib, server.listen
+    vkb = ffi.cast("struct wlr_virtual_keyboard_v1 *", data)
+    keyboard = ffi.addressof(vkb[0], "keyboard")
+    group = lib.wlr_keyboard_group_create()
+    group_kb = lib.welpy_keyboard_group_keyboard(group)
+    # Both keymaps must match for the join; the client overrides its own next.
+    lib.wlr_keyboard_set_keymap(group_kb, server.keyboard_group.keymap)
+    lib.wlr_keyboard_set_keymap(keyboard, server.keyboard_group.keymap)
+    lib.wlr_keyboard_group_add_keyboard(group, keyboard)
+    record = VirtualKeyboard(group=group, listeners=[])
+    record.listeners.extend([
+        listen(lib.welpy_keyboard_key_signal(group_kb),
+            lambda data: keyboard_key(server, data, record)),
+        listen(lib.welpy_keyboard_modifiers_signal(group_kb),
+            lambda data: keyboard_modifiers(server, data, record)),
+        # Registered after add_keyboard so the group's own member-destroy
+        # listener runs first; we then free an already-emptied group.
+        listen(lib.welpy_keyboard_destroy_signal(keyboard),
+            lambda _data: virtual_keyboard_destroy(server, record)),
+    ])
+    server.virtual_keyboards.append(record)
+
+
+def virtual_keyboard_destroy(server: Server, record: VirtualKeyboard) -> None:
+    """A virtual keyboard went away; detach its listeners, free its group, and
+    point the seat back at the physical keyboard so its keymap takes over."""
+    lib = server.lib
+    for listener in record.listeners:
+        listener.remove()
+    record.listeners.clear()
+    lib.wlr_keyboard_group_destroy(record.group)
+    server.virtual_keyboards[:] = [
+        virtual
+        for virtual in server.virtual_keyboards
+        if virtual is not record
+    ]
+    lib.wlr_seat_set_keyboard(
+        server.seat,
+        lib.welpy_keyboard_group_keyboard(server.keyboard_group.group))
+
+
+def keyboard_key(
+        server: Server, data,
+        group: KeyboardGroup | VirtualKeyboard | None = None) -> None:
+    """Fires when a keyboard in `group` (the physical group by default) emits a
+    key press/release."""
     ffi, lib = server.ffi, server.lib
+    if isinstance(group, VirtualKeyboard) and server.locked:
+        return
+    group = group or server.keyboard_group
     event = ffi.cast("struct wlr_keyboard_key_event *", data)
+    kb = lib.welpy_keyboard_group_keyboard(group.group)
     # Edge-trigger bindings on press; the release still forwards, leaking
     # a stray key-up to the focused app, which most apps ignore. While
     # locked, bindings are suppressed so the locker can't be bypassed.
     if event.state == lib.WL_KEYBOARD_KEY_STATE_PRESSED and not server.locked:
-        kb = lib.welpy_keyboard_group_keyboard(server.keyboard_group.group)
         mods = lib.wlr_keyboard_get_modifiers(kb)
         action = lookup_binding(server, mods, event.keycode)
         if action is not None:
             action(server)
             return  # action self-reconciles
+    # Point the seat at the emitting keyboard only when forwarding, so the
+    # focused app reads the key (and repeat) against this keyboard's keymap
+    # without a consumed binding leaking it to a newly-focused surface.
+    lib.wlr_seat_set_keyboard(server.seat, kb)
     forward_key(server, event)
 
 
@@ -402,18 +459,24 @@ def forward_key(server: Server, event) -> None:
         server.seat, event.time_msec, event.keycode, event.state)
 
 
-def keyboard_modifiers(server: Server, _data) -> None:
-    """Fires when any modifier (Shift/Ctrl/...) in the group changes state."""
+def keyboard_modifiers(
+        server: Server, _data,
+        group: KeyboardGroup | VirtualKeyboard | None = None) -> None:
+    """Fires when a modifier (Shift/Ctrl/...) in `group` changes state."""
     ffi, lib = server.ffi, server.lib
+    if isinstance(group, VirtualKeyboard) and server.locked:
+        return
+    group = group or server.keyboard_group
     if server.locked and (server.session_lock is None
                           or not server.session_lock.surfaces):
         # A real lock surface needs modifiers; without one, only stale app
         # focus could receive them.
         focus.activate_lock(server)
         return
-    kb_group = lib.welpy_keyboard_group_keyboard(server.keyboard_group.group)
+    kb = lib.welpy_keyboard_group_keyboard(group.group)
+    lib.wlr_seat_set_keyboard(server.seat, kb)
     lib.wlr_seat_keyboard_notify_modifiers(
-        server.seat, ffi.addressof(kb_group, "modifiers"))
+        server.seat, ffi.addressof(kb, "modifiers"))
 
 
 def lookup_binding(server: Server, mods: int, code: int):

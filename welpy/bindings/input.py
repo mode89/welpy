@@ -174,6 +174,12 @@ bool welpy_constraint_cursor_hint(struct wlr_pointer_constraint_v1 *,
 struct wlr_relative_pointer_manager_v1 *
         wlr_relative_pointer_manager_v1_create(struct wl_display *);
 
+struct wlr_virtual_keyboard_manager_v1 *
+        wlr_virtual_keyboard_manager_v1_create(struct wl_display *);
+
+struct wl_signal *welpy_virtual_keyboard_mgr_new(
+        struct wlr_virtual_keyboard_manager_v1 *);
+
 void wlr_relative_pointer_manager_v1_send_relative_motion(
         struct wlr_relative_pointer_manager_v1 *, struct wlr_seat *,
         uint64_t time_usec, double dx, double dy,
@@ -230,6 +236,8 @@ struct wl_signal *welpy_backend_new_input(struct wlr_backend *);
 struct wl_signal *welpy_keyboard_key_signal(struct wlr_keyboard *);
 
 struct wl_signal *welpy_keyboard_modifiers_signal(struct wlr_keyboard *);
+
+struct wl_signal *welpy_keyboard_destroy_signal(struct wlr_keyboard *);
 """
 
 
@@ -260,6 +268,10 @@ struct wl_signal *welpy_keyboard_key_signal(struct wlr_keyboard *k) {
 
 struct wl_signal *welpy_keyboard_modifiers_signal(struct wlr_keyboard *k) {
     return &k->events.modifiers;
+}
+
+struct wl_signal *welpy_keyboard_destroy_signal(struct wlr_keyboard *k) {
+    return &k->base.events.destroy;
 }
 
 struct wl_signal *welpy_seat_request_set_selection(struct wlr_seat *s) {
@@ -305,6 +317,11 @@ struct wlr_keyboard *welpy_keyboard_group_keyboard(struct wlr_keyboard_group *g)
 struct wl_signal *welpy_pointer_constraints_new_constraint(
         struct wlr_pointer_constraints_v1 *c) {
     return &c->events.new_constraint;
+}
+
+struct wl_signal *welpy_virtual_keyboard_mgr_new(
+        struct wlr_virtual_keyboard_manager_v1 *m) {
+    return &m->events.new_virtual_keyboard;
 }
 
 struct wl_signal *welpy_pointer_constraint_destroy(

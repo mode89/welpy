@@ -167,6 +167,13 @@ class KeyboardGroup:
     listeners: list[Any]
 
 
+@dataclass(eq=False)
+class VirtualKeyboard:
+    """One client-injected keyboard isolated from the physical group."""
+    group: Any               # wlr_keyboard_group: single virtual keyboard
+    listeners: list[Any]
+
+
 @dataclass
 class Server: # pylint: disable=too-many-instance-attributes
     """The compositor's long-lived state."""
@@ -192,6 +199,7 @@ class Server: # pylint: disable=too-many-instance-attributes
     seat: Any
     cursor: Cursor
     keyboard_group: KeyboardGroup
+    virtual_keyboards: list[VirtualKeyboard]
     monitors: list[Monitor]
     active_monitor: Any      # Monitor receiving new windows / key bindings
     clients: list[Client]

@@ -650,6 +650,11 @@ struct wlr_pointer_constraint_v1 {
 
 struct wlr_relative_pointer_manager_v1;
 
+// virtual-keyboard: clients inject key events (wtype, on-screen keyboards).
+struct wlr_virtual_keyboard_manager_v1;
+
+struct wlr_virtual_keyboard_v1 { struct wlr_keyboard keyboard; ...; };
+
 struct wlr_server_decoration_manager;
 
 // our helpers
@@ -727,6 +732,7 @@ _SOURCE = r"""
 #include <wlr/types/wlr_idle_inhibit_v1.h>
 #include <wlr/types/wlr_pointer_constraints_v1.h>
 #include <wlr/types/wlr_relative_pointer_v1.h>
+#include <wlr/types/wlr_virtual_keyboard_v1.h>
 #include <wlr/util/region.h>
 #include <wlr/types/wlr_server_decoration.h>
 #include <wlr/types/wlr_xdg_shell.h>

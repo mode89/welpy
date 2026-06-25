@@ -158,6 +158,8 @@ def setup() -> Server: # pylint: disable=too-many-locals,too-many-statements
     pointer_constraints = lib.wlr_pointer_constraints_v1_create(display)
     relative_pointer_mgr = lib.wlr_relative_pointer_manager_v1_create(display)
 
+    virtual_keyboard_mgr = lib.wlr_virtual_keyboard_manager_v1_create(display)
+
     # Night-light tools set per-screen color curves; the scene applies the
     # LUTs to each output automatically on commit.
     lib.wlr_scene_set_gamma_control_manager_v1(
@@ -180,7 +182,7 @@ def setup() -> Server: # pylint: disable=too-many-locals,too-many-statements
         xdg_shell=xdg_shell,
         layer_shell=layer_shell_server, xwayland=xwayland_server,
         seat=seat,
-        cursor=None, keyboard_group=None,
+        cursor=None, keyboard_group=None, virtual_keyboards=[],
         monitors=[], active_monitor=None, clients=[],
         workspaces=[
             Workspace(
@@ -245,6 +247,8 @@ def setup() -> Server: # pylint: disable=too-many-locals,too-many-statements
         listen(lib.welpy_pointer_constraints_new_constraint(
                 pointer_constraints),
             lambda data: input.constraint_new(server, data)),
+        listen(lib.welpy_virtual_keyboard_mgr_new(virtual_keyboard_mgr),
+            lambda data: input.virtual_keyboard_new(server, data)),
         listen(lib.welpy_output_power_mgr_set_mode(output_power_mgr),
             lambda data: output.on_power_mode(server, data)),
         listen(lib.welpy_xwayland_new_surface(xwayland_server),

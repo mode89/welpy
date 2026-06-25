@@ -31,6 +31,7 @@ def make_server(**kwargs):
         "cursor": MagicMock(name="cursor"),
         "keyboard_group": make_keyboard_group(
             group="GROUP", keymap="KEYMAP", xkb_context="XKB"),
+        "virtual_keyboards": [],
         "monitors": [], "active_monitor": None, "clients": [],
         "workspaces": [], "previous_workspace": MagicMock(name="prev_ws"),
         "ext_workspace": MagicMock(name="ext_workspace"),

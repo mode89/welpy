@@ -490,6 +490,8 @@ def test_setup_pointer_constraints():
         lib.wl_display_create.return_value)
     lib.wlr_relative_pointer_manager_v1_create.assert_called_once_with(
         lib.wl_display_create.return_value)
+    lib.wlr_virtual_keyboard_manager_v1_create.assert_called_once_with(
+        lib.wl_display_create.return_value)
 
 
 def test_setup_constraint_listener():
@@ -506,6 +508,22 @@ def test_setup_constraint_listener():
         built = app.setup()
         trigger(built, lib.welpy_pointer_constraints_new_constraint, "C_DATA")
     handler.assert_called_once_with(built, "C_DATA")
+
+
+def test_setup_virtual_keyboard_listener():
+    """new_virtual_keyboard on the manager drives virtual_keyboard_new so each
+    injected keyboard (wtype, on-screen keyboards) hits our handler."""
+    build = make_bindings()
+    _, lib, *_ = build
+    lib.WL_SEAT_CAPABILITY_POINTER = 1
+    lib.WL_SEAT_CAPABILITY_KEYBOARD = 2
+    with patch("welpy.app.bindings.build", return_value=build), \
+         patch("welpy.input.build_keycode_map",
+               return_value=make_keycode_map()), \
+         patch("welpy.input.virtual_keyboard_new") as handler:
+        built = app.setup()
+        trigger(built, lib.welpy_virtual_keyboard_mgr_new, "VKB_DATA")
+    handler.assert_called_once_with(built, "VKB_DATA")
 
 
 def test_setup_set_cursor_listener():

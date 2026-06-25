@@ -916,6 +916,79 @@ def test_device_keyboard_keymap_aligned():
         "wlr_keyboard_group_add_keyboard")
 
 
+def test_virtual_keyboard_isolated_group():
+    """A virtual keyboard (wtype, on-screen keyboards) gets its OWN group, not
+    the physical one: wlroots copies a member's keymap onto its siblings, so
+    sharing would let the client's keymap overwrite the real keyboard's."""
+    server = make_server()
+
+    input.virtual_keyboard_new(server, "VKB_DATA")
+
+    new_group = server.lib.wlr_keyboard_group_create.return_value
+    server.lib.wlr_keyboard_group_add_keyboard.assert_called_once_with(
+        new_group, server.ffi.addressof.return_value)
+    assert len(server.virtual_keyboards) == 1
+    assert server.virtual_keyboards[0].group is new_group
+    assert len(server.virtual_keyboards[0].listeners) == 3
+
+
+def test_virtual_keyboard_keymap_aligned():
+    """Both the new group's keyboard and the virtual keyboard are set to the
+    physical keymap before the join; wlroots rejects a mismatched join."""
+    server = make_server()
+
+    input.virtual_keyboard_new(server, "VKB_DATA")
+
+    names = [c[0] for c in server.lib.mock_calls]
+    assert names.count("wlr_keyboard_set_keymap") == 2
+    assert names.index("wlr_keyboard_group_add_keyboard") > max(
+        i for i, n in enumerate(names) if n == "wlr_keyboard_set_keymap")
+
+
+def test_virtual_keyboard_destroy_cleans_up():
+    """Destroying a virtual keyboard detaches its listeners, frees its group,
+    drops it from tracking, and repoints the seat at the physical keyboard."""
+    server = make_server()
+    listener = MagicMock(name="listener")
+    record = model.VirtualKeyboard(group="VGROUP", listeners=[listener])
+    server.virtual_keyboards = [record]
+
+    input.virtual_keyboard_destroy(server, record)
+
+    listener.remove.assert_called_once_with()
+    server.lib.wlr_keyboard_group_destroy.assert_called_once_with("VGROUP")
+    assert not server.virtual_keyboards
+    server.lib.wlr_seat_set_keyboard.assert_called_once_with(
+        server.seat,
+        server.lib.welpy_keyboard_group_keyboard.return_value)
+
+
+def test_virtual_keyboard_destroy_keeps_peer():
+    """Cleanup removes the exact virtual keyboard that died."""
+    server = make_server()
+    listener = MagicMock(name="listener")
+    peer_listener = MagicMock(name="peer_listener")
+    record = model.VirtualKeyboard(group="VGROUP", listeners=[listener])
+    peer = model.VirtualKeyboard(group="VGROUP", listeners=[peer_listener])
+    server.virtual_keyboards = [peer, record]
+
+    input.virtual_keyboard_destroy(server, record)
+
+    assert server.virtual_keyboards == [peer]
+    assert server.virtual_keyboards[0] is peer
+    peer_listener.remove.assert_not_called()
+
+
+def test_virtual_keyboard_destroy_wired():
+    """The keyboard's destroy signal drives virtual_keyboard_destroy, so an
+    exiting client (e.g. wtype) frees its group."""
+    server = make_server()
+    with patch("welpy.input.virtual_keyboard_destroy") as handler:
+        input.virtual_keyboard_new(server, "VKB_DATA")
+        trigger(server, server.lib.welpy_keyboard_destroy_signal, None)
+    handler.assert_called_once_with(server, server.virtual_keyboards[0])
+
+
 def test_device_other_ignored():
     """Non-keyboard devices (mice, touch, ...) are not added to the keyboard
     group -- the function silently ignores them for now."""
@@ -1047,6 +1120,76 @@ def test_keyboard_modifiers_forwards():
 
     server.lib.wlr_seat_keyboard_notify_modifiers.assert_called_once_with(
         server.seat, server.ffi.addressof.return_value)
+
+
+def test_keyboard_key_points_seat():
+    """Each press points the seat at the emitting keyboard so the focused app
+    (and key repeat) interprets the key against that keyboard's keymap."""
+    server = make_server()
+    event = server.ffi.cast.return_value
+    event.state = 1
+    event.keycode = 30
+
+    input.keyboard_key(server, "KEY_DATA")
+
+    server.lib.wlr_seat_set_keyboard.assert_called_once_with(
+        server.seat, server.lib.welpy_keyboard_group_keyboard.return_value)
+
+
+def test_keyboard_key_routes_to_group():
+    """An explicit group routes dispatch to that group's keyboard, so an
+    isolated virtual keyboard's events read its own keymap and modifiers."""
+    server = make_server()
+    vgroup = model.VirtualKeyboard(
+        group="VGROUP", client="CLIENT", listeners=[])
+    event = server.ffi.cast.return_value
+    event.state = 1
+    event.keycode = 30
+
+    input.keyboard_key(server, "KEY_DATA", vgroup)
+
+    server.lib.welpy_keyboard_group_keyboard.assert_called_with("VGROUP")
+
+
+def test_keyboard_key_virtual_forwards():
+    """An unlocked virtual-keyboard key reaches the focused app via the seat."""
+    server = make_server()
+    vgroup = model.VirtualKeyboard(
+        group="VGROUP", client="CLIENT", listeners=[])
+    event = server.ffi.cast.return_value
+    event.time_msec = 7
+    event.keycode = 30
+    event.state = 1
+
+    input.keyboard_key(server, "KEY_DATA", vgroup)
+
+    server.lib.wlr_seat_keyboard_notify_key.assert_called_once_with(
+        server.seat, 7, 30, 1)
+
+
+def test_keyboard_key_virtual_locked():
+    """While locked, an injected virtual-keyboard key is dropped so a
+    background client can't type guesses into the lock screen."""
+    server = make_server(locked=True)
+    vgroup = model.VirtualKeyboard(
+        group="VGROUP", client="CLIENT", listeners=[])
+    event = server.ffi.cast.return_value
+    event.state = 1
+
+    input.keyboard_key(server, "KEY_DATA", vgroup)
+
+    server.lib.wlr_seat_keyboard_notify_key.assert_not_called()
+    server.lib.wlr_seat_set_keyboard.assert_not_called()
+
+
+def test_keyboard_modifiers_points_seat():
+    """Modifier forwarding also points the seat at the emitting keyboard."""
+    server = make_server()
+
+    input.keyboard_modifiers(server, None)
+
+    server.lib.wlr_seat_set_keyboard.assert_called_once_with(
+        server.seat, server.lib.welpy_keyboard_group_keyboard.return_value)
 
 
 def test_binding_hit():
