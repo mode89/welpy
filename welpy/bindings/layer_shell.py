@@ -1,7 +1,7 @@
 """Bindings: layer-shell surfaces (bars, backgrounds, overlays)."""
 
 
-def contribute(builder) -> None:
+def register(builder) -> None:
     """Inject this group's cdef and C glue into the build."""
     builder.scanner(
         "wlr-protocols", "unstable/wlr-layer-shell-unstable-v1.xml",

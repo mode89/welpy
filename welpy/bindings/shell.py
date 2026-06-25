@@ -2,7 +2,7 @@
 xdg-activation protocols."""
 
 
-def contribute(builder) -> None:
+def register(builder) -> None:
     """Inject this group's cdef and C glue into the build."""
     # wlroots links xdg-shell's marshalling code; we need only its headers.
     builder.scanner(

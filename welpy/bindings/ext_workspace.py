@@ -2,7 +2,7 @@
 C glue wiring the protocol request vtables to extern-Python callbacks."""
 
 
-def contribute(builder) -> None:
+def register(builder) -> None:
     """Generate the scanner output and inject our cdef + C glue."""
     header, csrc = builder.scanner(
         "wayland-protocols",

@@ -1,7 +1,7 @@
 """Bindings: the embedded X server and its X11/override-redirect surfaces."""
 
 
-def contribute(builder) -> None:
+def register(builder) -> None:
     """Inject this group's cdef and C glue into the build."""
     builder.append(cdef=_CDEF, source=_SOURCE)
 

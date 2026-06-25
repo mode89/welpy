@@ -1,7 +1,7 @@
 """Inline cffi bindings to wlroots, split by feature group.
 
 `core` holds the shared cdef (base types, plumbing) and the compile
-machinery; sibling modules contribute their feature's cdef + C glue.
+machinery; sibling modules register their feature's cdef + C glue.
 `build` and `wl_list_for_each` live here so `welpy.override` targets resolve
 to the `welpy.bindings` package, as before the split."""
 

@@ -1,7 +1,7 @@
 """libinput config bindings: the device config probes/setters we call."""
 
 
-def contribute(builder) -> None:
+def register(builder) -> None:
     """Inject the libinput config bindings into the cffi build."""
     builder.append(cdef=_CDEF, source=_SOURCE, pkgs=("libinput",))
 

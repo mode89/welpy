@@ -2,7 +2,7 @@
 pointer-constraints/relative-pointer protocols."""
 
 
-def contribute(builder) -> None:
+def register(builder) -> None:
     """Inject this group's cdef and C glue into the build."""
     # wlr_pointer_constraints_v1.h pulls in the generated enum-only header.
     builder.enum_header(

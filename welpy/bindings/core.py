@@ -3,7 +3,7 @@
 Compiled at import time via `cffi.FFI.set_source` + `compile()` into a
 tempdir and loaded as `_welpy_cffi`. This module holds the shared cdef
 (base types + plumbing) and the compile machinery; sibling modules
-contribute their feature's cdef + C glue via `contribute(builder)`.
+register their feature's cdef + C glue via `register(builder)`.
 
 Only the symbols required by welpy are exposed. Struct field access is
 avoided by writing tiny C accessor helpers, so we do not depend on wlroots
@@ -28,6 +28,42 @@ from . import input as input_bindings
 
 
 logger = logging.getLogger(__name__)
+
+
+def build_extension():
+    """Compile the inline cffi extension and return its (ffi, lib)."""
+    build_dir = tempfile.mkdtemp(prefix="welpy-build-")
+    builder = Builder(build_dir=build_dir)
+    builder.append(
+        cdef=_CDEF, source=_SOURCE, pkgs=_PKGS,
+        extra_compile_args=["-DWLR_USE_UNSTABLE", "-w"])
+
+    register_bindings(builder)
+
+    logger.info("building in %s ...", build_dir)
+    so_path = builder.compile(_MODULE)
+
+    spec = importlib.util.spec_from_file_location(_MODULE, so_path)
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[_MODULE] = mod
+    spec.loader.exec_module(mod)
+
+    return mod.ffi, mod.lib
+
+
+def register_bindings(builder) -> None:
+    """Inject every feature module's cdef and C glue into the build."""
+    render.register(builder)
+    output.register(builder)
+    scene.register(builder)
+    shell.register(builder)
+    xwayland.register(builder)
+    input_bindings.register(builder)
+    layer_shell.register(builder)
+    session_lock.register(builder)
+    idle.register(builder)
+    ext_workspace.register(builder)
+    libinput.register(builder)
 
 
 @dataclass
@@ -715,34 +751,3 @@ struct wl_signal *welpy_surface_unmap(struct wlr_surface *s) {
     return &s->events.unmap;
 }
 """
-
-
-def build_extension():
-    """Compile the inline cffi extension and return its (ffi, lib)."""
-    build_dir = tempfile.mkdtemp(prefix="welpy-build-")
-    builder = Builder(build_dir=build_dir)
-    builder.append(
-        cdef=_CDEF, source=_SOURCE, pkgs=_PKGS,
-        extra_compile_args=["-DWLR_USE_UNSTABLE", "-w"])
-
-    render.contribute(builder)
-    output.contribute(builder)
-    scene.contribute(builder)
-    shell.contribute(builder)
-    xwayland.contribute(builder)
-    input_bindings.contribute(builder)
-    layer_shell.contribute(builder)
-    session_lock.contribute(builder)
-    idle.contribute(builder)
-    ext_workspace.contribute(builder)
-    libinput.contribute(builder)
-
-    logger.info("building in %s ...", build_dir)
-    so_path = builder.compile(_MODULE)
-
-    spec = importlib.util.spec_from_file_location(_MODULE, so_path)
-    mod = importlib.util.module_from_spec(spec)
-    sys.modules[_MODULE] = mod
-    spec.loader.exec_module(mod)
-
-    return mod.ffi, mod.lib

@@ -1,7 +1,7 @@
 """Bindings: the scene graph (trees, rects, surfaces) and scene hit-testing."""
 
 
-def contribute(builder) -> None:
+def register(builder) -> None:
     """Inject this group's cdef and C glue into the build."""
     builder.append(cdef=_CDEF, source=_SOURCE)
 
