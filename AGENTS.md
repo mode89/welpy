@@ -23,15 +23,13 @@ Wayland compositor written in Python on top of wlroots.
 
 The `welpy/` modules layer as an acyclic DAG `model → geometry → focus → windows → xwayland → layer_shell → session_lock → output → input → commands → app`: a module imports only earlier ones, so don't add a back-edge.
 
-## Customization
+## Extensibility
 
-Users customize welpy from `~/.config/welpy/config.py`, run at startup before the compositor is built, by monkey-patching its modules. `@welpy.override(module.hook)` swaps a module-level function (or a class method), currying the previous version as its first arg so overrides chain.
+Users extend welpy from `~/.config/welpy/config.py`, run at startup before the compositor is built, by monkey-patching its modules. `@welpy.override(module.fn)` swaps a module-level function (or a class method), currying the previous version as its first arg so overrides chain. Every module-level function and method is overridable — capability is uniform, so treat the whole codebase as open to extension. A user can extend or patch *any* existing behavior using their config alone, on demand. Design with that in mind: keep behavior reachable to wrap or replace.
 
-- Module-level functions are the extension surface — keep customizable behavior in one so it stays patchable, not inlined or nested in a closure.
-- Spot new customization points: behavior encoding a user preference, policy, or aesthetic (keybindings, launched apps, colors, focus/placement rules, etc.). Expose what you write as a top-level hook; flag existing inlined cases instead of refactoring them. Trigger: a user would plausibly want to change it.
-- A hook's signature is an API contract: reordering or inserting positional params silently breaks configs and chained overrides. Don't churn it.
-- Hooks are genuine customization points, not every function — don't freeze ordinary helpers.
-- Reference a customization point — an override-hook function or a tunable constant (`BORDER_WIDTH`, `BORDER_COLOR_*`, scales) — **qualified** (`model.BORDER_WIDTH`), never by name (`from .model import BORDER_WIDTH`): a config rebinds the attribute on the symbol's home module, which a qualified read sees but a by-name import — bound in the importer before the config loads — silently ignores. Types/classes stay by-name; configs construct with them, never rebind them.
+- This reaches well beyond a preset of preference knobs (keybindings, launched apps, colors, focus/placement rules): those are the likeliest targets, and the same discipline keeps *any* behavior patchable on demand. Factor logic into focused module-level functions with clear, minimal signatures, so an override can target one directly and replace just that logic. When you find behavior inlined or nested in a closure, flag it for a deliberate extraction.
+- A function's signature is the contract configs and chained overrides bind to positionally. Keep it stable, and grow it by appending parameters at the end, so existing calls and overrides keep working.
+- Reference an extension point — a function a config overrides or a tunable constant (`BORDER_WIDTH`, `BORDER_COLOR_*`, scales) — **qualified** (`model.BORDER_WIDTH`), so a config's rebind on the symbol's home module is the one a read sees. (A by-name import like `from .model import BORDER_WIDTH` binds in the importer before the config loads, so it keeps the original value; reserve by-name for types/classes, which configs construct with and leave as-is.)
 
 ## Bindings
 
