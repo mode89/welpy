@@ -665,6 +665,28 @@ def test_override_autostart(monkeypatch):
     assert calls == ["SERVER"]
 
 
+def test_override_class_method():
+    """@welpy.override on a method (dotted __qualname__) patches the class
+    attribute, with the previous method curried before self; a second
+    override chains onto the first, routing to the same class attribute."""
+    builder = bindings.core.Builder
+    original = builder.compile
+    try:
+        @welpy.override(builder.compile)
+        def stub(_orig, _self, name):
+            return f"<{name}>"
+
+        assert builder.compile(object(), "x") == "<x>"
+
+        @welpy.override(builder.compile)
+        def louder(orig, self, name):
+            return orig(self, name).upper()
+
+        assert builder.compile(object(), "x") == "<X>"
+    finally:
+        builder.compile = original
+
+
 def test_override_non_callable():
     """Non-callable argument: explicit TypeError, not a confusing
     AttributeError on `__module__`."""
@@ -673,10 +695,10 @@ def test_override_non_callable():
 
 
 def test_override_missing_name():
-    """Callable missing __name__ (e.g. functools.partial): default
+    """Callable missing __qualname__ (e.g. functools.partial): default
     AttributeError names the missing attribute clearly."""
     partial = functools.partial(lambda x: x)
-    with pytest.raises(AttributeError, match="__name__"):
+    with pytest.raises(AttributeError, match="__qualname__"):
         welpy.override(partial)
 
 

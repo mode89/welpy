@@ -25,7 +25,7 @@ The `welpy/` modules layer as an acyclic DAG `model → geometry → focus → w
 
 ## Customization
 
-Users customize welpy from `~/.config/welpy/config.py`, run at startup before the compositor is built, by monkey-patching its modules. `@welpy.override(module.hook)` swaps a module-level function, currying the previous version as its first arg so overrides chain.
+Users customize welpy from `~/.config/welpy/config.py`, run at startup before the compositor is built, by monkey-patching its modules. `@welpy.override(module.hook)` swaps a module-level function (or a class method), currying the previous version as its first arg so overrides chain.
 
 - Module-level functions are the extension surface — keep customizable behavior in one so it stays patchable, not inlined or nested in a closure.
 - Spot new customization points: behavior encoding a user preference, policy, or aesthetic (keybindings, launched apps, colors, focus/placement rules, etc.). Expose what you write as a top-level hook; flag existing inlined cases instead of refactoring them. Trigger: a user would plausibly want to change it.
