@@ -3,7 +3,10 @@ queries, and pointer-focus hit-testing."""
 
 from unittest.mock import MagicMock, patch
 
+import cffi
+
 from welpy import focus, model
+from welpy.layout import Rect
 from tests.helpers import (
     make_server, make_client, make_x11_client, make_monitor, make_workspace,
     make_cursor, make_layer_surface, make_session_lock, make_unmanaged,
@@ -315,6 +318,42 @@ def test_query_client_from_surface():
 
     assert focus.client_for_surface(
         server, client.xsurface.surface) is client
+
+
+def test_ime_anchor_window():
+    """ime_window_anchor returns the window's scene tree, its content top-left
+    (scene coords offset by border minus CSD geometry), and its screen box."""
+    monitor = make_monitor()
+    monitor.active_workspace = make_workspace(monitor=monitor)
+    client = make_x11_client(workspace=monitor.active_workspace)
+    server = make_server(
+        monitors=[monitor], active_monitor=monitor, clients=[client])
+    server.ffi.new = cffi.FFI().new
+    box = Rect(0, 0, 800, 600)
+
+    def _coords(_node, lx, ly):
+        lx[0], ly[0] = 50, 60
+        return True
+    server.lib.wlr_scene_node_coords.side_effect = _coords
+
+    with patch("welpy.geometry.client_rect", return_value=Rect(5, 7, 0, 0)), \
+            patch("welpy.geometry.client_layer",
+                  return_value=model.Layer.TILE), \
+            patch("welpy.geometry.monitor_box", return_value=box):
+        scene_tree, origin, out = focus.ime_window_anchor(
+            server, client.xsurface.surface)
+
+    bw = model.BORDER_WIDTH
+    assert scene_tree is client.scene_tree
+    assert origin == (50 + bw - 5, 60 + bw - 7)
+    assert out is box
+
+
+def test_ime_anchor_non_window():
+    """A surface backing no window (layer-shell/lock) has no popup anchor."""
+    server = make_server(clients=[])
+
+    assert focus.ime_window_anchor(server, MagicMock(name="surface")) is None
 
 
 def test_query_grabbed_multiple_warns():

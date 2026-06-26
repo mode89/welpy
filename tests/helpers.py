@@ -31,6 +31,7 @@ def make_server(**kwargs):
         "cursor": MagicMock(name="cursor"),
         "keyboard_group": make_keyboard_group(
             group="GROUP", keymap="KEYMAP", xkb_context="XKB"),
+        "input_relay": None,
         "virtual_keyboards": [],
         "monitors": [], "active_monitor": None, "clients": [],
         "workspaces": [], "previous_workspace": MagicMock(name="prev_ws"),
@@ -172,6 +173,12 @@ def make_cursor(**kwargs):
 
 def make_keyboard_group(**kwargs):
     """Build a KeyboardGroup, filling fields the test doesn't care about."""
+    client = kwargs.pop("client", None)
+    if client is not None:
+        return model.VirtualKeyboard(**{
+            "group": MagicMock(), "client": client, "listeners": [],
+            **kwargs,
+        })
     return model.KeyboardGroup(**{
         "group": MagicMock(), "keymap": MagicMock(),
         "xkb_context": MagicMock(), "listeners": [],

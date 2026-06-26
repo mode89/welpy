@@ -511,6 +511,25 @@ def test_client_unmap_clears_popup_anchor():
     assert client.toplevel.base.surface.data is server.ffi.NULL
 
 
+def test_unmap_drops_ime_popups_first():
+    """IME popups parented under a window are forgotten before the parent
+    scene tree is destroyed."""
+    client = make_client()
+    scene_tree = client.scene_tree
+    server = make_server(clients=[client])
+    calls = []
+    server.lib.wlr_scene_node_destroy.side_effect = \
+        lambda *_a: calls.append("destroy")
+
+    with patch(
+            "welpy.focus.drop_ime_popups_for_scene_tree",
+            side_effect=lambda *_a: calls.append("drop")) as drop_popups:
+        windows.on_unmap(server, client, None)
+
+    drop_popups.assert_called_once_with(server, scene_tree)
+    assert calls[:2] == ["drop", "destroy"]
+
+
 def test_fullscreen_request_enters():
     """A tiled client whose app requests fullscreen lands in its
     workspace's fullscreen slot."""

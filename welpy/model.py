@@ -167,10 +167,46 @@ class KeyboardGroup:
     listeners: list[Any]
 
 
+@dataclass
+class TextInput:
+    """One app's editable text field advertised via text-input-v3. The relay
+    wires the focused one to the bound input method."""
+    input: Any               # wlr_text_input_v3
+    pending_surface: Any     # deferred enter target while no IME is bound
+    pending_listeners: list[Any]  # watch the pending surface for destroy
+    listeners: list[Any]
+
+
+@dataclass
+class InputPopup:
+    """An IME candidate window: the little list of CJK/emoji candidates,
+    anchored at the text caret inside the focused window."""
+    popup: Any               # wlr_input_popup_surface_v2
+    scene_tree: Any          # subtree under the anchored window; None when none
+    surface: Any             # the focused surface the popup is anchored to
+    listeners: list[Any]
+    surface_listeners: list[Any]  # watch the anchored surface for unmap
+
+
+@dataclass
+class InputRelay:  # pylint: disable=too-many-instance-attributes
+    """Brokers the focused app's text field and the single bound input method
+    (fcitx5/ibus) in both directions, so native Wayland apps get IME."""
+    input_method: Any        # the bound wlr_input_method_v2, or None
+    keyboard_grab: Any       # active wlr_input_method_keyboard_grab_v2, or None
+    text_inputs: list[TextInput]
+    input_popups: list[InputPopup]
+    anchor_for_surface: Any  # callback resolving the focused window's anchor
+    listeners: list[Any]     # manager-level (new text-input / input-method)
+    im_listeners: list[Any]  # bound input-method's signals
+    grab_listeners: list[Any]  # active keyboard grab's signals
+
+
 @dataclass(eq=False)
 class VirtualKeyboard:
     """One client-injected keyboard isolated from the physical group."""
     group: Any               # wlr_keyboard_group: single virtual keyboard
+    client: Any              # wl_client for the IME loop-breaker
     listeners: list[Any]
 
 
@@ -206,6 +242,7 @@ class Server: # pylint: disable=too-many-instance-attributes
     workspaces: list         # all Workspaces; created at setup, never resized
     previous_workspace: Any  # name of last-viewed workspace, for toggling back
     ext_workspace: Any       # ext-workspace-v1 protocol state
+    input_relay: Any         # text-input/input-method relay (IME)
     layers: dict             # scene tree per Layer; key order = z order
     lock_background: Any      # black rect on the LOCK layer hiding all windows
     session_lock: Any        # active SessionLock, or None when unlocked

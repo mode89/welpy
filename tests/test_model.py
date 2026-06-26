@@ -52,3 +52,24 @@ def test_client_monitor_orphaned():
     client = make_client(workspace=None)
 
     assert model.client_monitor(client) is None
+
+
+def test_input_relay_constructs():
+    """InputRelay starts with no bound method or grab."""
+    relay = model.InputRelay(
+        input_method=None, keyboard_grab=None,
+        text_inputs=[], input_popups=[], anchor_for_surface=None,
+        listeners=[], im_listeners=[], grab_listeners=[])
+
+    assert relay.input_method is None
+    assert not relay.text_inputs
+
+
+def test_text_input_constructs():
+    """TextInput wraps a wlroots text field with no pending enter target."""
+    record = model.TextInput(
+        input="WLR", pending_surface=None,
+        pending_listeners=[], listeners=[])
+
+    assert record.input == "WLR"
+    assert record.pending_surface is None

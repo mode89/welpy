@@ -10,6 +10,7 @@ from . import focus
 from . import geometry
 from . import libinput
 from . import model
+from . import text_input
 from .layout import Rect
 from .model import (
     Client, Cursor, Grab, KeyboardGroup, PointerConstraint, Server,
@@ -394,7 +395,8 @@ def virtual_keyboard_new(server: Server, data) -> None:
     lib.wlr_keyboard_set_keymap(group_kb, server.keyboard_group.keymap)
     lib.wlr_keyboard_set_keymap(keyboard, server.keyboard_group.keymap)
     lib.wlr_keyboard_group_add_keyboard(group, keyboard)
-    record = VirtualKeyboard(group=group, listeners=[])
+    record = VirtualKeyboard(
+        group=group, client=lib.welpy_vkb_client(vkb), listeners=[])
     record.listeners.extend([
         listen(lib.welpy_keyboard_key_signal(group_kb),
             lambda data: keyboard_key(server, data, record)),
@@ -446,6 +448,10 @@ def keyboard_key(
         if action is not None:
             action(server)
             return  # action self-reconciles
+    # Unconsumed key: hand it to the IME's keyboard grab when one is active
+    # (returns False for the IME's own forwarded keys, which fall through).
+    if text_input.forward_to_im(server, group, kb, event):
+        return
     # Point the seat at the emitting keyboard only when forwarding, so the
     # focused app reads the key (and repeat) against this keyboard's keymap
     # without a consumed binding leaking it to a newly-focused surface.
@@ -474,9 +480,11 @@ def keyboard_modifiers(
         focus.activate_lock(server)
         return
     kb = lib.welpy_keyboard_group_keyboard(group.group)
+    mods = ffi.addressof(kb, "modifiers")
+    if text_input.forward_modifiers_to_im(server, group, kb, mods):
+        return
     lib.wlr_seat_set_keyboard(server.seat, kb)
-    lib.wlr_seat_keyboard_notify_modifiers(
-        server.seat, ffi.addressof(kb, "modifiers"))
+    lib.wlr_seat_keyboard_notify_modifiers(server.seat, mods)
 
 
 def lookup_binding(server: Server, mods: int, code: int):

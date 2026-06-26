@@ -10,7 +10,8 @@ from . import ext_workspace
 from . import geometry
 from . import layout
 from . import model
-from .model import Client, Layer, Server
+from . import text_input
+from .model import Client, Layer, Server, X11Client, XdgClient
 
 logger = logging.getLogger(__name__)
 
@@ -109,6 +110,8 @@ def reconcile(server: Server) -> None: # pylint: disable=too-many-branches
                 kb_group.keycodes, kb_group.num_keycodes,
                 ffi.addressof(kb_group, "modifiers"))
 
+    text_input.relay_set_focus(server, target_surface)
+
     # Re-point pointer focus after the scene changed without mouse motion,
     # so events don't hit a now-hidden window; a drag keeps its own focus.
     if grabbed_client(server) is None:
@@ -137,6 +140,7 @@ def activate_lock(server: Server) -> None:
             lib.wlr_seat_keyboard_notify_enter(
                 server.seat, surface,
                 kb.keycodes, kb.num_keycodes, ffi.addressof(kb, "modifiers"))
+    text_input.relay_set_focus(server, surface)
 
 
 def activate_unmanaged(server: Server) -> None:
@@ -152,6 +156,7 @@ def activate_unmanaged(server: Server) -> None:
         lib.wlr_seat_keyboard_notify_enter(
             server.seat, surface,
             kb.keycodes, kb.num_keycodes, ffi.addressof(kb, "modifiers"))
+    text_input.relay_set_focus(server, surface)
 
 
 def active_container(server: Server):
@@ -196,6 +201,33 @@ def client_for_surface(server: Server, surface):
         c for c in server.clients
         if c.scene_tree is not None
         and geometry.client_surface(c) == surface), None)
+
+
+def drop_ime_popups_for_scene_tree(server: Server, scene_tree) -> None:
+    """Forget IME popup scene nodes parented under a dying window tree."""
+    text_input.drop_popups_for_scene_tree(server, scene_tree)
+
+
+def ime_window_anchor(server: Server, surface):
+    """Resolve the IME candidate-popup anchor for `surface`: the window's scene
+    tree to hang the popup under, the window's content top-left in layout
+    coordinates, and its screen's box. None for non-window surfaces."""
+    client = client_for_surface(server, surface)
+    if not isinstance(client, (XdgClient, X11Client)):
+        return None
+    monitor = model.client_monitor(client)
+    if monitor is None:
+        return None
+    ffi, lib = server.ffi, server.lib
+    lx, ly = ffi.new("int *"), ffi.new("int *")
+    lib.wlr_scene_node_coords(ffi.addressof(client.scene_tree.node), lx, ly)
+    geo = geometry.client_rect(client)
+    # The surface buffer sits border-width in and geometry-offset out from the
+    # window's scene tree, so the caret rect (surface-local) adds onto this.
+    bw = (0 if geometry.client_layer(client) == Layer.FULLSCREEN
+          else model.BORDER_WIDTH)
+    origin = (lx[0] + bw - geo.x, ly[0] + bw - geo.y)
+    return client.scene_tree, origin, geometry.monitor_box(server, monitor)
 
 
 def grabbed_client(server: Server):

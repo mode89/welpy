@@ -23,7 +23,8 @@ from dataclasses import dataclass, field
 import cffi
 
 from . import (render, output, scene, shell, xwayland,
-               layer_shell, session_lock, idle, ext_workspace, libinput)
+               layer_shell, session_lock, idle, ext_workspace, libinput,
+               text_input)
 from . import input as input_bindings
 
 
@@ -64,6 +65,7 @@ def register_bindings(builder) -> None:
     idle.register(builder)
     ext_workspace.register(builder)
     libinput.register(builder)
+    text_input.register(builder)
 
 
 @dataclass
@@ -655,6 +657,79 @@ struct wlr_virtual_keyboard_manager_v1;
 
 struct wlr_virtual_keyboard_v1 { struct wlr_keyboard keyboard; ...; };
 
+// text-input-v3 + input-method-v2: native Wayland IME (fcitx5/ibus) relay.
+// Managers are opaque; the relay reads the structs below field-by-field.
+struct wlr_text_input_manager_v3;
+
+struct wlr_input_method_manager_v2;
+
+struct wlr_text_input_v3_state {
+    struct {
+        char *text;
+        uint32_t cursor;
+        uint32_t anchor;
+    } surrounding;
+    uint32_t text_change_cause;
+    struct {
+        uint32_t hint;
+        uint32_t purpose;
+    } content_type;
+    struct wlr_box cursor_rectangle;
+    uint32_t features;
+    ...;
+};
+
+struct wlr_text_input_v3 {
+    struct wlr_seat *seat;
+    struct wl_resource *resource;
+    struct wlr_surface *focused_surface;
+    struct wlr_text_input_v3_state current;
+    bool current_enabled;
+    uint32_t active_features;
+    ...;
+};
+
+struct wlr_input_method_v2_preedit_string {
+    char *text;
+    int32_t cursor_begin;
+    int32_t cursor_end;
+};
+
+struct wlr_input_method_v2_delete_surrounding_text {
+    uint32_t before_length;
+    uint32_t after_length;
+};
+
+struct wlr_input_method_v2_state {
+    struct wlr_input_method_v2_preedit_string preedit;
+    char *commit_text;
+    struct wlr_input_method_v2_delete_surrounding_text delete;
+    ...;
+};
+
+struct wlr_input_method_keyboard_grab_v2 {
+    struct wl_resource *resource;
+    struct wlr_input_method_v2 *input_method;
+    struct wlr_keyboard *keyboard;
+    ...;
+};
+
+struct wlr_input_method_v2 {
+    struct wl_resource *resource;
+    struct wlr_seat *seat;
+    struct wlr_input_method_v2_state current;
+    struct wlr_input_method_keyboard_grab_v2 *keyboard_grab;
+    ...;
+};
+
+struct wlr_input_popup_surface_v2 {
+    struct wl_resource *resource;
+    struct wlr_input_method_v2 *input_method;
+    struct wlr_surface *surface;
+    void *data;
+    ...;
+};
+
 struct wlr_server_decoration_manager;
 
 // our helpers
@@ -733,6 +808,8 @@ _SOURCE = r"""
 #include <wlr/types/wlr_pointer_constraints_v1.h>
 #include <wlr/types/wlr_relative_pointer_v1.h>
 #include <wlr/types/wlr_virtual_keyboard_v1.h>
+#include <wlr/types/wlr_text_input_v3.h>
+#include <wlr/types/wlr_input_method_v2.h>
 #include <wlr/util/region.h>
 #include <wlr/types/wlr_server_decoration.h>
 #include <wlr/types/wlr_xdg_shell.h>

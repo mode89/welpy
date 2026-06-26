@@ -13,6 +13,7 @@ from pathlib import Path
 from . import bindings
 from . import commands
 from . import ext_workspace
+from . import focus
 from . import geometry
 from . import input  # pylint: disable=redefined-builtin
 from . import layer_shell
@@ -20,6 +21,7 @@ from . import layout
 from . import model
 from . import output
 from . import session_lock
+from . import text_input
 from . import windows
 from . import xwayland
 from .model import (
@@ -160,6 +162,9 @@ def setup() -> Server: # pylint: disable=too-many-locals,too-many-statements
 
     virtual_keyboard_mgr = lib.wlr_virtual_keyboard_manager_v1_create(display)
 
+    text_input_mgr = lib.wlr_text_input_manager_v3_create(display)
+    input_method_mgr = lib.wlr_input_method_manager_v2_create(display)
+
     # Night-light tools set per-screen color curves; the scene applies the
     # LUTs to each output automatically on commit.
     lib.wlr_scene_set_gamma_control_manager_v1(
@@ -192,6 +197,7 @@ def setup() -> Server: # pylint: disable=too-many-locals,too-many-statements
         ],
         previous_workspace=None,
         ext_workspace=None,
+        input_relay=None,
         layers=layers,
         lock_background=lock_background, session_lock=None, locked=False,
         unmanaged_focus=None,
@@ -218,6 +224,9 @@ def setup() -> Server: # pylint: disable=too-many-locals,too-many-statements
         on_assign=lambda ws, target: commands.assign_workspace_to_monitor(
             server, ws, target),
     )
+    server.input_relay = text_input.create(
+        server, text_input_mgr, input_method_mgr,
+        anchor_for_surface=lambda s: focus.ime_window_anchor(server, s))
 
     server.listeners.extend([
         listen(lib.welpy_backend_new_output(backend),

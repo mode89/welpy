@@ -930,6 +930,9 @@ def test_virtual_keyboard_isolated_group():
     assert len(server.virtual_keyboards) == 1
     assert server.virtual_keyboards[0].group is new_group
     assert len(server.virtual_keyboards[0].listeners) == 3
+    # The captured wl_client drives the IME loop-breaker in forward_to_im.
+    assert (server.virtual_keyboards[0].client
+            == server.lib.welpy_vkb_client.return_value)
 
 
 def test_virtual_keyboard_keymap_aligned():
@@ -950,7 +953,8 @@ def test_virtual_keyboard_destroy_cleans_up():
     drops it from tracking, and repoints the seat at the physical keyboard."""
     server = make_server()
     listener = MagicMock(name="listener")
-    record = model.VirtualKeyboard(group="VGROUP", listeners=[listener])
+    record = model.VirtualKeyboard(
+        group="VGROUP", client="CLIENT", listeners=[listener])
     server.virtual_keyboards = [record]
 
     input.virtual_keyboard_destroy(server, record)
@@ -968,8 +972,10 @@ def test_virtual_keyboard_destroy_keeps_peer():
     server = make_server()
     listener = MagicMock(name="listener")
     peer_listener = MagicMock(name="peer_listener")
-    record = model.VirtualKeyboard(group="VGROUP", listeners=[listener])
-    peer = model.VirtualKeyboard(group="VGROUP", listeners=[peer_listener])
+    record = model.VirtualKeyboard(
+        group="VGROUP", client="CLIENT", listeners=[listener])
+    peer = model.VirtualKeyboard(
+        group="VGROUP", client="CLIENT", listeners=[peer_listener])
     server.virtual_keyboards = [peer, record]
 
     input.virtual_keyboard_destroy(server, record)
@@ -1122,6 +1128,18 @@ def test_keyboard_modifiers_forwards():
         server.seat, server.ffi.addressof.return_value)
 
 
+def test_keyboard_modifiers_to_im_grab():
+    """While the IME holds the keyboard grab, modifier state goes to the grab
+    (so Ctrl/Alt reach it) rather than the seat -- else Ctrl-U etc. are lost."""
+    server = make_server()
+    with patch("welpy.text_input.forward_modifiers_to_im",
+               return_value=True) as forward:
+        input.keyboard_modifiers(server, None)
+
+    forward.assert_called_once()
+    server.lib.wlr_seat_keyboard_notify_modifiers.assert_not_called()
+
+
 def test_keyboard_key_points_seat():
     """Each press points the seat at the emitting keyboard so the focused app
     (and key repeat) interprets the key against that keyboard's keymap."""
@@ -1162,6 +1180,37 @@ def test_keyboard_key_virtual_forwards():
     event.state = 1
 
     input.keyboard_key(server, "KEY_DATA", vgroup)
+
+    server.lib.wlr_seat_keyboard_notify_key.assert_called_once_with(
+        server.seat, 7, 30, 1)
+
+
+def test_keyboard_key_im_consumes():
+    """On a binding miss, an active IME keyboard grab consumes the key, so the
+    focused app doesn't also receive it."""
+    server = make_server()
+    event = server.ffi.cast.return_value
+    event.state = 1
+    event.keycode = 30
+
+    with patch("welpy.text_input.forward_to_im", return_value=True) as forward:
+        input.keyboard_key(server, "KEY_DATA")
+
+    forward.assert_called_once()
+    server.lib.wlr_seat_keyboard_notify_key.assert_not_called()
+
+
+def test_keyboard_key_im_declines():
+    """When the IME grab declines the key (loop-breaker / no grab), it falls
+    through to the focused app via the seat."""
+    server = make_server()
+    event = server.ffi.cast.return_value
+    event.time_msec = 7
+    event.keycode = 30
+    event.state = 1
+
+    with patch("welpy.text_input.forward_to_im", return_value=False):
+        input.keyboard_key(server, "KEY_DATA")
 
     server.lib.wlr_seat_keyboard_notify_key.assert_called_once_with(
         server.seat, 7, 30, 1)

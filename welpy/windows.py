@@ -117,6 +117,7 @@ def on_unmap(server: Server, client: Client, _data) -> None:
             client.workspace.root, client, lambda c: c.focus_order)
         layout.remove(client.workspace.root, client)
     server.clients.remove(client)
+    focus.drop_ime_popups_for_scene_tree(server, client.scene_tree)
     # Wrapper isn't tied to the content role's lifetime
     lib.wlr_scene_node_destroy(ffi.addressof(client.scene_tree.node))
     if isinstance(client, XdgClient):
