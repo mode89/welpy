@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# Run welpy under gdb to capture native (cffi/wlroots) segfaults.
+#
+# welpy runs nested: launch this from inside an existing Wayland/X11 session
+# (WAYLAND_DISPLAY or DISPLAY set), then reproduce the crash in the nested
+# window. On a signal, gdb prints a backtrace; everything (gdb + welpy stderr)
+# is tee'd to gdb-welpy.log at the repo root.
+set -euo pipefail
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$root"
+log="$root/gdb-welpy.log"
+
+# Pull the project's pinned deps (python + wlroots) and add gdb on top.
+exec nix-shell \
+  -E 'with import <nixpkgs> {}; mkShell { inputsFrom = [ (import ./shell.nix {}) ]; packages = [ gdb ]; }' \
+  --run "gdb -q -batch \
+    -ex 'set pagination off' \
+    -ex 'set confirm off' \
+    -ex 'handle SIGSEGV stop print nopass' \
+    -ex 'handle SIGABRT stop print nopass' \
+    -ex 'run' \
+    -ex 'printf \"\n==== inferior stopped ====\n\"' \
+    -ex 'bt full' \
+    -ex 'thread apply all bt' \
+    --args python -m welpy" 2>&1 | tee "$log"
