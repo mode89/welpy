@@ -1,0 +1,422 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Architecture review — welpy</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script type="module">
+      import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+      mermaid.initialize({ startOnLoad: true, theme: "neutral", securityLevel: "loose" });
+    </script>
+    <style>
+      .seam { stroke-dasharray: 5 4; }
+      .deep { background: linear-gradient(135deg, #0f172a, #1e293b); }
+      .schematic { font: 600 10px ui-monospace, monospace; letter-spacing: .08em; text-transform: uppercase; }
+      .box { stroke: #334155; fill: #fff; }
+      .ghost { fill: #f1f5f9; stroke: #cbd5e1; }
+      .leakline { stroke: #dc2626; stroke-width: 2; marker-end: url(#ah-red); }
+      .flowline { stroke: #475569; stroke-width: 1.5; marker-end: url(#ah); }
+    </style>
+  </head>
+  <body class="bg-stone-50 text-slate-900 font-sans antialiased">
+    <main class="max-w-5xl mx-auto px-6 py-12 space-y-14">
+      <header class="space-y-4">
+        <div class="flex items-baseline justify-between flex-wrap gap-2">
+          <h1 class="text-4xl font-serif tracking-tight">Architecture review — <span class="text-indigo-700">welpy</span></h1>
+          <p class="text-sm text-slate-500">2026-06-29 · Wayland compositor (Python / wlroots)</p>
+        </div>
+        <p class="text-slate-600 max-w-3xl">Six deepening opportunities — turning shallow modules into deep ones for testability and AI-navigability. Two findings surfaced independently from separate explorations of the codebase; they lead.</p>
+        <div class="flex flex-wrap gap-x-6 gap-y-2 text-xs text-slate-600 border-y border-slate-200 py-3">
+          <span class="flex items-center gap-2"><svg width="26" height="14"><rect class="box" x="1" y="1" width="24" height="12" rx="2"/></svg> module</span>
+          <span class="flex items-center gap-2"><svg width="26" height="14"><line class="seam" x1="2" y1="7" x2="24" y2="7" stroke="#334155"/></svg> seam</span>
+          <span class="flex items-center gap-2"><svg width="26" height="14"><line x1="2" y1="7" x2="24" y2="7" class="leakline"/></svg> leakage</span>
+          <span class="flex items-center gap-2"><svg width="26" height="14"><rect x="1" y="1" width="24" height="12" rx="2" fill="#0f172a"/></svg> deep module</span>
+        </div>
+        <svg width="0" height="0">
+          <defs>
+            <marker id="ah" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 z" fill="#475569"/></marker>
+            <marker id="ah-red" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 z" fill="#dc2626"/></marker>
+          </defs>
+        </svg>
+      </header>
+
+      <section id="candidates" class="space-y-12">
+
+        <!-- ============ CANDIDATE 1 ============ -->
+        <article id="c1" class="bg-white rounded-xl border border-slate-200 shadow-sm p-7 space-y-5">
+          <div class="space-y-2">
+            <h2 class="text-2xl font-serif">1 · Collapse the reflow pipeline into one seam</h2>
+            <div class="flex flex-wrap gap-2 text-xs font-semibold">
+              <span class="px-2.5 py-1 rounded-full bg-emerald-100 text-emerald-800">Strong</span>
+              <span class="px-2.5 py-1 rounded-full bg-slate-100 text-slate-600">in-process</span>
+              <span class="px-2.5 py-1 rounded-full bg-indigo-50 text-indigo-700">found by 2 explorations</span>
+            </div>
+          </div>
+          <p class="font-mono text-sm text-slate-500">commands.py:140–225 · input.py:268,289 · output.py:25–37 · geometry.apply_hierarchy / apply_visibility / apply_tree / reconcile</p>
+
+          <div class="grid md:grid-cols-2 gap-5">
+            <div class="rounded-lg border border-slate-200 p-4">
+              <p class="schematic text-rose-600 mb-3">Before · ordering re-typed at 7 sites</p>
+              <svg viewBox="0 0 320 300" class="w-full" style="max-height:300px">
+                <!-- caller boxes -->
+                <rect class="box" x="6" y="10" width="120" height="20" rx="3"/><text x="14" y="24" class="schematic">view_workspace</text>
+                <rect class="box" x="6" y="36" width="120" height="20" rx="3"/><text x="14" y="50" class="schematic">move_to_ws</text>
+                <rect class="box" x="6" y="62" width="120" height="20" rx="3"/><text x="14" y="76" class="schematic">assign_ws</text>
+                <rect class="box" x="6" y="88" width="120" height="20" rx="3"/><text x="14" y="102" class="schematic">move_ws_mon</text>
+                <rect class="box" x="6" y="114" width="120" height="20" rx="3"/><text x="14" y="128" class="schematic">output.reconcile</text>
+                <!-- each repeats the chain -->
+                <text x="6" y="170" class="schematic" fill="#dc2626">each repeats:</text>
+                <g font="11px ui-monospace,monospace" fill="#475569" style="font-family:ui-monospace,monospace;font-size:11px">
+                  <text x="6" y="190">apply_hierarchy</text>
+                  <text x="6" y="206">apply_visibility</text>
+                  <text x="6" y="222">apply_tree</text>
+                  <text x="6" y="238">for m: reconcile(m)</text>
+                  <text x="6" y="254">focus.reconcile</text>
+                  <text x="6" y="270">if ext_ws: publish</text>
+                </g>
+                <path class="leakline" d="M132 20 C 200 20, 200 185, 150 185"/>
+                <path class="leakline" d="M132 46 C 190 46, 190 188, 150 188"/>
+                <path class="leakline" d="M132 124 C 210 124, 210 192, 150 192"/>
+                <text x="165" y="120" fill="#dc2626" style="font-size:10px">ordering is the<tspan x="165" dy="12">contract — copied</tspan><tspan x="165" dy="12">verbatim each time</tspan></text>
+              </svg>
+            </div>
+            <div class="rounded-lg border border-slate-200 deep text-slate-100 p-4">
+              <p class="schematic text-emerald-300 mb-3">After · one deep entry point</p>
+              <svg viewBox="0 0 320 300" class="w-full" style="max-height:300px">
+                <rect x="6" y="10" width="120" height="20" rx="3" fill="#1e293b" stroke="#475569"/><text x="14" y="24" class="schematic" fill="#cbd5e1">view_workspace</text>
+                <rect x="6" y="36" width="120" height="20" rx="3" fill="#1e293b" stroke="#475569"/><text x="14" y="50" class="schematic" fill="#cbd5e1">move_to_ws</text>
+                <rect x="6" y="62" width="120" height="20" rx="3" fill="#1e293b" stroke="#475569"/><text x="14" y="76" class="schematic" fill="#cbd5e1">assign_ws</text>
+                <rect x="6" y="88" width="120" height="20" rx="3" fill="#1e293b" stroke="#475569"/><text x="14" y="102" class="schematic" fill="#cbd5e1">move_ws_mon</text>
+                <rect x="6" y="114" width="120" height="20" rx="3" fill="#1e293b" stroke="#475569"/><text x="14" y="128" class="schematic" fill="#cbd5e1">output.reconcile</text>
+                <line class="flowline" x1="126" y1="20" x2="196" y2="146" stroke="#64748b"/>
+                <line class="flowline" x1="126" y1="46" x2="196" y2="150" stroke="#64748b"/>
+                <line class="flowline" x1="126" y1="72" x2="196" y2="154" stroke="#64748b"/>
+                <line class="flowline" x1="126" y1="98" x2="196" y2="158" stroke="#64748b"/>
+                <line class="flowline" x1="126" y1="124" x2="196" y2="162" stroke="#64748b"/>
+                <rect x="196" y="120" width="118" height="84" rx="4" fill="#0f172a" stroke="#34d399" stroke-width="2"/>
+                <text x="206" y="150" class="schematic" fill="#6ee7b7">geometry.reflow</text>
+                <text x="206" y="170" fill="#64748b" style="font-size:9px;font-family:ui-monospace,monospace">hierarchy→vis→tree</text>
+                <text x="206" y="182" fill="#64748b" style="font-size:9px;font-family:ui-monospace,monospace">→reconcile→focus</text>
+                <text x="206" y="194" fill="#64748b" style="font-size:9px;font-family:ui-monospace,monospace">→publish (hidden)</text>
+              </svg>
+            </div>
+          </div>
+
+          <div class="grid sm:grid-cols-2 gap-x-8 gap-y-3 text-sm">
+            <p><span class="font-semibold text-rose-700">Problem.</span> The reflow ordering (tree before geometry before focus before publish) is an invariant that lives nowhere — only in each caller's line order, retyped at 7 sites.</p>
+            <p><span class="font-semibold text-emerald-700">Solution.</span> One <code class="font-mono text-xs bg-slate-100 px-1 rounded">geometry.reflow(server, monitor=None)</code> owns the sequence; callers make one call.</p>
+          </div>
+          <ul class="grid sm:grid-cols-2 gap-x-8 gap-y-1.5 text-sm text-slate-700 list-disc list-inside">
+            <li>locality: ordering lives in one place</li>
+            <li>leverage: one interface, 7 call sites</li>
+            <li>interface shrinks from 6 ordered calls to 1</li>
+            <li>becomes a clean override point</li>
+            <li>tests assert one reflow, not 6 stubs</li>
+            <li>kills the per-monitor loop copy-paste</li>
+          </ul>
+          <div class="rounded-md bg-amber-50 border border-amber-200 px-4 py-2.5 text-sm text-amber-900">
+            <span class="font-semibold">Keep the split points.</span> The five <code class="font-mono text-xs">apply_*</code>/<code class="font-mono text-xs">reconcile</code> functions stay individually overridable (AGENTS.md). Only the <em>ordering</em> stops being an exported contract — <code class="font-mono text-xs">reflow</code> wraps them, it doesn't absorb them.
+          </div>
+        </article>
+
+        <!-- ============ CANDIDATE 2 ============ -->
+        <article id="c2" class="bg-white rounded-xl border border-slate-200 shadow-sm p-7 space-y-5">
+          <div class="space-y-2">
+            <h2 class="text-2xl font-serif">2 · A polymorphic window interface for the xdg/X11 fork</h2>
+            <div class="flex flex-wrap gap-2 text-xs font-semibold">
+              <span class="px-2.5 py-1 rounded-full bg-emerald-100 text-emerald-800">Strong</span>
+              <span class="px-2.5 py-1 rounded-full bg-slate-100 text-slate-600">local-substitutable</span>
+              <span class="px-2.5 py-1 rounded-full bg-indigo-50 text-indigo-700">found by 2 explorations</span>
+            </div>
+          </div>
+          <p class="font-mono text-sm text-slate-500">geometry.py:189,202,213,240,410,418,425,433 · commands.py:117 · windows.py:205 · input.py:309 · focus.py:216</p>
+
+          <div class="grid md:grid-cols-2 gap-5">
+            <div class="rounded-lg border border-slate-200 p-4">
+              <p class="schematic text-rose-600 mb-3">Before · kind re-discriminated at 12 sites</p>
+              <svg viewBox="0 0 320 300" class="w-full" style="max-height:300px">
+                <g class="schematic" fill="#334155">
+                  <rect class="box" x="6"  y="14" width="92" height="18" rx="2"/><text x="12" y="27">set_size</text>
+                  <rect class="box" x="6"  y="38" width="92" height="18" rx="2"/><text x="12" y="51">set_tiled</text>
+                  <rect class="box" x="6"  y="62" width="92" height="18" rx="2"/><text x="12" y="75">set_fullscr</text>
+                  <rect class="box" x="6"  y="86" width="92" height="18" rx="2"/><text x="12" y="99">set_activ</text>
+                  <rect class="box" x="6" y="110" width="92" height="18" rx="2"/><text x="12" y="123">client_rect</text>
+                  <rect class="box" x="6" y="134" width="92" height="18" rx="2"/><text x="12" y="147">client_surf</text>
+                  <rect class="box" x="6" y="158" width="92" height="18" rx="2"/><text x="12" y="171">wants_fs</text>
+                  <rect class="box" x="6" y="182" width="92" height="18" rx="2"/><text x="12" y="195">wants_float</text>
+                  <rect class="box" x="6" y="206" width="92" height="18" rx="2"/><text x="12" y="219">close_window</text>
+                  <rect class="box" x="6" y="230" width="92" height="18" rx="2"/><text x="12" y="243">drag_client</text>
+                </g>
+                <text x="118" y="120" fill="#dc2626" style="font-size:11px">each branches:<tspan x="118" dy="16" style="font-family:ui-monospace,monospace;font-size:10px">if isinstance(</tspan><tspan x="118" dy="12" style="font-family:ui-monospace,monospace;font-size:10px">  c, X11Client)</tspan></text>
+                <line class="leakline" x1="100" y1="23"  x2="240" y2="60"/>
+                <line class="leakline" x1="100" y1="71"  x2="240" y2="120"/>
+                <line class="leakline" x1="100" y1="167" x2="240" y2="180"/>
+                <line class="leakline" x1="100" y1="239" x2="240" y2="240"/>
+                <rect class="ghost" x="240" y="48" width="74" height="36" rx="3"/><text x="248" y="70" class="schematic" fill="#64748b">XdgClient</text>
+                <rect class="ghost" x="240" y="108" width="74" height="36" rx="3"/><text x="248" y="130" class="schematic" fill="#64748b">X11Client</text>
+                <rect class="ghost" x="240" y="168" width="74" height="36" rx="3"/><text x="248" y="190" class="schematic" fill="#64748b">XdgClient</text>
+                <rect class="ghost" x="240" y="228" width="74" height="36" rx="3"/><text x="248" y="250" class="schematic" fill="#64748b">X11Client</text>
+              </svg>
+            </div>
+            <div class="rounded-lg border border-slate-200 deep text-slate-100 p-4">
+              <p class="schematic text-emerald-300 mb-3">After · fork lives behind one interface</p>
+              <svg viewBox="0 0 320 300" class="w-full" style="max-height:300px">
+                <g class="schematic" fill="#cbd5e1">
+                  <rect x="6"  y="40" width="92" height="18" rx="2" fill="#1e293b" stroke="#475569"/><text x="12" y="53">geometry.*</text>
+                  <rect x="6"  y="70" width="92" height="18" rx="2" fill="#1e293b" stroke="#475569"/><text x="12" y="83">commands.*</text>
+                  <rect x="6" y="100" width="92" height="18" rx="2" fill="#1e293b" stroke="#475569"/><text x="12" y="113">input.*</text>
+                  <rect x="6" y="130" width="92" height="18" rx="2" fill="#1e293b" stroke="#475569"/><text x="12" y="143">focus.*</text>
+                </g>
+                <line class="flowline" x1="98" y1="49"  x2="176" y2="130" stroke="#64748b"/>
+                <line class="flowline" x1="98" y1="79"  x2="176" y2="140" stroke="#64748b"/>
+                <line class="flowline" x1="98" y1="109" x2="176" y2="150" stroke="#64748b"/>
+                <line class="flowline" x1="98" y1="139" x2="176" y2="160" stroke="#64748b"/>
+                <rect x="176" y="110" width="132" height="120" rx="5" fill="#0f172a" stroke="#34d399" stroke-width="2"/>
+                <text x="186" y="132" class="schematic" fill="#6ee7b7">Client interface</text>
+                <g style="font-family:ui-monospace,monospace;font-size:10px" fill="#94a3b8">
+                  <text x="186" y="152">.set_size()</text>
+                  <text x="186" y="166">.rect()</text>
+                  <text x="186" y="180">.surface()</text>
+                  <text x="186" y="194">.wants_fullscreen()</text>
+                  <text x="186" y="208">.close()</text>
+                </g>
+                <text x="186" y="224" style="font-size:9px" fill="#64748b">xdg/X11 split: 1 place</text>
+              </svg>
+            </div>
+          </div>
+
+          <div class="grid sm:grid-cols-2 gap-x-8 gap-y-3 text-sm">
+            <p><span class="font-semibold text-rose-700">Problem.</span> A window's per-kind behavior is real, but it crosses every call seam as a repeated <code class="font-mono text-xs bg-slate-100 px-1 rounded">isinstance</code> switch — 12 sites re-discriminate the kind.</p>
+            <p><span class="font-semibold text-emerald-700">Solution.</span> Hang the ~6 polymorphic operations on <code class="font-mono text-xs bg-slate-100 px-1 rounded">XdgClient</code>/<code class="font-mono text-xs bg-slate-100 px-1 rounded">X11Client</code>; callers see one interface.</p>
+          </div>
+          <ul class="grid sm:grid-cols-2 gap-x-8 gap-y-1.5 text-sm text-slate-700 list-disc list-inside">
+            <li>locality: kind-knowledge in one place</li>
+            <li>adding a window kind = one module</li>
+            <li>delete the isinstance ladder</li>
+            <li>leverage: uniform interface, 12 sites</li>
+            <li>xdg/X11 duality testable per kind</li>
+            <li>deletion test: divergence reappears at 12 sites</li>
+          </ul>
+          <div class="rounded-md bg-amber-50 border border-amber-200 px-4 py-2.5 text-sm text-amber-900">
+            <span class="font-semibold">Override-model nuance.</span> Methods stay overridable (AGENTS.md treats methods as patchable), so a config can still swap per-kind behavior. <code class="font-mono text-xs">geometry.configure_x11</code> currently stays module-level for cross-module callers (MEMORY) — weigh method-on-Client vs. a dispatch table during grilling.
+          </div>
+        </article>
+
+        <!-- ============ CANDIDATE 3 ============ -->
+        <article id="c3" class="bg-white rounded-xl border border-slate-200 shadow-sm p-7 space-y-5">
+          <div class="space-y-2">
+            <h2 class="text-2xl font-serif">3 · One keyboard-focus seam</h2>
+            <div class="flex flex-wrap gap-2 text-xs font-semibold">
+              <span class="px-2.5 py-1 rounded-full bg-amber-100 text-amber-800">Worth exploring</span>
+              <span class="px-2.5 py-1 rounded-full bg-slate-100 text-slate-600">in-process</span>
+            </div>
+          </div>
+          <p class="font-mono text-sm text-slate-500">focus.py: reconcile (102–113) · activate_lock (133–143) · activate_unmanaged (152–159)</p>
+
+          <div class="grid md:grid-cols-2 gap-5">
+            <!-- cross-section before: 3 stacks each repeating the protocol -->
+            <div class="rounded-lg border border-slate-200 p-4">
+              <p class="schematic text-rose-600 mb-3">Before · enter-protocol smeared ×3</p>
+              <div class="grid grid-cols-3 gap-2 text-[10px]">
+                <div class="space-y-1">
+                  <p class="schematic text-slate-500">reconcile</p>
+                  <div class="border-l-4 border-rose-300 bg-rose-50 px-1.5 py-1">read focused_surface</div>
+                  <div class="border-l-4 border-rose-300 bg-rose-50 px-1.5 py-1">NULL → None</div>
+                  <div class="border-l-4 border-rose-300 bg-rose-50 px-1.5 py-1">notify_enter(kc,n,mods)</div>
+                  <div class="border-l-4 border-rose-300 bg-rose-50 px-1.5 py-1">relay_set_focus</div>
+                </div>
+                <div class="space-y-1">
+                  <p class="schematic text-slate-500">activate_lock</p>
+                  <div class="border-l-4 border-rose-300 bg-rose-50 px-1.5 py-1">read focused_surface</div>
+                  <div class="border-l-4 border-rose-300 bg-rose-50 px-1.5 py-1">NULL → None</div>
+                  <div class="border-l-4 border-rose-300 bg-rose-50 px-1.5 py-1">notify_enter(kc,n,mods)</div>
+                  <div class="border-l-4 border-rose-300 bg-rose-50 px-1.5 py-1">relay_set_focus</div>
+                </div>
+                <div class="space-y-1">
+                  <p class="schematic text-slate-500">activate_unmgd</p>
+                  <div class="border-l-4 border-rose-300 bg-rose-50 px-1.5 py-1">read focused_surface</div>
+                  <div class="border-l-4 border-rose-300 bg-rose-50 px-1.5 py-1">NULL → None</div>
+                  <div class="border-l-4 border-rose-300 bg-rose-50 px-1.5 py-1">notify_enter(kc,n,mods)</div>
+                  <div class="border-l-4 border-rose-300 bg-rose-50 px-1.5 py-1">relay_set_focus</div>
+                </div>
+              </div>
+              <p class="mt-3 text-xs text-rose-600">wlroots enter args (keycodes / num / modifiers) live at 3 sites — change touches all three.</p>
+            </div>
+            <div class="rounded-lg border border-slate-200 deep text-slate-100 p-4">
+              <p class="schematic text-emerald-300 mb-3">After · 1 surface in, dance hidden</p>
+              <div class="grid grid-cols-3 gap-2 text-[10px] mb-4">
+                <div><p class="schematic text-slate-400">reconcile</p><div class="border-l-4 border-emerald-400 bg-slate-800 px-1.5 py-1 text-slate-200">set_kb_focus(s)</div></div>
+                <div><p class="schematic text-slate-400">lock</p><div class="border-l-4 border-emerald-400 bg-slate-800 px-1.5 py-1 text-slate-200">set_kb_focus(s)</div></div>
+                <div><p class="schematic text-slate-400">unmgd</p><div class="border-l-4 border-emerald-400 bg-slate-800 px-1.5 py-1 text-slate-200">set_kb_focus(s)</div></div>
+              </div>
+              <div class="rounded-md border-2 border-emerald-400 bg-slate-900 p-3 text-[10px] text-slate-300">
+                <p class="schematic text-emerald-300 mb-1">set_keyboard_focus(server, surface)</p>
+                <p>NULL dance · dedup vs current · notify_enter · relay_set_focus — all inside</p>
+              </div>
+            </div>
+          </div>
+
+          <div class="grid sm:grid-cols-2 gap-x-8 gap-y-3 text-sm">
+            <p><span class="font-semibold text-rose-700">Problem.</span> The wlroots keyboard-enter protocol (NULL guard, dedup, keycodes/num/modifiers, IME relay) is copied across 3 functions.</p>
+            <p><span class="font-semibold text-emerald-700">Solution.</span> <code class="font-mono text-xs bg-slate-100 px-1 rounded">set_keyboard_focus(server, surface)</code> — one surface in, the protocol behind it.</p>
+          </div>
+          <ul class="grid sm:grid-cols-2 gap-x-8 gap-y-1.5 text-sm text-slate-700 list-disc list-inside">
+            <li>locality: enter-protocol in one place</li>
+            <li>each caller collapses to one line</li>
+            <li>testable through one seam</li>
+            <li>IME relay can't drift between sites</li>
+          </ul>
+        </article>
+
+        <!-- ============ CANDIDATE 4 ============ -->
+        <article id="c4" class="bg-white rounded-xl border border-slate-200 shadow-sm p-7 space-y-5">
+          <div class="space-y-2">
+            <h2 class="text-2xl font-serif">4 · Split focus target-selection from effect emission</h2>
+            <div class="flex flex-wrap gap-2 text-xs font-semibold">
+              <span class="px-2.5 py-1 rounded-full bg-amber-100 text-amber-800">Worth exploring</span>
+              <span class="px-2.5 py-1 rounded-full bg-slate-100 text-slate-600">in-process</span>
+            </div>
+          </div>
+          <p class="font-mono text-sm text-slate-500">focus.py: reconcile (26–117, <code>disable=too-many-branches</code>)</p>
+
+          <!-- mass diagram: interface tall (shallow-to-test) vs split -->
+          <div class="grid md:grid-cols-2 gap-5">
+            <div class="rounded-lg border border-slate-200 p-4">
+              <p class="schematic text-rose-600 mb-3">Before · policy + effects fused</p>
+              <svg viewBox="0 0 300 260" class="w-full" style="max-height:260px">
+                <rect class="box" x="60" y="10" width="180" height="240" rx="4"/>
+                <text x="150" y="30" text-anchor="middle" class="schematic">reconcile()</text>
+                <rect x="72" y="44" width="156" height="86" fill="#fee2e2" stroke="#fca5a5"/>
+                <text x="150" y="62" text-anchor="middle" style="font-size:10px" fill="#b91c1c">SELECTION (policy)</text>
+                <text x="150" y="80" text-anchor="middle" style="font-size:9px;font-family:ui-monospace,monospace" fill="#7f1d1d">qualifies() closure</text>
+                <text x="150" y="94" text-anchor="middle" style="font-size:9px;font-family:ui-monospace,monospace" fill="#7f1d1d">nested monitor/layer</text>
+                <text x="150" y="108" text-anchor="middle" style="font-size:9px;font-family:ui-monospace,monospace" fill="#7f1d1d">loops + top_client</text>
+                <rect x="72" y="138" width="156" height="100" fill="#e0e7ff" stroke="#a5b4fc"/>
+                <text x="150" y="156" text-anchor="middle" style="font-size:10px" fill="#3730a3">EFFECTS (cffi)</text>
+                <text x="150" y="174" text-anchor="middle" style="font-size:9px;font-family:ui-monospace,monospace" fill="#312e81">border colors · raise</text>
+                <text x="150" y="188" text-anchor="middle" style="font-size:9px;font-family:ui-monospace,monospace" fill="#312e81">notify_enter</text>
+                <text x="150" y="202" text-anchor="middle" style="font-size:9px;font-family:ui-monospace,monospace" fill="#312e81">relay · pointer re-point</text>
+                <text x="150" y="226" text-anchor="middle" style="font-size:9px" fill="#dc2626">can't test policy without</text>
+                <text x="150" y="238" text-anchor="middle" style="font-size:9px" fill="#dc2626">firing the cffi effects</text>
+              </svg>
+            </div>
+            <div class="rounded-lg border border-slate-200 deep text-slate-100 p-4">
+              <p class="schematic text-emerald-300 mb-3">After · pure selection seam</p>
+              <svg viewBox="0 0 300 260" class="w-full" style="max-height:260px">
+                <rect x="20" y="60" width="120" height="80" rx="4" fill="#0f172a" stroke="#34d399" stroke-width="2"/>
+                <text x="80" y="82" text-anchor="middle" class="schematic" fill="#6ee7b7">focus_target()</text>
+                <text x="80" y="102" text-anchor="middle" style="font-size:9px" fill="#94a3b8">→ (surface,</text>
+                <text x="80" y="114" text-anchor="middle" style="font-size:9px" fill="#94a3b8">client, ls)</text>
+                <text x="80" y="132" text-anchor="middle" style="font-size:8px" fill="#64748b">pure · unit-testable</text>
+                <line class="flowline" x1="140" y1="100" x2="170" y2="100" stroke="#64748b"/>
+                <rect x="170" y="60" width="116" height="80" rx="4" fill="#1e293b" stroke="#475569"/>
+                <text x="228" y="82" text-anchor="middle" class="schematic" fill="#cbd5e1">reconcile()</text>
+                <text x="228" y="102" text-anchor="middle" style="font-size:9px" fill="#94a3b8">emit effects to</text>
+                <text x="228" y="114" text-anchor="middle" style="font-size:9px" fill="#94a3b8">converge on target</text>
+                <text x="150" y="180" text-anchor="middle" style="font-size:10px" fill="#6ee7b7">config can override the</text>
+                <text x="150" y="194" text-anchor="middle" style="font-size:10px" fill="#6ee7b7">focus-target rule alone</text>
+              </svg>
+            </div>
+          </div>
+
+          <div class="grid sm:grid-cols-2 gap-x-8 gap-y-3 text-sm">
+            <p><span class="font-semibold text-rose-700">Problem.</span> "Which surface gets the keyboard" is interleaved with the cffi convergence effects, so the policy can't be tested or overridden without the effects firing.</p>
+            <p><span class="font-semibold text-emerald-700">Solution.</span> Extract <code class="font-mono text-xs bg-slate-100 px-1 rounded">focus_target(server) → (surface, client, ls)</code>; <code class="font-mono text-xs bg-slate-100 px-1 rounded">reconcile</code> selects then emits.</p>
+          </div>
+          <ul class="grid sm:grid-cols-2 gap-x-8 gap-y-1.5 text-sm text-slate-700 list-disc list-inside">
+            <li>policy unit-tested without cffi</li>
+            <li>config overrides target rule alone</li>
+            <li>dissolves the too-many-branches disable</li>
+            <li>leverage: one rule, one seam</li>
+          </ul>
+        </article>
+
+        <!-- ============ CANDIDATE 5 ============ -->
+        <article id="c5" class="bg-white rounded-xl border border-slate-200 shadow-sm p-7 space-y-5">
+          <div class="space-y-2">
+            <h2 class="text-2xl font-serif">5 · Split the paint-hold policy from the scene probe</h2>
+            <div class="flex flex-wrap gap-2 text-xs font-semibold">
+              <span class="px-2.5 py-1 rounded-full bg-amber-100 text-amber-800">Worth exploring</span>
+              <span class="px-2.5 py-1 rounded-full bg-slate-100 text-slate-600">mock</span>
+            </div>
+          </div>
+          <p class="font-mono text-sm text-slate-500">output.py: client_holds_paint (157) · client_rendered (170)</p>
+          <div class="rounded-lg border border-slate-200 bg-white p-4">
+            <pre class="mermaid">
+flowchart LR
+  subgraph before["Before — fused, must stub the probe"]
+    H["client_holds_paint<br/>policy + I/O"] --> R["client_rendered<br/>walks C scene state"]
+  end
+  subgraph after["After — pure policy + thin probe"]
+    P["holds_paint(pending, layer, rendered)<br/>pure predicate"]
+    Q["client_rendered → bool<br/>scene probe (adapter)"]
+    P -.takes bool.- Q
+  end
+  classDef leak stroke:#dc2626,stroke-width:2px;
+  classDef deep fill:#0f172a,color:#e2e8f0,stroke:#34d399,stroke-width:2px;
+  class R leak
+  class P deep
+            </pre>
+          </div>
+          <div class="grid sm:grid-cols-2 gap-x-8 gap-y-3 text-sm">
+            <p><span class="font-semibold text-rose-700">Problem.</span> A pure policy (pending serial, <code class="font-mono text-xs">!= Layer.FLOAT</code>) is fused with a C scene-state walk, so tests must stub <code class="font-mono text-xs">client_rendered</code> (MEMORY confirms) to exercise the predicate.</p>
+            <p><span class="font-semibold text-emerald-700">Solution.</span> <code class="font-mono text-xs bg-slate-100 px-1 rounded">holds_paint(pending, layer, rendered: bool)</code> pure; the scene probe stays a thin adapter.</p>
+          </div>
+          <ul class="grid sm:grid-cols-2 gap-x-8 gap-y-1.5 text-sm text-slate-700 list-disc list-inside">
+            <li>policy tests with no stub</li>
+            <li>locality: hold rule in one pure fn</li>
+            <li>probe is an honest adapter</li>
+            <li>smaller blast radius on rule changes</li>
+          </ul>
+        </article>
+
+        <!-- ============ CANDIDATE 6 ============ -->
+        <article id="c6" class="bg-white rounded-xl border border-slate-200 shadow-sm p-7 space-y-5">
+          <div class="space-y-2">
+            <h2 class="text-2xl font-serif">6 · Fold the near-clone drag-start and lifecycle wiring</h2>
+            <div class="flex flex-wrap gap-2 text-xs font-semibold">
+              <span class="px-2.5 py-1 rounded-full bg-slate-200 text-slate-700">Speculative</span>
+              <span class="px-2.5 py-1 rounded-full bg-slate-100 text-slate-600">in-process</span>
+            </div>
+          </div>
+          <p class="font-mono text-sm text-slate-500">input.py: begin_dragging_client (252–271) / begin_resizing_client (274–292) · windows.on_create (11–48) vs xwayland.on_create (11–66)</p>
+          <div class="rounded-lg border border-slate-200 bg-white p-4">
+            <pre class="mermaid">
+flowchart TB
+  subgraph A["begin_dragging / begin_resizing — differ only in Grab(...)"]
+    direction LR
+    a1["client_at"] --> a2["exit fullscreen"] --> a3["float_client"] --> a4["apply_tree"] --> a5["reconcile(m)"] --> a6["focus.reconcile"]
+  end
+  subgraph B["on_create ×2 — same listener table, X11 adds associate/dissociate"]
+    direction LR
+    b1["build Client"] --> b2["new_handle"] --> b3["listen: map/unmap/commit/destroy"]
+  end
+            </pre>
+          </div>
+          <div class="grid sm:grid-cols-2 gap-x-8 gap-y-3 text-sm">
+            <p><span class="font-semibold text-rose-700">Problem.</span> Two drag-start functions differ only in the <code class="font-mono text-xs">Grab(...)</code> they build; the two <code class="font-mono text-xs">on_create</code> functions repeat the lifecycle-listener table. Interface is as big as the impl.</p>
+            <p><span class="font-semibold text-emerald-700">Solution.</span> A shared <code class="font-mono text-xs bg-slate-100 px-1 rounded">begin_grab(server, kind)</code> and a <code class="font-mono text-xs bg-slate-100 px-1 rounded">register_window_lifecycle(server, client, surface)</code> seam carry the common shape once.</p>
+          </div>
+          <ul class="grid sm:grid-cols-2 gap-x-8 gap-y-1.5 text-sm text-slate-700 list-disc list-inside">
+            <li>delete 2 shallow clones</li>
+            <li>one place defines lifecycle signals</li>
+            <li>X11 keeps only its real extras</li>
+            <li>lower priority: clones are stable</li>
+          </ul>
+        </article>
+
+      </section>
+
+      <!-- ============ TOP RECOMMENDATION ============ -->
+      <section id="top-recommendation">
+        <div class="rounded-2xl deep text-slate-100 p-8 shadow-lg space-y-3">
+          <p class="schematic text-emerald-300">Top recommendation</p>
+          <h2 class="text-3xl font-serif">Collapse the reflow pipeline <a href="#c1" class="text-emerald-300 hover:underline">(candidate 1)</a></h2>
+          <p class="text-slate-300 max-w-3xl">Highest leverage, smallest change. Two independent explorations landed on it: the reflow ordering is an invariant retyped at 7 sites with nothing enforcing it. One <code class="font-mono text-sm bg-slate-800 px-1 rounded">geometry.reflow</code> seam concentrates the ordering (locality), serves every caller (leverage), and becomes a clean override point — without touching the five split points configs already patch.</p>
+          <p class="text-slate-400 text-sm">Then candidate 2 (polymorphic window interface): more files, more behavior, but the deletion test is unambiguous — the xdg/X11 divergence reappears at 12 sites today.</p>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>
