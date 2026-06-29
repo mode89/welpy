@@ -9,6 +9,7 @@ from . import focus
 from . import geometry
 from . import layout
 from . import model
+from . import reflow
 from .model import Client, Layer, Server, X11Client, XdgClient
 
 
@@ -91,12 +92,7 @@ def on_map(server: Server, client: Client, _data) -> None:
         # Honor a pre-map or initial-commit fullscreen request.
         geometry.set_fullscreen(server, workspace, client)
     focus.bump_focus_order(server, client)
-    geometry.apply_hierarchy(server)
-    geometry.apply_visibility(server)
-    geometry.apply_tree(server)
-    if monitor is not None:
-        geometry.reconcile(server, monitor)
-    focus.reconcile(server)
+    reflow.topology(server)
     # The decoration request may have arrived before the initial configure;
     # now that the surface is initialized, set_mode is safe.
     geometry.apply_decoration(server)
@@ -150,9 +146,7 @@ def on_request_fullscreen(
             geometry.set_fullscreen(server, workspace, client)
         elif not wants and workspace.fullscreen is client:
             geometry.set_fullscreen(server, workspace, None)
-        geometry.apply_tree(server)
-        geometry.reconcile(server, monitor)
-        focus.reconcile(server)
+        reflow.window(server, monitor)
 
 
 def on_request_maximize(server: Server, client: Client, _data) -> None:

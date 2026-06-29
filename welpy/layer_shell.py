@@ -5,6 +5,7 @@ from __future__ import annotations
 from . import focus
 from . import geometry
 from . import model
+from . import reflow
 from .model import Layer, LayerSurface, Server
 
 
@@ -79,9 +80,7 @@ def on_commit(server: Server, ls: LayerSurface, _data) -> None:
                     monitor, ls,
                     model.SHELL_LAYERS[layer_surface.current.layer])
                 geometry.arrange_layers(server, monitor)
-                geometry.apply_tree(server)
-                geometry.reconcile(server, monitor)
-                focus.reconcile(server)
+                reflow.window(server, monitor)
 
 
 def on_unmap(server: Server, ls: LayerSurface, _data) -> None:
@@ -94,9 +93,7 @@ def on_unmap(server: Server, ls: LayerSurface, _data) -> None:
         top = focus.top_client(server, ls.monitor)
         if top is not None:
             focus.bump_focus_order(server, top)
-    if ls.monitor is not None:
-        geometry.reconcile(server, ls.monitor)
-    focus.reconcile(server)
+    reflow.window(server, ls.monitor)
 
 
 def on_destroy(

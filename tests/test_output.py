@@ -1,87 +1,13 @@
 """Unit tests for welpy.output: screen (output) management — bring-up, the
 per-frame paint loop, paint-hold predicates, and output-layout re-flow."""
 
-from unittest.mock import ANY, MagicMock, call, patch
+from unittest.mock import ANY, MagicMock, patch
 
 from welpy import layout, model, output
 from tests.helpers import (
     make_server, make_client, make_x11_client, make_monitor,
-    make_workspace, make_layer_surface, make_session_lock, trigger,
+    make_workspace, make_layer_surface, trigger,
 )
-
-
-def test_reflow_arranges_all_monitors():
-    """update_monitors arranges every connected monitor."""
-    m1 = MagicMock(name="m1", fullscreen=None)
-    m2 = MagicMock(name="m2", fullscreen=None)
-    server = make_server(monitors=[m1, m2])
-
-    with patch("welpy.geometry.reconcile") as apply_geom:
-        output.reconcile(server)
-
-    assert apply_geom.call_args_list == [call(server, m1), call(server, m2)]
-
-
-def test_reflow_no_monitors():
-    """With no monitors connected, apply_geometry isn't called."""
-    server = make_server()
-
-    with patch("welpy.geometry.reconcile") as apply_geom:
-        output.reconcile(server)
-
-    apply_geom.assert_not_called()
-
-
-def test_reflow_resizes_lock_surfaces():
-    """Output layout changes resize and move active lock surfaces."""
-    monitor = make_monitor()
-    lock_surface = MagicMock(name="lock_surface")
-    scene_tree = MagicMock(name="scene_tree")
-    ls = model.LockSurface(
-        lock_surface=lock_surface, monitor=monitor,
-        scene_tree=scene_tree, listeners=[])
-    server = make_server(
-        monitors=[monitor], active_monitor=monitor, locked=True,
-        session_lock=make_session_lock(surfaces=[ls]))
-    server.ffi.addressof.side_effect = lambda obj, *args: ("ADDR", obj, *args)
-
-    with patch("welpy.geometry.apply_hierarchy"), \
-         patch("welpy.geometry.apply_visibility"), \
-         patch("welpy.geometry.apply_tree"), \
-         patch("welpy.geometry.arrange_layers"), \
-         patch("welpy.geometry.reconcile"), \
-         patch("welpy.focus.reconcile"), \
-         patch("welpy.geometry.monitor_box",
-               return_value=layout.Rect(10, 20, 300, 200)):
-        output.reconcile(server)
-
-    server.lib.wlr_scene_node_set_position.assert_any_call(
-        ("ADDR", scene_tree.node), 10, 20)
-    server.lib.wlr_session_lock_surface_v1_configure.assert_called_once_with(
-        lock_surface, 300, 200)
-
-
-def test_reflow_prunes_stale_lock_surface():
-    """A removed screen drops its stale lock surface from lock state."""
-    removed = make_monitor()
-    remaining = make_monitor()
-    ls = model.LockSurface(
-        lock_surface=MagicMock(), monitor=removed,
-        scene_tree=MagicMock(), listeners=[])
-    session_lock = make_session_lock(surfaces=[ls])
-    server = make_server(
-        monitors=[remaining], active_monitor=remaining, locked=True,
-        session_lock=session_lock)
-
-    with patch("welpy.geometry.apply_hierarchy"), \
-         patch("welpy.geometry.apply_visibility"), \
-         patch("welpy.geometry.apply_tree"), \
-         patch("welpy.geometry.arrange_layers"), \
-         patch("welpy.geometry.reconcile"), \
-         patch("welpy.focus.reconcile"):
-        output.reconcile(server)
-
-    assert ls not in session_lock.surfaces
 
 
 def test_create_configures_before_layout():
@@ -189,7 +115,7 @@ def test_create_triggers_reflow():
     picked up and orphans are adopted."""
     server = make_server()
 
-    with patch("welpy.output.reconcile") as upd:
+    with patch("welpy.reflow.outputs") as upd:
         output.on_create(server, "OUTPUT_DATA")
 
     upd.assert_called_once_with(server)
@@ -215,7 +141,7 @@ def test_request_state_triggers_reflow():
     server = make_server()
     monitor = make_monitor(output="OUT", scene_output="SO")
 
-    with patch("welpy.output.reconcile") as upd:
+    with patch("welpy.reflow.outputs") as upd:
         output.on_request_state(server, monitor, "RS_DATA")
 
     upd.assert_called_once_with(server)
@@ -267,7 +193,7 @@ def test_destroy_triggers_reflow():
     monitor = make_monitor(scene_output="SO")
     server = make_server(monitors=[monitor])
 
-    with patch("welpy.output.reconcile") as upd:
+    with patch("welpy.reflow.outputs") as upd:
         output.on_destroy(server, monitor, None)
 
     assert monitor not in server.monitors

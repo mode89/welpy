@@ -7,32 +7,13 @@ import logging
 import time
 
 from . import bindings
-from . import ext_workspace
-from . import focus
 from . import geometry
 from . import model
-from . import session_lock
+from . import reflow
 from .layout import Rect
 from .model import Client, Layer, Monitor, Server, SHELL_LAYERS, XdgClient
 
 logger = logging.getLogger(__name__)
-
-
-def reconcile(server: Server) -> None:
-    """Called whenever the output layout changes: adding or removing a
-    monitor, changing an output's mode or position, etc. Repairs the
-    workspace hierarchy, then re-flows visibility, geometry, and focus."""
-    geometry.apply_hierarchy(server)
-    geometry.apply_visibility(server)
-    geometry.apply_tree(server)
-    for m in server.monitors:
-        geometry.arrange_layers(server, m)
-        geometry.reconcile(server, m)
-    session_lock.update_background(server)
-    session_lock.update_surfaces(server)
-    focus.reconcile(server)
-    if server.ext_workspace is not None:
-        ext_workspace.publish(server)
 
 
 def on_create(server: Server, data) -> None:
@@ -86,7 +67,7 @@ def on_create(server: Server, data) -> None:
         listen(lib.welpy_output_destroy_signal(output),
             lambda data: on_destroy(server, monitor, data)),
     ])
-    reconcile(server)
+    reflow.outputs(server)
 
 
 def on_request_state(server: Server, monitor: Monitor, data) -> None:
@@ -94,7 +75,7 @@ def on_request_state(server: Server, monitor: Monitor, data) -> None:
     ffi, lib = server.ffi, server.lib
     event = ffi.cast("struct wlr_output_event_request_state *", data)
     lib.wlr_output_commit_state(monitor.output, event.state)
-    reconcile(server)
+    reflow.outputs(server)
 
 
 def on_destroy(server: Server, monitor: Monitor, _data) -> None:
@@ -110,7 +91,7 @@ def on_destroy(server: Server, monitor: Monitor, _data) -> None:
         listener.remove()
     monitor.listeners.clear()
     server.monitors.remove(monitor)
-    reconcile(server)
+    reflow.outputs(server)
 
 
 def on_power_mode(server: Server, data) -> None:

@@ -10,6 +10,7 @@ from . import focus
 from . import geometry
 from . import libinput
 from . import model
+from . import reflow
 from . import text_input
 from .layout import Rect
 from .model import (
@@ -265,10 +266,7 @@ def begin_dragging_client(server: Server) -> None:
         node = client.scene_tree.node
         client.grab = Grab(
             "move", int(cur.x - node.x), int(cur.y - node.y))
-        geometry.apply_tree(server)
-        if monitor is not None:
-            geometry.reconcile(server, monitor)
-        focus.reconcile(server)
+        reflow.window(server, monitor)
 
 
 def begin_resizing_client(server: Server) -> None:
@@ -286,10 +284,7 @@ def begin_resizing_client(server: Server) -> None:
         rect = client.floating_geom
         client.grab = Grab(
             "resize", int(cur.x) - rect.width, int(cur.y) - rect.height)
-        geometry.apply_tree(server)
-        if monitor is not None:
-            geometry.reconcile(server, monitor)
-        focus.reconcile(server)
+        reflow.window(server, monitor)
 
 
 def drag_client(server: Server, grabbed: Client) -> None:

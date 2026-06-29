@@ -584,7 +584,7 @@ def test_setup_layout_change_reflows():
     with patch("welpy.app.bindings.build", return_value=build), \
          patch("welpy.input.build_keycode_map",
                return_value=make_keycode_map()), \
-         patch("welpy.output.reconcile") as upd:
+         patch("welpy.reflow.outputs") as upd:
         server = app.setup()
         trigger(server, lib.welpy_output_layout_change, "LAYOUT_DATA")
 

@@ -4,10 +4,10 @@ window, and workspace switching/relocation."""
 
 from __future__ import annotations
 
-from . import ext_workspace
 from . import focus
 from . import geometry
 from . import layout
+from . import reflow
 from .model import Monitor, Server, Workspace, X11Client
 
 
@@ -36,8 +36,7 @@ def move_direction(server: Server, direction: layout.Direction) -> None:
         return
     monitor = server.active_monitor
     layout.move(monitor.active_workspace.root, client, direction)
-    geometry.reconcile(server, monitor)
-    focus.reconcile(server)
+    reflow.window(server, monitor)
 
 
 def group_window(server: Server) -> None:
@@ -57,8 +56,7 @@ def group_window(server: Server) -> None:
         else layout.ContainerLayout.VERTICAL
     )
     layout.wrap(monitor.active_workspace.root, client, axis)
-    geometry.reconcile(server, monitor)
-    focus.reconcile(server)
+    reflow.window(server, monitor)
 
 
 def cycle_layout(server: Server) -> None:
@@ -69,8 +67,7 @@ def cycle_layout(server: Server) -> None:
         return
     monitor, _, parent = found
     layout.cycle(parent)
-    geometry.reconcile(server, monitor)
-    focus.reconcile(server)
+    reflow.window(server, monitor)
 
 
 def toggle_fullscreen(server: Server) -> None:
@@ -85,9 +82,7 @@ def toggle_fullscreen(server: Server) -> None:
             geometry.set_fullscreen(server, workspace, None)
         else:
             geometry.set_fullscreen(server, workspace, client)
-        geometry.apply_tree(server)
-        geometry.reconcile(server, monitor)
-        focus.reconcile(server)
+        reflow.window(server, monitor)
 
 
 def toggle_floating(server: Server) -> None:
@@ -104,9 +99,7 @@ def toggle_floating(server: Server) -> None:
             client.floating_geom = None
             layout.insert_sibling(
                 workspace.root, focus.recent_tiled_leaf(workspace.root), client)
-        geometry.apply_tree(server)
-        geometry.reconcile(server, monitor)
-        focus.reconcile(server)
+        reflow.window(server, monitor)
 
 
 def close_window(server: Server) -> None:
@@ -137,14 +130,7 @@ def view_workspace(server: Server, name: str) -> None:
     server.active_monitor = target.monitor
     for c in server.clients:
         c.grab = None
-    geometry.apply_hierarchy(server)
-    geometry.apply_visibility(server)
-    geometry.apply_tree(server)
-    for m in server.monitors:
-        geometry.reconcile(server, m)
-    focus.reconcile(server)
-    if server.ext_workspace is not None:
-        ext_workspace.publish(server)
+    reflow.topology(server)
 
 
 def view_previous_workspace(server: Server) -> None:
@@ -177,14 +163,7 @@ def move_client_to_workspace(server: Server, name: str) -> None:
         layout.insert_sibling(
             target.root, focus.recent_tiled_leaf(target.root), client)
     client.workspace = target
-    geometry.apply_hierarchy(server)
-    geometry.apply_visibility(server)
-    geometry.apply_tree(server)
-    for m in server.monitors:
-        geometry.reconcile(server, m)
-    focus.reconcile(server)
-    if server.ext_workspace is not None:
-        ext_workspace.publish(server)
+    reflow.topology(server)
 
 
 def assign_workspace_to_monitor(
@@ -192,14 +171,7 @@ def assign_workspace_to_monitor(
     """Move `workspace` onto `target`. Used by ext-workspace clients to
     drag a workspace between monitors from a bar."""
     workspace.monitor = target
-    geometry.apply_hierarchy(server)
-    geometry.apply_visibility(server)
-    geometry.apply_tree(server)
-    for m in server.monitors:
-        geometry.reconcile(server, m)
-    focus.reconcile(server)
-    if server.ext_workspace is not None:
-        ext_workspace.publish(server)
+    reflow.topology(server)
 
 
 def move_active_workspace_to_monitor(
@@ -215,11 +187,4 @@ def move_active_workspace_to_monitor(
     workspace.monitor = target
     target.active_workspace = workspace
     server.active_monitor = target
-    geometry.apply_hierarchy(server)
-    geometry.apply_visibility(server)
-    geometry.apply_tree(server)
-    for m in server.monitors:
-        geometry.reconcile(server, m)
-    focus.reconcile(server)
-    if server.ext_workspace is not None:
-        ext_workspace.publish(server)
+    reflow.topology(server)

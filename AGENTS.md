@@ -7,11 +7,12 @@ Wayland compositor written in Python on top of wlroots.
   - `model.py`: data model — window/screen state dataclasses, layout constants, shared client-lookup queries (`clients_in`/`clients_visible`/`client_monitor`).
   - `geometry.py`: window sizing/placement/borders + tiling-tree & layer-shell arrangement.
   - `focus.py`: focus policy + pointer hit-testing.
+  - `session_lock.py`: screen-lock lifecycle.
+  - `reflow.py`: the single authority for re-flow ordering — the `window`/`topology`/`outputs` seams that lay windows out then settle focus after a change.
   - `windows.py`: xdg-shell window/popup lifecycle.
   - `xwayland.py`: X11 + override-redirect surfaces.
   - `layer_shell.py`: layer-shell surface lifecycle.
-  - `session_lock.py`: screen-lock lifecycle.
-  - `output.py`: monitor/output band — the `reconcile` render orchestrator.
+  - `output.py`: monitor/output band — screen bring-up and the per-frame paint loop (re-flow lives in `reflow.outputs`).
   - `input.py`: cursor/pointer/drag/keyboard/seat handling.
   - `commands.py`: the user-facing keybinding actions.
   - `bindings/`: inline cffi bindings to wlroots, split by feature (plumbing; see Bindings).
@@ -21,7 +22,7 @@ Wayland compositor written in Python on top of wlroots.
 - `tests/`: unit tests mirroring source + shared `helpers.py`.
 - `TODO.md`: planned features, ordered by priority.
 
-The `welpy/` modules layer as an acyclic DAG `model → geometry → focus → windows → xwayland → layer_shell → session_lock → output → input → commands → app`: a module imports only earlier ones, so don't add a back-edge.
+The `welpy/` modules layer as an acyclic DAG `model → geometry → focus → session_lock → reflow → windows → xwayland → layer_shell → output → input → commands → app`: a module imports only earlier ones, so don't add a back-edge.
 
 ## Extensibility
 

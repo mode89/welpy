@@ -20,6 +20,7 @@ from . import layer_shell
 from . import layout
 from . import model
 from . import output
+from . import reflow
 from . import session_lock
 from . import text_input
 from . import windows
@@ -238,7 +239,7 @@ def setup() -> Server: # pylint: disable=too-many-locals,too-many-statements
         listen(lib.welpy_backend_new_input(backend),
             lambda data: input.on_create(server, data)),
         listen(lib.welpy_output_layout_change(output_layout),
-            lambda _data: output.reconcile(server)),
+            lambda _data: reflow.outputs(server)),
         listen(lib.welpy_xdg_decoration_manager_new(xdg_decoration_mgr),
             lambda data: geometry.decoration_new(server, data)),
         listen(lib.welpy_layer_shell_new_surface(layer_shell_server),
